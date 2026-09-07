@@ -171,6 +171,12 @@ function DetailShell({
                   if (ev.button !== 0) return;
                   startToolboxDrag("entity", e.id, e.name, ev.clientX, ev.clientY);
                 }}
+                // Mouse clicks are handled by the pointerdown/pointerup drag-vs-click logic above;
+                // a keyboard-activated click (Enter/Space on a focused button) never goes through
+                // pointerdown at all and has event.detail === 0, so this only ever fires for that.
+                onClick={(ev) => {
+                  if (ev.detail === 0) onFocusEntity(e.id);
+                }}
                 title={`Click to open, or drag onto the canvas to place ${e.name} here`}
                 className={cn(
                   "flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] hover:bg-accent",
@@ -246,6 +252,9 @@ function DetailShell({
                 onPointerDown={(ev) => {
                   if (ev.button !== 0) return;
                   startToolboxDrag("table", t.name, t.name, ev.clientX, ev.clientY);
+                }}
+                onClick={(ev) => {
+                  if (ev.detail === 0) onFocusTable(t.name);
                 }}
                 title={`Click to open, or drag onto the canvas to place ${t.name} here`}
                 className={cn(
@@ -522,6 +531,7 @@ function EntityDetailCanvas({
             {columnGroups.map(([table, cols]) => (
               <div key={table} className="flex w-56 flex-col gap-1.5 rounded-xl bg-white p-3 shadow-[0_0_0_1px_rgba(0,0,0,0.08)]">
                 <button
+                  onPointerDown={(e) => e.stopPropagation()}
                   onClick={() => onFocusTable(table)}
                   className="flex items-center gap-1.5 truncate px-1 pb-1 text-left font-mono text-[11.5px] font-semibold text-foreground hover:text-primary"
                   title={`Focus source table ${table}`}
@@ -580,8 +590,8 @@ function TableDetailCanvas({
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
 
-  const usage = useMemo(() => tableColumnUsage(table.name), [table.name]);
-  const usingEntities = useMemo(() => entitiesUsingTable(table.name), [table.name]);
+  const usage = useMemo(() => tableColumnUsage(table.name, entities), [table.name, entities]);
+  const usingEntities = useMemo(() => entitiesUsingTable(table.name, entities), [table.name, entities]);
 
   // Entity Types dragged in from the left toolbox — placed as an extra group with no properties
   // mapped yet (dragging one in doesn't fabricate a mapping, same as the entity-focused canvas).
@@ -662,7 +672,11 @@ function TableDetailCanvas({
       onDropEntity={onDropEntity}
       tableItems={tableItems}
       onFocusTable={onFocusTable}
-      onDropTable={onFocusTable}
+      // This canvas has no second slot to render another table into (unlike Entity Detail's
+      // Columns area) — a drag-release should place something or do nothing, never silently
+      // navigate away as a side effect, so dropping a table here is a no-op rather than wired to
+      // onFocusTable.
+      onDropTable={() => {}}
       zoom={zoom}
       setZoom={setZoom}
       pan={pan}
@@ -713,6 +727,7 @@ function TableDetailCanvas({
             {entityGroups.map(({ entity, properties }) => (
               <div key={entity.id} className="flex w-56 flex-col gap-1.5 rounded-xl bg-white p-3 shadow-[0_0_0_1px_rgba(0,0,0,0.08)]">
                 <button
+                  onPointerDown={(e) => e.stopPropagation()}
                   onClick={() => onFocusEntity(entity.id)}
                   className="flex items-center gap-1.5 px-1 pb-1 text-left font-semibold text-foreground hover:text-primary"
                   title={`Focus entity ${entity.name}`}

@@ -11,9 +11,10 @@ const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
 
 /**
  * The Overview workspace: the ontology graph (pan/zoom, entity nodes, relation lines) plus a
- * side panel for Source Tables. Clicking an Entity or a Table selects it AND opens Detail
- * directly — no separate confirmation step. Clicking a Relation only selects it (Inspect) since
- * Relations don't have a Detail view of their own.
+ * side panel for Source Tables. Clicking an Entity or a Table opens Detail directly — no separate
+ * confirmation step — via openDetail(), which also updates selection so the click reads as
+ * "select and go" in one step. Clicking a Relation only selects it (Inspect) since Relations
+ * don't have a Detail view of their own.
  */
 export function OverviewCanvas({ app }: { app: OntologyApp }) {
   const { entities, relations, tables, selection, select, openDetail, view, setView } = app;
@@ -147,10 +148,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                 <EntityNode
                   entity={entity}
                   emphasis={emphasisFor(entity.id)}
-                  onClick={() => {
-                    select({ kind: "entity", id: entity.id });
-                    openDetail("entity", entity.id);
-                  }}
+                  onClick={() => openDetail("entity", entity.id)}
                 />
               </div>
             ))}
@@ -182,10 +180,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
             return (
               <button
                 key={t.name}
-                onClick={() => {
-                  select({ kind: "table", id: t.name });
-                  openDetail("table", t.name);
-                }}
+                onClick={() => openDetail("table", t.name)}
                 className={cn(
                   "flex items-center justify-between rounded-[10px] px-3 py-2 text-left shadow-[0_0_0_1px_rgba(0,0,0,0.08)] transition-colors",
                   isSelected ? "ring-2 ring-primary" : "hover:bg-accent",

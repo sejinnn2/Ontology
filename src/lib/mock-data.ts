@@ -132,7 +132,10 @@ export const tables: TableSchema[] = [
   },
 ];
 
-export const entities: Entity[] = [
+/** Initial seed data only — the live, mutable ontology lives in useOntologyApp()'s React state,
+ * seeded from these arrays once on mount. Nothing should import `initialEntities` /
+ * `initialRelations` directly at runtime except that one seeding call. */
+export const initialEntities: Entity[] = [
   {
     id: "e_customer",
     name: "Customer",
@@ -243,7 +246,8 @@ export const entities: Entity[] = [
   },
 ];
 
-export const relations: Relation[] = [
+/** Initial seed data only — see the note on initialEntities above. */
+export const initialRelations: Relation[] = [
   { id: "r_places", name: "places", from: "e_customer", to: "e_order", confidence: 0.95, status: "confirmed" },
   { id: "r_contains", name: "contains", from: "e_order", to: "e_order_item", confidence: 0.97, status: "confirmed" },
   { id: "r_references", name: "references", from: "e_order_item", to: "e_product", confidence: 0.96, status: "confirmed" },
@@ -253,9 +257,7 @@ export const relations: Relation[] = [
   { id: "r_may_include", name: "mayInclude", from: "e_order", to: "e_category", confidence: 0.3, status: "suggested" },
 ];
 
-export const entityById = (id: string) => entities.find((e) => e.id === id);
 export const tableByName = (name: string) => tables.find((t) => t.name === name);
-export const relationById = (id: string) => relations.find((r) => r.id === id);
 
 /** How many of an entity's own properties are mapped to a source column. */
 export function entityMappingCompleteness(entity: Entity): { mapped: number; total: number } {
@@ -269,8 +271,9 @@ export type ColumnUsage = {
 };
 
 /** Every column of a table, and which entity properties (if any) map to it — the reverse of an
- * entity's own property list, used by the table-anchored Detail view. */
-export function tableColumnUsage(tableName: string): ColumnUsage[] {
+ * entity's own property list, used by the table-anchored Detail view. Takes the live `entities`
+ * as a parameter (rather than closing over seed data) so it always reflects current state. */
+export function tableColumnUsage(tableName: string, entities: Entity[]): ColumnUsage[] {
   const table = tableByName(tableName);
   if (!table) return [];
   return table.columns.map((col) => ({
@@ -285,12 +288,12 @@ export function tableColumnUsage(tableName: string): ColumnUsage[] {
 }
 
 /** How many of a table's own columns are used by at least one entity property. */
-export function tableMappingCompleteness(tableName: string): { mapped: number; total: number } {
-  const usage = tableColumnUsage(tableName);
+export function tableMappingCompleteness(tableName: string, entities: Entity[]): { mapped: number; total: number } {
+  const usage = tableColumnUsage(tableName, entities);
   return { mapped: usage.filter((c) => c.mappedBy.length > 0).length, total: usage.length };
 }
 
 /** Every entity that draws at least one property from this table. */
-export function entitiesUsingTable(tableName: string): Entity[] {
+export function entitiesUsingTable(tableName: string, entities: Entity[]): Entity[] {
   return entities.filter((e) => e.properties.some((p) => p.mapping?.table === tableName));
 }
