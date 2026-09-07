@@ -294,7 +294,7 @@ function EntityDetailCanvas({
     const nextRelated: Line[] = [];
     const cardEl = propsCardRef.current;
     if (cardEl) {
-      const a = pt(cardEl, "left");
+      const a = pt(cardEl, "left", 8);
       related.forEach((other) => {
         const el = relatedRefs.current.get(other.id);
         if (!el) return;
