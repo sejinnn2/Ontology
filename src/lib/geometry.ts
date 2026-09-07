@@ -44,7 +44,7 @@ export function edgeAnchors(a: { x: number; y: number }, b: { x: number; y: numb
   return { p1, p2, mid: { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 } };
 }
 
-const CORNER_R = 10;
+const CORNER_R = 50;
 
 /** Orthogonal connector between two points: one straight run along whichever axis they differ
  * most on, a single 90-degree bend at the shared midpoint, then a straight run into the end —
