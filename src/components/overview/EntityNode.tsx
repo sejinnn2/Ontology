@@ -7,10 +7,14 @@ import type { Entity } from "@/lib/mock-data";
  * handler that turns a click into an Inspect selection. */
 export function EntityNode({
   entity,
+  size = NODE_SIZE,
   emphasis = "normal",
   onClick,
 }: {
   entity: Entity;
+  /** Diameter in px — Overview uses the default; Detail reuses this at smaller scales for the
+   * anchor, related satellites, and the Entity Types toolbox. */
+  size?: number;
   emphasis?: "active" | "related" | "muted" | "normal";
   onClick?: () => void;
 }) {
@@ -22,7 +26,7 @@ export function EntityNode({
         e.stopPropagation();
         onClick?.();
       }}
-      style={{ width: NODE_SIZE, height: NODE_SIZE }}
+      style={{ width: size, height: size }}
       className={cn(
         "group relative flex shrink-0 select-none items-center justify-center rounded-full border-2 border-background bg-node text-center shadow-[var(--shadow-node)] transition-[opacity,box-shadow]",
         emphasis === "active" && "ring-[3px] ring-primary",
@@ -30,7 +34,10 @@ export function EntityNode({
         emphasis === "muted" && "opacity-40",
       )}
     >
-      <span className="line-clamp-2 break-words px-2 text-[12px] font-semibold leading-tight text-foreground">
+      <span
+        style={{ fontSize: Math.max(9, Math.round(size * 0.14)) }}
+        className="line-clamp-2 break-words px-2 font-semibold leading-tight text-foreground"
+      >
         {entity.name}
       </span>
       <span

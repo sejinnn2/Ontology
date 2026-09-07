@@ -1,7 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useOntologyApp } from "@/lib/app-state";
 import { OverviewCanvas } from "@/components/overview/OverviewCanvas";
-import { InspectPanel } from "@/components/overview/InspectPanel";
 import { DetailView } from "@/components/detail/DetailView";
 
 export const Route = createFileRoute("/")({
@@ -21,7 +20,6 @@ function Index() {
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-background text-foreground">
       <OverviewCanvas app={app} />
-      <InspectPanel app={app} />
     </div>
   );
 }
