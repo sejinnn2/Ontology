@@ -479,18 +479,17 @@ function EntityDetailCanvas({
         <div className="relative z-10 flex items-start gap-20">
           <div className="flex flex-col items-center gap-6 pt-8">
             {allRelated.map((other) => (
-              <button
+              <div
                 key={other.id}
                 ref={(el) => {
                   if (el) relatedRefs.current.set(other.id, el);
                   else relatedRefs.current.delete(other.id);
                 }}
-                onClick={() => onFocusEntity(other.id)}
                 className="flex flex-col items-center gap-1 opacity-70 transition-opacity hover:opacity-100"
                 title={`Focus ${other.name}`}
               >
-                <EntityNode entity={other} size={52} />
-              </button>
+                <EntityNode entity={other} size={52} onClick={() => onFocusEntity(other.id)} />
+              </div>
             ))}
           </div>
 
