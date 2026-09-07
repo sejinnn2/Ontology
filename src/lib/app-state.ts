@@ -1,5 +1,13 @@
 import { useCallback, useState } from "react";
 import { initialEntities, initialRelations, tables, type ColumnRef, type Entity, type Property, type Relation } from "./mock-data";
+import { NODE_SIZE } from "./geometry";
+
+let entityUidCounter = 0;
+const entityUid = () => `entity_${Date.now().toString(36)}${(entityUidCounter++).toString(36)}`;
+let relationUidCounter = 0;
+const relationUid = () => `rel_${Date.now().toString(36)}${(relationUidCounter++).toString(36)}`;
+let propUidCounter = 0;
+const propUid = () => `prop_${Date.now().toString(36)}${(propUidCounter++).toString(36)}`;
 
 export type Selection =
   | { kind: "entity"; id: string }
@@ -87,6 +95,106 @@ export function useOntologyApp() {
     setRelations((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   }, []);
 
+  // Moves one property from one entity to another (drag a property row onto a different entity's
+  // node). No-ops if the target is the same as the source.
+  const moveProperty = useCallback((propId: string, fromEntityId: string, toEntityId: string) => {
+    if (fromEntityId === toEntityId) return;
+    setEntities((es) => {
+      const source = es.find((e) => e.id === fromEntityId);
+      const prop = source?.properties.find((p) => p.id === propId);
+      if (!prop) return es;
+      return es.map((e) => {
+        if (e.id === fromEntityId) return { ...e, properties: e.properties.filter((p) => p.id !== propId) };
+        if (e.id === toEntityId) return { ...e, properties: [...e.properties, prop] };
+        return e;
+      });
+    });
+  }, []);
+
+  // Connects two entities with a new relation — but if any relation already connects them (in
+  // either direction), that existing one is returned instead of creating a redundant second edge
+  // between the same pair.
+  const addRelation = useCallback(
+    (fromId: string, toId: string) => {
+      const existing = relations.find((r) => (r.from === fromId && r.to === toId) || (r.from === toId && r.to === fromId));
+      if (existing) return existing.id;
+      const id = relationUid();
+      const newRelation: Relation = { id, name: "relatesTo", from: fromId, to: toId, confidence: 1, status: "confirmed" };
+      setRelations((rs) => [...rs, newRelation]);
+      return id;
+    },
+    [relations],
+  );
+
+  const deleteRelation = useCallback((id: string) => {
+    setRelations((rs) => rs.filter((r) => r.id !== id));
+  }, []);
+
+  // Splits an entity's properties into two entities: the original keeps whichever properties
+  // weren't selected, a new entity (name left blank for immediate editing later) takes the rest.
+  // No-ops if `moveIds` would empty out either side.
+  const splitEntity = useCallback(
+    (entityId: string, moveIds: string[]) => {
+      const original = entities.find((e) => e.id === entityId);
+      if (!original) return null;
+      const moveSet = new Set(moveIds);
+      const moved = original.properties.filter((p) => moveSet.has(p.id));
+      const kept = original.properties.filter((p) => !moveSet.has(p.id));
+      if (moved.length === 0 || kept.length === 0) return null;
+      const newId = entityUid();
+      const newEntity: Entity = {
+        id: newId,
+        name: "",
+        description: "",
+        confidence: original.confidence,
+        status: "confirmed",
+        table: original.table,
+        x: original.x + NODE_SIZE + 40,
+        y: original.y,
+        properties: moved,
+      };
+      setEntities((es) => es.map((e) => (e.id === entityId ? { ...e, properties: kept } : e)).concat(newEntity));
+      return newId;
+    },
+    [entities],
+  );
+
+  // Combines two or more entities into one new entity: every property from every source entity
+  // carries over (re-keyed to stay unique), and any relation that pointed at a merged entity is
+  // repointed at the new one — a relation that would become a self-loop (both ends merged
+  // together) is dropped since it no longer describes anything.
+  const mergeEntities = useCallback(
+    (ids: string[], name: string) => {
+      const idSet = new Set(ids);
+      const merged = entities.filter((e) => idSet.has(e.id));
+      if (merged.length < 2 || !name.trim()) return null;
+      const first = merged[0]!;
+      const newId = entityUid();
+      const properties = merged.flatMap((e) => e.properties.map((p) => ({ ...p, id: propUid() })));
+      const x = merged.reduce((n, e) => n + e.x, 0) / merged.length;
+      const y = merged.reduce((n, e) => n + e.y, 0) / merged.length;
+      const newEntity: Entity = {
+        id: newId,
+        name: name.trim(),
+        description: first.description,
+        confidence: Math.min(...merged.map((e) => e.confidence)),
+        status: "suggested",
+        table: first.table,
+        x,
+        y,
+        properties,
+      };
+      setEntities((es) => [...es.filter((e) => !idSet.has(e.id)), newEntity]);
+      setRelations((rs) =>
+        rs
+          .map((r) => ({ ...r, from: idSet.has(r.from) ? newId : r.from, to: idSet.has(r.to) ? newId : r.to }))
+          .filter((r) => r.from !== r.to),
+      );
+      return newId;
+    },
+    [entities],
+  );
+
   return {
     entities,
     relations,
@@ -95,6 +203,11 @@ export function useOntologyApp() {
     updateProperty,
     updateMapping,
     updateRelation,
+    moveProperty,
+    addRelation,
+    deleteRelation,
+    splitEntity,
+    mergeEntities,
     selection,
     select,
     clearSelection,

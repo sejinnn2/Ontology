@@ -1,9 +1,12 @@
-import { useCallback, useMemo, useRef } from "react";
-import { Minus, Plus, Table2, Waypoints } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Minus, Plus, Table2, Trash2, Waypoints } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { edgeAnchors, orthogonalPath } from "@/lib/geometry";
+import { edgeAnchors, nearestSide, nodeCenter, NODE_R, orthogonalPath } from "@/lib/geometry";
+import type { Side } from "@/lib/geometry";
+import { tableMappingStatus } from "@/lib/mock-data";
 import type { OntologyApp } from "@/lib/app-state";
 import { EntityNode } from "./EntityNode";
+import { MappingStatusBadge } from "./MappingStatusBadge";
 
 const MIN_Z = 0.4;
 const MAX_Z = 2;
@@ -17,7 +20,7 @@ const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
  * don't have a Detail view of their own.
  */
 export function OverviewCanvas({ app }: { app: OntologyApp }) {
-  const { entities, relations, tables, selection, select, openDetail, view, setView } = app;
+  const { entities, relations, tables, selection, select, openDetail, addRelation, deleteRelation, view, setView } = app;
 
   const ref = useRef<HTMLDivElement>(null);
   const drag = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
@@ -36,6 +39,75 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
   const endDrag = () => {
     drag.current = null;
   };
+
+  const toWorld = useCallback(
+    (clientX: number, clientY: number) => {
+      const el = ref.current;
+      if (!el) return { x: 0, y: 0 };
+      const rect = el.getBoundingClientRect();
+      return { x: (clientX - rect.left - view.x) / view.z, y: (clientY - rect.top - view.y) / view.z };
+    },
+    [view],
+  );
+
+  // Direct-manipulation connector drag — creates a relation by dragging from one entity node's
+  // hover-revealed handle onto another. Relations can only ever be created or deleted this way,
+  // never re-pointed once they exist.
+  const [connectDrag, setConnectDrag] = useState<{ sourceId: string; side: Side; origin: { x: number; y: number } } | null>(null);
+  const [connectPos, setConnectPos] = useState<{ x: number; y: number } | null>(null);
+  const [connectTargetId, setConnectTargetId] = useState<string | null>(null);
+
+  const findEntityAt = useCallback(
+    (clientX: number, clientY: number, excludeId?: string) => {
+      const p = toWorld(clientX, clientY);
+      let best: (typeof entities)[number] | null = null;
+      let bestDist = Infinity;
+      for (const en of entities) {
+        if (en.id === excludeId) continue;
+        const c = nodeCenter(en);
+        const dist = Math.hypot(p.x - c.x, p.y - c.y);
+        if (dist <= NODE_R && dist < bestDist) {
+          best = en;
+          bestDist = dist;
+        }
+      }
+      return best;
+    },
+    [entities, toWorld],
+  );
+
+  const startConnectFromEntity = useCallback(
+    (entityId: string, side: Side, clientX: number, clientY: number) => {
+      const origin = toWorld(clientX, clientY);
+      setConnectDrag({ sourceId: entityId, side, origin });
+      setConnectPos(origin);
+    },
+    [toWorld],
+  );
+
+  useEffect(() => {
+    if (!connectDrag) return;
+    const onMove = (e: PointerEvent) => {
+      setConnectPos(toWorld(e.clientX, e.clientY));
+      setConnectTargetId(findEntityAt(e.clientX, e.clientY, connectDrag.sourceId)?.id ?? null);
+    };
+    const onUp = (e: PointerEvent) => {
+      const hit = findEntityAt(e.clientX, e.clientY, connectDrag.sourceId);
+      if (hit) addRelation(connectDrag.sourceId, hit.id);
+      setConnectDrag(null);
+      setConnectPos(null);
+      setConnectTargetId(null);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [connectDrag, toWorld, findEntityAt, addRelation]);
+
+  const connectTargetEntity = connectTargetId ? entities.find((e) => e.id === connectTargetId) : undefined;
+  const connectTargetSide = connectTargetEntity && connectPos ? nearestSide(connectTargetEntity, connectPos) : null;
 
   const zoomBy = useCallback(
     (factor: number) => {
@@ -114,6 +186,19 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                   />
                 );
               })}
+              {/* live preview line while dragging a connector out to a new entity — stays anchored
+                  to the exact handle that was grabbed, rather than sliding around the node to
+                  chase the pointer. */}
+              {connectDrag && connectPos && (
+                <path
+                  d={`M ${connectDrag.origin.x} ${connectDrag.origin.y} L ${connectPos.x} ${connectPos.y}`}
+                  fill="none"
+                  stroke="#61b2ff"
+                  strokeWidth={2}
+                  strokeDasharray="4 3"
+                  opacity={0.9}
+                />
+              )}
             </svg>
 
             {relations.map((r) => {
@@ -123,9 +208,8 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
               const { mid } = edgeAnchors(a, b);
               const isSelected = selection?.kind === "relation" && selection.id === r.id;
               return (
-                <button
+                <div
                   key={r.id}
-                  type="button"
                   title={r.name}
                   style={{ left: mid.x, top: mid.y }}
                   onPointerDown={(e) => e.stopPropagation()}
@@ -134,12 +218,32 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                     select({ kind: "relation", id: r.id });
                   }}
                   className={cn(
-                    "absolute z-10 -translate-x-1/2 -translate-y-1/2 rounded-full border border-node-border bg-node px-2 py-0.5 text-[10px] text-foreground shadow-[var(--shadow-node)]",
+                    "group/relpill absolute z-10 flex -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center gap-1 rounded-full border border-node-border bg-node px-2 py-0.5 text-[10px] text-foreground shadow-[var(--shadow-node)]",
                     isSelected && "ring-2 ring-primary",
                   )}
                 >
+                  {/* Hovering swaps this dot for a delete action — clicking removes the relation. */}
+                  <button
+                    type="button"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteRelation(r.id);
+                    }}
+                    title={`Delete ${r.name}`}
+                    aria-label={`Delete ${r.name}`}
+                    className="relative flex size-2.5 shrink-0 items-center justify-center rounded-full"
+                  >
+                    <span
+                      className={cn(
+                        "absolute inset-0 rounded-full transition-opacity group-hover/relpill:opacity-0",
+                        r.status === "confirmed" ? "bg-ok" : "bg-review",
+                      )}
+                    />
+                    <Trash2 className="absolute inset-0 size-2.5 text-red-500 opacity-0 transition-opacity group-hover/relpill:opacity-100" strokeWidth={2.5} />
+                  </button>
                   {r.name}
-                </button>
+                </div>
               );
             })}
 
@@ -149,6 +253,9 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                   entity={entity}
                   emphasis={emphasisFor(entity.id)}
                   onClick={() => openDetail("entity", entity.id)}
+                  onStartConnect={(side, clientX, clientY) => startConnectFromEntity(entity.id, side, clientX, clientY)}
+                  connectSourceSide={connectDrag?.sourceId === entity.id ? connectDrag.side : null}
+                  connectTargetSide={connectTargetId === entity.id ? connectTargetSide : null}
                 />
               </div>
             ))}
@@ -190,6 +297,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                   <span className="block truncate font-mono text-[12px] font-medium">{t.name}</span>
                   <span className="block text-[10px] text-muted-foreground">{t.columns.length} columns</span>
                 </span>
+                <MappingStatusBadge status={tableMappingStatus(t.name, entities)} />
               </button>
             );
           })}

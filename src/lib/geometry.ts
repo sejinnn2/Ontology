@@ -1,5 +1,5 @@
 export const NODE_SIZE = 84;
-const NODE_R = NODE_SIZE / 2;
+export const NODE_R = NODE_SIZE / 2;
 /** Small stand-off between a node's own border and where its connectors start/end, so lines
  * don't visually touch the circle. */
 const NODE_GAP = 8;
@@ -42,6 +42,43 @@ export function edgeAnchors(a: { x: number; y: number }, b: { x: number; y: numb
     p2 = sideAnchor(cb, r, dy >= 0 ? "top" : "bottom");
   }
   return { p1, p2, mid: { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 } };
+}
+
+/** Anchor point on a single node's perimeter, facing an arbitrary point (not necessarily another
+ * node's center) — used while dragging a live connector line out from a node, before there's a
+ * second node to call edgeAnchors with. */
+export function anchorToward(a: { x: number; y: number }, target: Pt): Pt {
+  const ca = nodeCenter(a);
+  const len = Math.hypot(target.x - ca.x, target.y - ca.y) || 1;
+  const r = NODE_R + NODE_GAP;
+  return { x: ca.x + ((target.x - ca.x) / len) * r, y: ca.y + ((target.y - ca.y) / len) * r };
+}
+
+export type Side = "top" | "right" | "bottom" | "left";
+
+/** Which of 4 boundary sides (top/right/bottom/left), centered on `center`, faces `toward` — the
+ * coordinate-system-agnostic version: works equally for canvas world-space centers or plain
+ * screen-space DOM rect centers, since it only looks at the relative sign of the delta. */
+export function sideBetween(center: Pt, toward: Pt): Side {
+  const dx = toward.x - center.x;
+  const dy = toward.y - center.y;
+  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? "right" : "left";
+  return dy >= 0 ? "bottom" : "top";
+}
+
+/** Which of a node's 4 boundary connection handles faces a given point — used to pick which
+ * handle to highlight as the active drop target while a connector drag hovers this node. Mirrors
+ * edgeAnchors' own dominant-axis branch so the highlighted handle always matches where the
+ * committed connector will actually anchor. */
+export function nearestSide(from: { x: number; y: number }, toward: Pt): Side {
+  return sideBetween(nodeCenter(from), toward);
+}
+
+/** World-space center point of one of a node's 4 boundary handles. */
+export function handlePoint(a: { x: number; y: number }, side: Side): Pt {
+  const c = nodeCenter(a);
+  const r = NODE_R + NODE_GAP;
+  return sideAnchor(c, r, side);
 }
 
 const CORNER_R = 50;

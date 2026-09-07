@@ -1,10 +1,21 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Boxes, Minus, Plus, Redo2, Table2, Undo2 } from "lucide-react";
+import { ArrowLeft, Boxes, GitMerge, Minus, Plus, Redo2, Scissors, Table2, Undo2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { tableByName, tableColumnUsage, entitiesUsingTable, type Entity, type Property, type TableSchema } from "@/lib/mock-data";
-import { orthogonalPath } from "@/lib/geometry";
+import {
+  tableByName,
+  tableColumnUsage,
+  tableMappingStatus,
+  entitiesUsingTable,
+  type Entity,
+  type TableSchema,
+} from "@/lib/mock-data";
+import { orthogonalPath, sideBetween } from "@/lib/geometry";
+import type { Side } from "@/lib/geometry";
 import type { DetailAnchor, OntologyApp } from "@/lib/app-state";
 import { EntityNode } from "@/components/overview/EntityNode";
+import { MappingStatusBadge } from "@/components/overview/MappingStatusBadge";
+import { ConnectionHandle } from "@/components/ontology/ConnectionHandle";
+import { DraggableHandle } from "@/components/ontology/DraggableHandle";
 
 const MIN_Z = 0.5;
 const MAX_Z = 1.5;
@@ -33,6 +44,7 @@ function DetailShell({
   onFocusEntity,
   onDropEntity,
   tableItems,
+  entities,
   onFocusTable,
   onDropTable,
   zoom,
@@ -51,6 +63,8 @@ function DetailShell({
    * navigating — a lightweight way to bring another item into view without leaving this one. */
   onDropEntity: (id: string) => void;
   tableItems: TableSchema[];
+  /** Live entities, used only to compute each table's mapping-status badge in the toolbox. */
+  entities: Entity[];
   onFocusTable: (name: string) => void;
   onDropTable: (name: string) => void;
   zoom: number;
@@ -140,7 +154,7 @@ function DetailShell({
   }, []);
 
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground">
+    <div className="flex h-full w-full flex-col overflow-hidden bg-background text-foreground">
       {/* TOP — Back to Overview + anchor context. Global review/progress controls will slot in
           here alongside Back once they exist; nothing to preserve yet in this project. */}
       <div className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-white px-4">
@@ -262,7 +276,10 @@ function DetailShell({
                   tbDrag?.kind === "table" && tbDrag.id === t.name && "opacity-30",
                 )}
               >
-                <span className="truncate font-mono text-[11.5px] font-medium">{t.name}</span>
+                <span className="flex items-center gap-1.5">
+                  <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] font-medium">{t.name}</span>
+                  <MappingStatusBadge status={tableMappingStatus(t.name, entities)} size={14} />
+                </span>
                 <span className="text-[10px] text-muted-foreground">{t.columns.length} columns</span>
               </button>
             ))}
@@ -342,7 +359,7 @@ function EntityDetailCanvas({
   entityItems: Entity[];
   tableItems: TableSchema[];
 }) {
-  const { relations, entities } = app;
+  const { relations, entities, updateMapping, moveProperty, splitEntity, mergeEntities, addRelation } = app;
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
 
@@ -394,6 +411,18 @@ function EntityDetailCanvas({
       list.push({ propertyId: p.id, column: p.mapping.column, type: col?.type ?? "" });
       byTable.set(p.mapping.table, list);
     });
+    // Show every column of the entity's own primary table (not just whichever ones already have
+    // a property pointing at them) so an unmapped — or about-to-be-reconnected — property always
+    // has somewhere to connect to.
+    const primary = tableByName(entity.table);
+    if (primary) {
+      const already = byTable.get(entity.table) ?? [];
+      const mappedCols = new Set(already.map((c) => c.column));
+      const rest = primary.columns.filter((c) => !mappedCols.has(c.name)).map((c) => ({ propertyId: "", column: c.name, type: c.type }));
+      const merged = [...already, ...rest];
+      merged.sort((a, b) => primary.columns.findIndex((c) => c.name === a.column) - primary.columns.findIndex((c) => c.name === b.column));
+      byTable.set(entity.table, merged);
+    }
     extraTableNames.forEach((t) => {
       if (byTable.has(t)) return;
       const table = tableByName(t);
@@ -456,7 +485,233 @@ function EntityDetailCanvas({
     return () => window.removeEventListener("resize", computeLines);
   }, [computeLines]);
 
+  // --- Property <-> Column drag-to-map ------------------------------------------------------
+  // Either end can start the drag (a property's own connect handle, or a column's), and it
+  // always completes on whichever kind of node it's released over — connecting sets that
+  // property's one mapping, so "reconnect" is just the same gesture landing on a different
+  // column (or a different property, for a column-anchored drag).
+  type MapDropTarget = { type: "column"; table: string; column: string } | { type: "property"; propertyId: string };
+  const [dragOrigin, setDragOrigin] = useState<
+    { anchor: "property"; propertyId: string; x1: number; y1: number } | { anchor: "column"; table: string; column: string; x1: number; y1: number } | null
+  >(null);
+  const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
+  const [mapDropTarget, setMapDropTarget] = useState<MapDropTarget | null>(null);
+  const mapDropTargetRef = useRef<MapDropTarget | null>(null);
+
+  useEffect(() => {
+    if (!dragOrigin) return;
+    const container = containerRef.current;
+    const onMove = (e: MouseEvent) => {
+      if (container) {
+        const r = container.getBoundingClientRect();
+        setDragPos({ x: (e.clientX - r.left) / zoom, y: (e.clientY - r.top) / zoom });
+      }
+      let hit: MapDropTarget | null = null;
+      columnRefs.current.forEach((el, key) => {
+        const r = el.getBoundingClientRect();
+        if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
+          const idx = key.lastIndexOf(".");
+          hit = { type: "column", table: key.slice(0, idx), column: key.slice(idx + 1) };
+        }
+      });
+      if (!hit) {
+        propertyRefs.current.forEach((el, propertyId) => {
+          const r = el.getBoundingClientRect();
+          if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
+            hit = { type: "property", propertyId };
+          }
+        });
+      }
+      mapDropTargetRef.current = hit;
+      setMapDropTarget(hit);
+    };
+    const onUp = () => {
+      const target = mapDropTargetRef.current;
+      const origin = dragOrigin;
+      if (target) {
+        if (origin.anchor === "property" && target.type === "column") {
+          updateMapping(entity.id, origin.propertyId, { table: target.table, column: target.column });
+        } else if (origin.anchor === "column" && target.type === "property") {
+          updateMapping(entity.id, target.propertyId, { table: origin.table, column: origin.column });
+        }
+      }
+      mapDropTargetRef.current = null;
+      setMapDropTarget(null);
+      setDragOrigin(null);
+      setDragPos(null);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [dragOrigin, updateMapping, zoom, entity.id]);
+
+  // --- Move: drag a property row onto a related satellite to move it onto that entity. A plain
+  // click (no movement) falls through to the shift/cmd-select handling below, same drag-vs-click
+  // threshold as the toolbox drag. -----------------------------------------------------------
+  const movePropertyInfo = useRef<{ propertyId: string; sx: number; sy: number; moved: boolean } | null>(null);
+  const [movePropertyDrag, setMovePropertyDrag] = useState<{ propertyId: string; name: string } | null>(null);
+  const [movePropertyPos, setMovePropertyPos] = useState<{ x: number; y: number } | null>(null);
+  const [moveTargetId, setMoveTargetId] = useState<string | null>(null);
+
+  const startMoveProperty = (propertyId: string, x: number, y: number) => {
+    movePropertyInfo.current = { propertyId, sx: x, sy: y, moved: false };
+  };
+
+  useEffect(() => {
+    const findRelatedAt = (x: number, y: number) => {
+      let hit: string | null = null;
+      relatedRefs.current.forEach((el, id) => {
+        const r = el.getBoundingClientRect();
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) hit = id;
+      });
+      return hit;
+    };
+    const onMove = (e: PointerEvent) => {
+      const info = movePropertyInfo.current;
+      if (!info) return;
+      if (!info.moved && Math.hypot(e.clientX - info.sx, e.clientY - info.sy) > 6) {
+        info.moved = true;
+        const prop = entity.properties.find((p) => p.id === info.propertyId);
+        setMovePropertyDrag({ propertyId: info.propertyId, name: prop?.name ?? "" });
+      }
+      if (info.moved) {
+        setMovePropertyPos({ x: e.clientX, y: e.clientY });
+        setMoveTargetId(findRelatedAt(e.clientX, e.clientY));
+      }
+    };
+    const onUp = (e: PointerEvent) => {
+      const info = movePropertyInfo.current;
+      movePropertyInfo.current = null;
+      setMovePropertyDrag(null);
+      setMovePropertyPos(null);
+      setMoveTargetId(null);
+      if (!info || !info.moved) return;
+      const hit = findRelatedAt(e.clientX, e.clientY);
+      if (hit) moveProperty(info.propertyId, entity.id, hit);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [entity.id, entity.properties, moveProperty]);
+
+  // --- Entity connect: drag from a related satellite's boundary handle onto another satellite to
+  // create a Relation between them — the same grammar and the same addRelation/duplicate-guard
+  // logic as the Overview canvas, just scoped to the satellites visible here. ------------------
+  const [entityConnectDrag, setEntityConnectDrag] = useState<{ sourceId: string; side: Side; origin: { x: number; y: number } } | null>(null);
+  const [entityConnectPos, setEntityConnectPos] = useState<{ x: number; y: number } | null>(null);
+  const [entityConnectTargetId, setEntityConnectTargetId] = useState<string | null>(null);
+
+  const toContainerPos = useCallback(
+    (clientX: number, clientY: number) => {
+      const container = containerRef.current;
+      if (!container) return { x: 0, y: 0 };
+      const r = container.getBoundingClientRect();
+      return { x: (clientX - r.left) / zoom, y: (clientY - r.top) / zoom };
+    },
+    [zoom],
+  );
+
+  const startEntityConnect = useCallback(
+    (otherId: string, side: Side, clientX: number, clientY: number) => {
+      setEntityConnectDrag({ sourceId: otherId, side, origin: toContainerPos(clientX, clientY) });
+      setEntityConnectPos(toContainerPos(clientX, clientY));
+    },
+    [toContainerPos],
+  );
+
+  useEffect(() => {
+    if (!entityConnectDrag) return;
+    const findRelatedAt = (x: number, y: number, excludeId: string) => {
+      let hit: string | null = null;
+      relatedRefs.current.forEach((el, id) => {
+        if (id === excludeId) return;
+        const r = el.getBoundingClientRect();
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) hit = id;
+      });
+      return hit;
+    };
+    const onMove = (e: PointerEvent) => {
+      setEntityConnectPos(toContainerPos(e.clientX, e.clientY));
+      setEntityConnectTargetId(findRelatedAt(e.clientX, e.clientY, entityConnectDrag.sourceId));
+    };
+    const onUp = (e: PointerEvent) => {
+      const hit = findRelatedAt(e.clientX, e.clientY, entityConnectDrag.sourceId);
+      if (hit) addRelation(entityConnectDrag.sourceId, hit);
+      setEntityConnectDrag(null);
+      setEntityConnectPos(null);
+      setEntityConnectTargetId(null);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [entityConnectDrag, toContainerPos, addRelation]);
+
+  const entityConnectTargetSide = useMemo(() => {
+    if (!entityConnectTargetId || !entityConnectPos) return null;
+    const el = relatedRefs.current.get(entityConnectTargetId);
+    const container = containerRef.current;
+    if (!el || !container) return null;
+    const r = el.getBoundingClientRect();
+    const c = container.getBoundingClientRect();
+    const center = { x: (r.left + r.width / 2 - c.left) / zoom, y: (r.top + r.height / 2 - c.top) / zoom };
+    return sideBetween(center, entityConnectPos);
+  }, [entityConnectTargetId, entityConnectPos, zoom]);
+
+  // --- Split: shift/cmd-click property rows to select them, then Split moves that subset onto a
+  // brand-new entity, and Detail jumps to it. ------------------------------------------------
+  const [selectedPropertyIds, setSelectedPropertyIds] = useState<Set<string>>(new Set());
+  const togglePropertySelected = useCallback((id: string) => {
+    setSelectedPropertyIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const handleSplit = () => {
+    const newId = splitEntity(entity.id, Array.from(selectedPropertyIds));
+    setSelectedPropertyIds(new Set());
+    if (newId) onFocusEntity(newId);
+  };
+
+  // --- Merge: shift/cmd-click 1+ related satellites to select them, then Merge combines them
+  // with the anchor entity into a brand-new one, and Detail jumps to it. ---------------------
+  const [selectedRelatedIds, setSelectedRelatedIds] = useState<Set<string>>(new Set());
+  const toggleRelatedSelected = useCallback((id: string) => {
+    setSelectedRelatedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const [mergePanelOpen, setMergePanelOpen] = useState(false);
+  const [mergeName, setMergeName] = useState("");
+  const mergeCandidates = useMemo(
+    () => allRelated.filter((e) => selectedRelatedIds.has(e.id)),
+    [allRelated, selectedRelatedIds],
+  );
+  const handleMerge = () => {
+    if (!mergeName.trim()) return;
+    const ids = [entity.id, ...mergeCandidates.map((e) => e.id)];
+    const newId = mergeEntities(ids, mergeName.trim());
+    setSelectedRelatedIds(new Set());
+    setMergePanelOpen(false);
+    setMergeName("");
+    if (newId) onFocusEntity(newId);
+  };
+
   return (
+    <>
     <DetailShell
       kindLabel="Entity Type"
       name={entity.name}
@@ -466,6 +721,7 @@ function EntityDetailCanvas({
       onFocusEntity={onFocusEntity}
       onDropEntity={onDropEntity}
       tableItems={tableItems}
+      entities={entities}
       onFocusTable={onFocusTable}
       onDropTable={onDropTable}
       zoom={zoom}
@@ -481,10 +737,24 @@ function EntityDetailCanvas({
           {lines.map((l) => (
             <path key={l.id} d={curve(l)} fill="none" strokeLinecap="round" className="stroke-zinc-400" strokeWidth={1.4} opacity={0.85} />
           ))}
+          {dragOrigin && dragPos && (
+            <path d={`M ${dragOrigin.x1} ${dragOrigin.y1} L ${dragPos.x} ${dragPos.y}`} fill="none" stroke="#61b2ff" strokeWidth={2} strokeDasharray="4 3" opacity={0.9} />
+          )}
+          {entityConnectDrag && entityConnectPos && (
+            <path
+              d={`M ${entityConnectDrag.origin.x} ${entityConnectDrag.origin.y} L ${entityConnectPos.x} ${entityConnectPos.y}`}
+              fill="none"
+              stroke="#61b2ff"
+              strokeWidth={2}
+              strokeDasharray="4 3"
+              opacity={0.9}
+            />
+          )}
         </svg>
 
         {/* Properties <-> Columns: the central relationship. Related entities (subtle, click to
-            re-focus) connect straight into the Properties card — no separate anchor circle. */}
+            re-focus, shift/cmd-click to select for Merge) connect straight into the Properties
+            card — no separate anchor circle. */}
         <div className="relative z-10 flex items-start gap-20">
           <div className="flex flex-col items-center gap-6 pt-8">
             {allRelated.map((other) => (
@@ -494,10 +764,28 @@ function EntityDetailCanvas({
                   if (el) relatedRefs.current.set(other.id, el);
                   else relatedRefs.current.delete(other.id);
                 }}
-                className="flex flex-col items-center gap-1 opacity-70 transition-opacity hover:opacity-100"
-                title={`Focus ${other.name}`}
+                className={cn(
+                  "flex flex-col items-center gap-1 rounded-full opacity-70 transition-opacity hover:opacity-100",
+                  selectedRelatedIds.has(other.id) && "opacity-100 ring-2 ring-primary ring-offset-2",
+                )}
+                title={
+                  selectedRelatedIds.has(other.id)
+                    ? "Selected for merge — click to deselect"
+                    : "Click to focus, shift-click to select for merge, or drop a dragged property here to move it"
+                }
               >
-                <EntityNode entity={other} size={52} onClick={() => onFocusEntity(other.id)} />
+                <EntityNode
+                  entity={other}
+                  size={52}
+                  moveTarget={moveTargetId === other.id}
+                  onClick={(e) => {
+                    if (e.shiftKey || e.metaKey || e.ctrlKey) toggleRelatedSelected(other.id);
+                    else onFocusEntity(other.id);
+                  }}
+                  onStartConnect={(side, clientX, clientY) => startEntityConnect(other.id, side, clientX, clientY)}
+                  connectSourceSide={entityConnectDrag?.sourceId === other.id ? entityConnectDrag.side : null}
+                  connectTargetSide={entityConnectTargetId === other.id ? entityConnectTargetSide : null}
+                />
               </div>
             ))}
           </div>
@@ -508,20 +796,87 @@ function EntityDetailCanvas({
               <StatusDot status={entity.status} />
               {entity.name}
             </span>
-            {entity.properties.map((p) => (
-              <div
-                key={p.id}
-                ref={(el) => {
-                  if (el) propertyRefs.current.set(p.id, el);
-                  else propertyRefs.current.delete(p.id);
-                }}
-                className="flex items-center gap-2 rounded-full bg-white px-3 py-2 text-[12px] shadow-[0_0_0_1px_rgba(0,0,0,0.08)]"
+            {entity.properties.map((p) => {
+              const isDropTarget = mapDropTarget?.type === "property" && mapDropTarget.propertyId === p.id;
+              const isSelected = selectedPropertyIds.has(p.id);
+              return (
+                <div
+                  key={p.id}
+                  ref={(el) => {
+                    if (el) propertyRefs.current.set(p.id, el);
+                    else propertyRefs.current.delete(p.id);
+                  }}
+                  onClick={(e) => {
+                    if (e.shiftKey || e.metaKey || e.ctrlKey) togglePropertySelected(p.id);
+                  }}
+                  title="Shift-click to select for split"
+                  className={cn(
+                    "group/prop relative flex items-center gap-2 rounded-full bg-white px-3 py-2 text-[12px] shadow-[0_0_0_1px_rgba(0,0,0,0.08)] transition-shadow",
+                    isSelected && "shadow-[0_0_0_2px_#60a5fa]",
+                    isDropTarget && "shadow-[0_0_0_2px_#38bdf8]",
+                    movePropertyDrag?.propertyId === p.id && "opacity-40",
+                  )}
+                >
+                  {/* STATUS — left, ~20px reserved, never triggers dragging or connecting. */}
+                  <span className="flex w-5 shrink-0 items-center justify-center">
+                    <StatusDot status={p.status} />
+                  </span>
+                  <span className="min-w-0 flex-1 truncate font-medium">{p.name}</span>
+                  <span className="shrink-0 font-mono text-[9.5px] text-muted-foreground">{p.type}</span>
+                  {/* DRAGGABLE — right, moves the Property itself onto another Entity. Never
+                      creates a connection. */}
+                  <DraggableHandle
+                    onPointerDown={(e) => {
+                      if (e.button !== 0) return;
+                      e.stopPropagation();
+                      startMoveProperty(p.id, e.clientX, e.clientY);
+                    }}
+                    aria-label={`Drag to move ${p.name} to another entity`}
+                    title="Drag to move to another entity"
+                  />
+                  {p.mapping && (
+                    <button
+                      type="button"
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        updateMapping(entity.id, p.id, null);
+                      }}
+                      title="Clear this property's mapping"
+                      aria-label={`Clear mapping for ${p.name}`}
+                      className="absolute -right-2 -top-2 flex size-5 items-center justify-center rounded-full bg-red-500 text-white opacity-0 shadow-[var(--shadow-node)] transition-opacity group-hover/prop:opacity-100"
+                    >
+                      <X className="size-3" strokeWidth={2.5} />
+                    </button>
+                  )}
+                  {/* CONNECTION HANDLE — boundary, separate from Draggable. Hover-revealed; drag
+                      onto a column to connect (or reconnect) this property's one mapping. Never
+                      moves the Property. */}
+                  <ConnectionHandle
+                    active={isDropTarget}
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const container = containerRef.current;
+                      const pos = container ? { x: (e.clientX - container.getBoundingClientRect().left) / zoom, y: (e.clientY - container.getBoundingClientRect().top) / zoom } : { x: 0, y: 0 };
+                      setDragOrigin({ anchor: "property", propertyId: p.id, x1: pos.x, y1: pos.y });
+                      setDragPos(pos);
+                    }}
+                    aria-label={`Drag to connect ${p.name} to a column`}
+                    title="Drag to connect to a column"
+                    className="absolute -right-1.5 top-1/2 z-10 -translate-y-1/2 opacity-0 group-hover/prop:opacity-100"
+                  />
+                </div>
+              );
+            })}
+            {selectedPropertyIds.size > 0 && (
+              <button
+                onClick={handleSplit}
+                className="mt-1 flex items-center justify-center gap-1.5 rounded-lg bg-foreground px-3 py-1.5 text-[11.5px] font-medium text-background transition-opacity hover:opacity-90"
               >
-                <StatusDot status={p.status} />
-                <span className="min-w-0 flex-1 truncate font-medium">{p.name}</span>
-                <span className="shrink-0 font-mono text-[9.5px] text-muted-foreground">{p.type}</span>
-              </div>
-            ))}
+                <Scissors className="size-3.5" /> Split ({selectedPropertyIds.size})
+              </button>
+            )}
           </div>
 
           <div className="flex flex-col gap-4">
@@ -539,30 +894,113 @@ function EntityDetailCanvas({
                   <Table2 className="size-3.5 shrink-0" strokeWidth={2} />
                   {table}
                 </button>
-                {cols.map((c) => (
-                  <div
-                    key={c.column}
-                    ref={(el) => {
-                      if (el) columnRefs.current.set(`${table}.${c.column}`, el);
-                      else columnRefs.current.delete(`${table}.${c.column}`);
-                    }}
-                    className={cn(
-                      "flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11.5px]",
-                      c.propertyId
-                        ? "bg-ok-soft/60 text-ok"
-                        : "bg-white text-muted-foreground shadow-[0_0_0_1px_rgba(0,0,0,0.08)]",
-                    )}
-                  >
-                    <span className="truncate font-mono">{c.column}</span>
-                    <span className="ml-auto shrink-0 font-mono text-[9px] opacity-60">{c.type}</span>
-                  </div>
-                ))}
+                {cols.map((c) => {
+                  const key = `${table}.${c.column}`;
+                  const isDropTarget = mapDropTarget?.type === "column" && mapDropTarget.table === table && mapDropTarget.column === c.column;
+                  return (
+                    <div
+                      key={c.column}
+                      ref={(el) => {
+                        if (el) columnRefs.current.set(key, el);
+                        else columnRefs.current.delete(key);
+                      }}
+                      className={cn(
+                        "group/col relative flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11.5px] transition-shadow",
+                        c.propertyId ? "bg-ok-soft/60 text-ok" : "bg-white text-muted-foreground shadow-[0_0_0_1px_rgba(0,0,0,0.08)]",
+                        isDropTarget && "shadow-[0_0_0_2px_#38bdf8]",
+                      )}
+                    >
+                      <span className="truncate font-mono">{c.column}</span>
+                      <span className="ml-auto shrink-0 font-mono text-[9px] opacity-60">{c.type}</span>
+                      {/* CONNECTION HANDLE — hover-revealed; drag onto a property to connect it
+                          here. Columns have no Draggable affordance — they can't be moved. */}
+                      <ConnectionHandle
+                        active={isDropTarget}
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          const container = containerRef.current;
+                          const pos = container ? { x: (e.clientX - container.getBoundingClientRect().left) / zoom, y: (e.clientY - container.getBoundingClientRect().top) / zoom } : { x: 0, y: 0 };
+                          setDragOrigin({ anchor: "column", table, column: c.column, x1: pos.x, y1: pos.y });
+                          setDragPos(pos);
+                        }}
+                        aria-label={`Drag to connect ${c.column} to a property`}
+                        title="Drag to connect to a property"
+                        className="absolute -left-1.5 top-1/2 z-10 -translate-y-1/2 opacity-0 group-hover/col:opacity-100"
+                      />
+                    </div>
+                  );
+                })}
               </div>
             ))}
           </div>
         </div>
+
+        {/* floating Merge entry point — shift/cmd-click 1+ related satellites to select them */}
+        {selectedRelatedIds.size > 0 && (
+          <button
+            onClick={() => setMergePanelOpen(true)}
+            className="absolute left-1/2 top-0 z-30 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-foreground px-4 py-2 text-[13px] font-medium text-background shadow-[var(--shadow-node-lift)] transition-opacity hover:opacity-90"
+          >
+            <GitMerge className="size-3.5" /> Merge
+          </button>
+        )}
+        {mergePanelOpen && (
+          <div
+            onPointerDown={(e) => e.stopPropagation()}
+            className="absolute left-1/2 top-10 z-30 flex w-[320px] -translate-x-1/2 flex-col gap-2.5 rounded-lg border border-node-border bg-node p-3 shadow-[var(--shadow-node-lift)]"
+          >
+            <div className="flex items-center gap-1.5 text-[12px] font-medium">
+              <GitMerge className="size-3.5 text-primary" />
+              Merge {selectedRelatedIds.size + 1} entities into one
+            </div>
+            <p className="text-[10.5px] text-muted-foreground">
+              All properties from {entity.name}
+              {mergeCandidates.map((e) => `, ${e.name || "Untitled"}`).join("")} will be combined. Name the resulting entity:
+            </p>
+            <div className="flex items-center gap-2">
+              <input
+                autoFocus
+                value={mergeName}
+                onChange={(e) => setMergeName(e.target.value)}
+                placeholder="Custom name"
+                className="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1 text-[11.5px] outline-none focus:border-primary"
+              />
+              <button
+                onClick={handleMerge}
+                disabled={!mergeName.trim()}
+                className="shrink-0 rounded-md bg-primary px-2.5 py-1 text-[11.5px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
+              >
+                Merge
+              </button>
+              <button
+                onClick={() => {
+                  setMergePanelOpen(false);
+                  setMergeName("");
+                }}
+                className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-accent"
+                aria-label="Cancel merge"
+              >
+                <X className="size-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </DetailShell>
+
+    {/* ghost preview following the cursor while dragging a property row toward a related entity —
+        rendered outside DetailShell's pan/zoom transform so "fixed" tracks the viewport, not the
+        canvas's own coordinate space. */}
+    {movePropertyDrag && movePropertyPos && (
+      <div
+        style={{ left: movePropertyPos.x, top: movePropertyPos.y }}
+        className="pointer-events-none fixed z-50 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 rounded-full border border-node-border bg-node px-3 py-1.5 text-[12px] font-medium text-foreground opacity-90 shadow-[var(--shadow-node-lift)]"
+      >
+        {movePropertyDrag.name}
+      </div>
+    )}
+    </>
   );
 }
 
@@ -586,7 +1024,7 @@ function TableDetailCanvas({
   entityItems: Entity[];
   tableItems: TableSchema[];
 }) {
-  const { entities } = app;
+  const { entities, updateMapping } = app;
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
 
@@ -602,18 +1040,18 @@ function TableDetailCanvas({
     [],
   );
 
+  // Every property of a related entity is shown (not just the ones already mapped here) so an
+  // unmapped — or about-to-be-reconnected — property always has somewhere to connect to, mirroring
+  // how the entity-focused canvas shows every column of its primary table.
   const entityGroups = useMemo(() => {
-    const real = usingEntities.map((e) => ({
-      entity: e,
-      properties: e.properties.filter((p) => p.mapping?.table === table.name),
-    }));
+    const real = usingEntities.map((e) => ({ entity: e, properties: e.properties }));
     const extra = extraEntityIds
       .filter((id) => !usingIds.has(id))
       .map((id) => entities.find((e) => e.id === id))
       .filter((e): e is Entity => !!e)
-      .map((e) => ({ entity: e, properties: [] as Property[] }));
+      .map((e) => ({ entity: e, properties: e.properties }));
     return [...real, ...extra];
-  }, [usingEntities, extraEntityIds, usingIds, entities, table.name]);
+  }, [usingEntities, extraEntityIds, usingIds, entities]);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const anchorRef = useRef<HTMLDivElement>(null);
@@ -645,12 +1083,13 @@ function TableDetailCanvas({
     }
     entityGroups.forEach(({ entity, properties }) => {
       properties.forEach((p) => {
-        const colEl = columnRefs.current.get(p.mapping!.column);
+        if (p.mapping?.table !== table.name) return;
+        const colEl = columnRefs.current.get(p.mapping.column);
         const propEl = propertyRefs.current.get(`${entity.id}.${p.id}`);
         if (!colEl || !propEl) return;
         const p1 = pt(colEl, "right", 8);
         const p2 = pt(propEl, "left", 8);
-        next.push({ id: `cp-${p.mapping!.column}-${entity.id}.${p.id}`, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y });
+        next.push({ id: `cp-${p.mapping.column}-${entity.id}.${p.id}`, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y });
       });
     });
     setLines(next);
@@ -662,6 +1101,68 @@ function TableDetailCanvas({
     return () => window.removeEventListener("resize", computeLines);
   }, [computeLines]);
 
+  // --- Column <-> Property drag-to-map, mirroring the entity-focused canvas — either end can
+  // start the drag, and it completes on whichever kind of node it's released over. -------------
+  type MapDropTarget = { type: "column"; column: string } | { type: "property"; entityId: string; propertyId: string };
+  const [dragOrigin, setDragOrigin] = useState<
+    | { anchor: "column"; column: string; x1: number; y1: number }
+    | { anchor: "property"; entityId: string; propertyId: string; x1: number; y1: number }
+    | null
+  >(null);
+  const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
+  const [mapDropTarget, setMapDropTarget] = useState<MapDropTarget | null>(null);
+  const mapDropTargetRef = useRef<MapDropTarget | null>(null);
+
+  useEffect(() => {
+    if (!dragOrigin) return;
+    const container = containerRef.current;
+    const onMove = (e: MouseEvent) => {
+      if (container) {
+        const r = container.getBoundingClientRect();
+        setDragPos({ x: (e.clientX - r.left) / zoom, y: (e.clientY - r.top) / zoom });
+      }
+      let hit: MapDropTarget | null = null;
+      columnRefs.current.forEach((el, column) => {
+        const r = el.getBoundingClientRect();
+        if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
+          hit = { type: "column", column };
+        }
+      });
+      if (!hit) {
+        propertyRefs.current.forEach((el, key) => {
+          const r = el.getBoundingClientRect();
+          if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
+            const idx = key.indexOf(".");
+            hit = { type: "property", entityId: key.slice(0, idx), propertyId: key.slice(idx + 1) };
+          }
+        });
+      }
+      mapDropTargetRef.current = hit;
+      setMapDropTarget(hit);
+    };
+    const onUp = () => {
+      const target = mapDropTargetRef.current;
+      const origin = dragOrigin;
+      if (target) {
+        if (origin.anchor === "column" && target.type === "property") {
+          updateMapping(target.entityId, target.propertyId, { table: table.name, column: origin.column });
+        } else if (origin.anchor === "property" && target.type === "column") {
+          updateMapping(origin.entityId, origin.propertyId, { table: table.name, column: target.column });
+        }
+      }
+      mapDropTargetRef.current = null;
+      setMapDropTarget(null);
+      setDragOrigin(null);
+      setDragPos(null);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [dragOrigin, updateMapping, zoom, table.name]);
+
   return (
     <DetailShell
       kindLabel="Source Table"
@@ -671,6 +1172,7 @@ function TableDetailCanvas({
       onFocusEntity={onFocusEntity}
       onDropEntity={onDropEntity}
       tableItems={tableItems}
+      entities={entities}
       onFocusTable={onFocusTable}
       // This canvas has no second slot to render another table into (unlike Entity Detail's
       // Columns area) — a drag-release should place something or do nothing, never silently
@@ -687,6 +1189,9 @@ function TableDetailCanvas({
           {lines.map((l) => (
             <path key={l.id} d={curve(l)} fill="none" strokeLinecap="round" className="stroke-zinc-400" strokeWidth={1.4} opacity={0.85} />
           ))}
+          {dragOrigin && dragPos && (
+            <path d={`M ${dragOrigin.x1} ${dragOrigin.y1} L ${dragPos.x} ${dragPos.y}`} fill="none" stroke="#61b2ff" strokeWidth={2} strokeDasharray="4 3" opacity={0.9} />
+          )}
         </svg>
 
         <div ref={anchorRef} className="relative z-10 flex flex-col items-center gap-1 rounded-xl bg-white px-4 py-3 shadow-[0_0_0_1px_rgba(0,0,0,0.08)]">
@@ -701,6 +1206,7 @@ function TableDetailCanvas({
           <div className="flex w-56 flex-col gap-2">
             {table.columns.map((c) => {
               const mapped = usage.find((u) => u.name === c.name)?.mappedBy.length ?? 0;
+              const isDropTarget = mapDropTarget?.type === "column" && mapDropTarget.column === c.name;
               return (
                 <div
                   key={c.name}
@@ -709,12 +1215,29 @@ function TableDetailCanvas({
                     else columnRefs.current.delete(c.name);
                   }}
                   className={cn(
-                    "flex items-center gap-1.5 rounded-full px-3 py-2 text-[12px]",
+                    "group/col relative flex items-center gap-1.5 rounded-full px-3 py-2 text-[12px] transition-shadow",
                     mapped > 0 ? "bg-ok-soft/60 text-ok" : "bg-white text-muted-foreground shadow-[0_0_0_1px_rgba(0,0,0,0.08)]",
+                    isDropTarget && "shadow-[0_0_0_2px_#38bdf8]",
                   )}
                 >
                   <span className="min-w-0 flex-1 truncate font-mono">{c.name}</span>
                   <span className="shrink-0 font-mono text-[9.5px] opacity-70">{c.type}</span>
+                  {/* CONNECTION HANDLE — hover-revealed; drag onto a property to connect (or
+                      reconnect) it here. No Draggable affordance — columns can't be moved. */}
+                  <ConnectionHandle
+                    active={isDropTarget}
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const container = containerRef.current;
+                      const pos = container ? { x: (e.clientX - container.getBoundingClientRect().left) / zoom, y: (e.clientY - container.getBoundingClientRect().top) / zoom } : { x: 0, y: 0 };
+                      setDragOrigin({ anchor: "column", column: c.name, x1: pos.x, y1: pos.y });
+                      setDragPos(pos);
+                    }}
+                    aria-label={`Drag to connect ${c.name} to a property`}
+                    title="Drag to connect to a property"
+                    className="absolute -right-1.5 top-1/2 z-10 -translate-y-1/2 opacity-0 group-hover/col:opacity-100"
+                  />
                 </div>
               );
             })}
@@ -737,20 +1260,66 @@ function TableDetailCanvas({
                   <span className="truncate text-[12.5px]">{entity.name}</span>
                 </button>
                 {properties.length === 0 && (
-                  <p className="px-1 text-[10.5px] text-muted-foreground">No properties map here yet.</p>
+                  <p className="px-1 text-[10.5px] text-muted-foreground">No properties on this entity yet.</p>
                 )}
-                {properties.map((p) => (
-                  <div
-                    key={p.id}
-                    ref={(el) => {
-                      if (el) propertyRefs.current.set(`${entity.id}.${p.id}`, el);
-                      else propertyRefs.current.delete(`${entity.id}.${p.id}`);
-                    }}
-                    className="flex items-center gap-1.5 rounded-full bg-ok-soft/60 px-3 py-1.5 text-[11.5px] text-ok"
-                  >
-                    <span className="truncate">{p.name}</span>
-                  </div>
-                ))}
+                {properties.map((p) => {
+                  const mappedHere = p.mapping?.table === table.name;
+                  const isDropTarget =
+                    mapDropTarget?.type === "property" && mapDropTarget.entityId === entity.id && mapDropTarget.propertyId === p.id;
+                  return (
+                    <div
+                      key={p.id}
+                      ref={(el) => {
+                        if (el) propertyRefs.current.set(`${entity.id}.${p.id}`, el);
+                        else propertyRefs.current.delete(`${entity.id}.${p.id}`);
+                      }}
+                      className={cn(
+                        "group/prop relative flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11.5px] transition-shadow",
+                        mappedHere ? "bg-ok-soft/60 text-ok" : "bg-white text-muted-foreground shadow-[0_0_0_1px_rgba(0,0,0,0.08)]",
+                        isDropTarget && "shadow-[0_0_0_2px_#38bdf8]",
+                      )}
+                    >
+                      {/* STATUS — left, ~20px reserved, consistent with the entity-focused
+                          canvas's property rows. */}
+                      <span className="flex w-5 shrink-0 items-center justify-center">
+                        <StatusDot status={p.status} />
+                      </span>
+                      <span className="min-w-0 flex-1 truncate">{p.name}</span>
+                      {mappedHere && (
+                        <button
+                          type="button"
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            updateMapping(entity.id, p.id, null);
+                          }}
+                          title="Clear this property's mapping"
+                          aria-label={`Clear mapping for ${p.name}`}
+                          className="absolute -right-2 -top-2 flex size-5 items-center justify-center rounded-full bg-red-500 text-white opacity-0 shadow-[var(--shadow-node)] transition-opacity group-hover/prop:opacity-100"
+                        >
+                          <X className="size-3" strokeWidth={2.5} />
+                        </button>
+                      )}
+                      {/* CONNECTION HANDLE — hover-revealed; drag onto a column to connect (or
+                          reconnect) this property's one mapping. No Draggable affordance here —
+                          moving a Property between Entities isn't supported from this view. */}
+                      <ConnectionHandle
+                        active={isDropTarget}
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          const container = containerRef.current;
+                          const pos = container ? { x: (e.clientX - container.getBoundingClientRect().left) / zoom, y: (e.clientY - container.getBoundingClientRect().top) / zoom } : { x: 0, y: 0 };
+                          setDragOrigin({ anchor: "property", entityId: entity.id, propertyId: p.id, x1: pos.x, y1: pos.y });
+                          setDragPos(pos);
+                        }}
+                        aria-label={`Drag to connect ${p.name} to a column`}
+                        title="Drag to connect to a column"
+                        className="absolute -left-1.5 top-1/2 z-10 -translate-y-1/2 opacity-0 group-hover/prop:opacity-100"
+                      />
+                    </div>
+                  );
+                })}
               </div>
             ))}
           </div>

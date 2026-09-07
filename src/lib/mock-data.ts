@@ -293,6 +293,14 @@ export function tableMappingCompleteness(tableName: string, entities: Entity[]):
   return { mapped: usage.filter((c) => c.mappedBy.length > 0).length, total: usage.length };
 }
 
+/** Whether a table's columns are entirely unmapped, entirely mapped, or somewhere in between —
+ * drives the three-state mapping badge shown next to a table wherever it's listed. */
+export function tableMappingStatus(tableName: string, entities: Entity[]): "unmapped" | "partial" | "full" {
+  const { mapped, total } = tableMappingCompleteness(tableName, entities);
+  if (total === 0 || mapped === 0) return "unmapped";
+  return mapped === total ? "full" : "partial";
+}
+
 /** Every entity that draws at least one property from this table. */
 export function entitiesUsingTable(tableName: string, entities: Entity[]): Entity[] {
   return entities.filter((e) => e.properties.some((p) => p.mapping?.table === tableName));
