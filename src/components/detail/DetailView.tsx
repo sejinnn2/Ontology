@@ -418,8 +418,8 @@ function EntityDetailCanvas({
         const propEl = propertyRefs.current.get(c.propertyId);
         const colEl = columnRefs.current.get(`${table}.${c.column}`);
         if (!propEl || !colEl) return;
-        const p1 = pt(propEl, "right");
-        const p2 = pt(colEl, "left");
+        const p1 = pt(propEl, "right", 8);
+        const p2 = pt(colEl, "left", 8);
         next.push({ id: `pc-${c.propertyId}-${table}.${c.column}`, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y });
       });
     });
@@ -615,21 +615,21 @@ function TableDetailCanvas({
     const container = containerRef.current;
     if (!container) return;
     const cRect = container.getBoundingClientRect();
-    const pt = (el: Element, side: "left" | "right" | "top" | "bottom") => {
+    const pt = (el: Element, side: "left" | "right" | "top" | "bottom", gap = 0) => {
       const r = el.getBoundingClientRect();
-      const x = side === "left" ? r.left : side === "right" ? r.right : r.left + r.width / 2;
-      const y = side === "top" ? r.top : side === "bottom" ? r.bottom : r.top + r.height / 2;
+      const x = side === "left" ? r.left - gap : side === "right" ? r.right + gap : r.left + r.width / 2;
+      const y = side === "top" ? r.top - gap : side === "bottom" ? r.bottom + gap : r.top + r.height / 2;
       return { x: (x - cRect.left) / zoom, y: (y - cRect.top) / zoom };
     };
 
     const anchorEl = anchorRef.current;
     const next: Line[] = [];
     if (anchorEl) {
-      const a = pt(anchorEl, "bottom");
+      const a = pt(anchorEl, "bottom", 8);
       table.columns.forEach((c) => {
         const el = columnRefs.current.get(c.name);
         if (!el) return;
-        const b = pt(el, "left");
+        const b = pt(el, "left", 8);
         next.push({ id: `a-${c.name}`, x1: a.x, y1: a.y, x2: b.x, y2: b.y });
       });
     }
@@ -638,8 +638,8 @@ function TableDetailCanvas({
         const colEl = columnRefs.current.get(p.mapping!.column);
         const propEl = propertyRefs.current.get(`${entity.id}.${p.id}`);
         if (!colEl || !propEl) return;
-        const p1 = pt(colEl, "right");
-        const p2 = pt(propEl, "left");
+        const p1 = pt(colEl, "right", 8);
+        const p2 = pt(propEl, "left", 8);
         next.push({ id: `cp-${p.mapping!.column}-${entity.id}.${p.id}`, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y });
       });
     });
