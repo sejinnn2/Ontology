@@ -10,7 +10,10 @@ const MAX_Z = 1.5;
 const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
 
 type Line = { id: string; x1: number; y1: number; x2: number; y2: number };
-const curve = (l: Line) => `M ${l.x1} ${l.y1} C ${l.x1} ${(l.y1 + l.y2) / 2}, ${l.x2} ${(l.y1 + l.y2) / 2}, ${l.x2} ${l.y2}`;
+// Straight, not curved — with several items stacked close together on both sides, competing
+// S-curve bows visually crossed even when each one paired items in the same top-to-bottom order.
+// A straight line always reads as one unambiguous connection between exactly two items.
+const curve = (l: Line) => `M ${l.x1} ${l.y1} L ${l.x2} ${l.y2}`;
 
 function StatusDot({ status }: { status: "confirmed" | "suggested" }) {
   return <span className={cn("size-2 shrink-0 rounded-full", status === "confirmed" ? "bg-ok" : "bg-review")} />;
@@ -328,7 +331,7 @@ function EntityDetailCanvas({
       <div ref={containerRef} className="relative flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-10 whitespace-nowrap">
         <svg className="pointer-events-none absolute inset-0 overflow-visible">
           {relatedLines.map((l) => (
-            <path key={l.id} d={curve(l)} fill="none" strokeLinecap="round" className="stroke-zinc-400" strokeWidth={1.3} strokeDasharray="5 4" opacity={0.7} />
+            <path key={l.id} d={curve(l)} fill="none" strokeLinecap="round" className="stroke-zinc-400" strokeWidth={1.3} opacity={0.7} />
           ))}
           {lines.map((l) => (
             <path key={l.id} d={curve(l)} fill="none" strokeLinecap="round" className="stroke-zinc-400" strokeWidth={1.4} opacity={0.85} />
