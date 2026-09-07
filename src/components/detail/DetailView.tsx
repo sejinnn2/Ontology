@@ -360,6 +360,7 @@ function EntityDetailCanvas({
 
           <div ref={propsCardRef} className="flex w-56 flex-col gap-1.5 rounded-xl bg-white p-3 shadow-[0_0_0_1px_rgba(0,0,0,0.08)]">
             <span className="flex items-center gap-1.5 truncate px-1 pb-1 text-[13px] font-medium text-foreground">
+              <Boxes className="size-3.5 shrink-0 text-muted-foreground" strokeWidth={2} />
               <StatusDot status={entity.status} />
               {entity.name}
             </span>
@@ -380,7 +381,6 @@ function EntityDetailCanvas({
           </div>
 
           <div className="flex flex-col gap-4">
-            <span className="text-center text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Columns</span>
             {columnGroups.length === 0 && (
               <p className="w-56 text-center text-[11.5px] text-muted-foreground">No properties mapped to a column yet.</p>
             )}
@@ -388,9 +388,10 @@ function EntityDetailCanvas({
               <div key={table} className="flex w-56 flex-col gap-1.5 rounded-xl bg-white p-3 shadow-[0_0_0_1px_rgba(0,0,0,0.08)]">
                 <button
                   onClick={() => onFocusTable(table)}
-                  className="truncate px-1 pb-1 text-left font-mono text-[11.5px] font-semibold text-foreground hover:text-primary"
+                  className="flex items-center gap-1.5 truncate px-1 pb-1 text-left font-mono text-[11.5px] font-semibold text-foreground hover:text-primary"
                   title={`Focus source table ${table}`}
                 >
+                  <Table2 className="size-3.5 shrink-0" strokeWidth={2} />
                   {table}
                 </button>
                 {cols.map((c) => (
@@ -520,13 +521,15 @@ function TableDetailCanvas({
         </svg>
 
         <div ref={anchorRef} className="relative z-10 flex flex-col items-center gap-1 rounded-xl bg-white px-4 py-3 shadow-[0_0_0_1px_rgba(0,0,0,0.08)]">
-          <span className="font-mono text-[14px] font-bold">{table.name}</span>
+          <span className="flex items-center gap-1.5 font-mono text-[14px] font-bold">
+            <Table2 className="size-3.5 shrink-0 text-muted-foreground" strokeWidth={2} />
+            {table.name}
+          </span>
           <span className="text-[10px] text-muted-foreground">{table.columns.length} columns</span>
         </div>
 
         <div className="relative z-10 flex items-start gap-20">
           <div className="flex w-56 flex-col gap-2">
-            <span className="text-center text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Columns</span>
             {table.columns.map((c) => {
               const mapped = usage.find((u) => u.name === c.name)?.mappedBy.length ?? 0;
               return (
@@ -549,7 +552,6 @@ function TableDetailCanvas({
           </div>
 
           <div className="flex flex-col gap-4">
-            <span className="text-center text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Entity Types</span>
             {entityGroups.length === 0 && (
               <p className="w-56 text-center text-[11.5px] text-muted-foreground">No entity maps to this table yet.</p>
             )}
@@ -560,6 +562,7 @@ function TableDetailCanvas({
                   className="flex items-center gap-1.5 px-1 pb-1 text-left font-semibold text-foreground hover:text-primary"
                   title={`Focus entity ${entity.name}`}
                 >
+                  <Boxes className="size-3.5 shrink-0 text-muted-foreground" strokeWidth={2} />
                   <StatusDot status={entity.status} />
                   <span className="truncate text-[12.5px]">{entity.name}</span>
                 </button>
