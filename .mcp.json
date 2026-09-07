@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "agentation": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "agentation-mcp",
+        "server",
+        "--port",
+        "8080"
+      ]
+    }
+  }
+}
