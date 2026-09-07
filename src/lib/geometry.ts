@@ -1,5 +1,8 @@
 export const NODE_SIZE = 84;
 const NODE_R = NODE_SIZE / 2;
+/** Small stand-off between a node's own border and where its connectors start/end, so lines
+ * don't visually touch the circle. */
+const NODE_GAP = 8;
 
 export type Pt = { x: number; y: number };
 
@@ -30,12 +33,13 @@ export function edgeAnchors(a: { x: number; y: number }, b: { x: number; y: numb
   const dy = cb.y - ca.y;
   let p1: Pt;
   let p2: Pt;
+  const r = NODE_R + NODE_GAP;
   if (Math.abs(dx) >= Math.abs(dy)) {
-    p1 = sideAnchor(ca, NODE_R, dx >= 0 ? "right" : "left");
-    p2 = sideAnchor(cb, NODE_R, dx >= 0 ? "left" : "right");
+    p1 = sideAnchor(ca, r, dx >= 0 ? "right" : "left");
+    p2 = sideAnchor(cb, r, dx >= 0 ? "left" : "right");
   } else {
-    p1 = sideAnchor(ca, NODE_R, dy >= 0 ? "bottom" : "top");
-    p2 = sideAnchor(cb, NODE_R, dy >= 0 ? "top" : "bottom");
+    p1 = sideAnchor(ca, r, dy >= 0 ? "bottom" : "top");
+    p2 = sideAnchor(cb, r, dy >= 0 ? "top" : "bottom");
   }
   return { p1, p2, mid: { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 } };
 }

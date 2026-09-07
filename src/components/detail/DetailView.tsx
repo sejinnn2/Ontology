@@ -271,10 +271,10 @@ function EntityDetailCanvas({
     const container = containerRef.current;
     if (!container) return;
     const cRect = container.getBoundingClientRect();
-    const pt = (el: Element, side: "left" | "right" | "top" | "bottom") => {
+    const pt = (el: Element, side: "left" | "right" | "top" | "bottom", gap = 0) => {
       const r = el.getBoundingClientRect();
-      const x = side === "left" ? r.left : side === "right" ? r.right : r.left + r.width / 2;
-      const y = side === "top" ? r.top : side === "bottom" ? r.bottom : r.top + r.height / 2;
+      const x = side === "left" ? r.left - gap : side === "right" ? r.right + gap : r.left + r.width / 2;
+      const y = side === "top" ? r.top - gap : side === "bottom" ? r.bottom + gap : r.top + r.height / 2;
       return { x: (x - cRect.left) / zoom, y: (y - cRect.top) / zoom };
     };
 
@@ -298,7 +298,9 @@ function EntityDetailCanvas({
       related.forEach((other) => {
         const el = relatedRefs.current.get(other.id);
         if (!el) return;
-        const b = pt(el, "right");
+        // Related satellites are circular EntityNodes — an 8px gap keeps the connector from
+        // touching the node's own border, same as the Overview canvas's node connectors.
+        const b = pt(el, "right", 8);
         nextRelated.push({ id: `rel-${other.id}`, x1: b.x, y1: b.y, x2: a.x, y2: a.y });
       });
     }
