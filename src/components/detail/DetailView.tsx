@@ -329,7 +329,7 @@ function EntityDetailCanvas({
       setPan={setPan}
     >
       <div ref={containerRef} className="relative flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-10 whitespace-nowrap">
-        <svg className="pointer-events-none absolute inset-0 overflow-visible">
+        <svg className="pointer-events-none absolute inset-0 z-20 overflow-visible">
           {relatedLines.map((l) => (
             <path key={l.id} d={curve(l)} fill="none" strokeLinecap="round" className="stroke-zinc-400" strokeWidth={1.3} opacity={0.7} />
           ))}
@@ -513,7 +513,7 @@ function TableDetailCanvas({
       setPan={setPan}
     >
       <div ref={containerRef} className="relative flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-10 whitespace-nowrap">
-        <svg className="pointer-events-none absolute inset-0 overflow-visible">
+        <svg className="pointer-events-none absolute inset-0 z-20 overflow-visible">
           {lines.map((l) => (
             <path key={l.id} d={curve(l)} fill="none" strokeLinecap="round" className="stroke-zinc-400" strokeWidth={1.4} opacity={0.85} />
           ))}
