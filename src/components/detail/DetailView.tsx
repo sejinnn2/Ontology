@@ -259,7 +259,7 @@ function EntityDetailCanvas({
   }, [entity]);
 
   const containerRef = useRef<HTMLDivElement>(null);
-  const anchorRef = useRef<HTMLDivElement>(null);
+  const propsCardRef = useRef<HTMLDivElement>(null);
   const relatedRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const propertyRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const columnRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -277,17 +277,7 @@ function EntityDetailCanvas({
       return { x: (x - cRect.left) / zoom, y: (y - cRect.top) / zoom };
     };
 
-    const anchorEl = anchorRef.current;
     const next: Line[] = [];
-    if (anchorEl) {
-      const a = pt(anchorEl, "bottom");
-      entity.properties.forEach((p) => {
-        const el = propertyRefs.current.get(p.id);
-        if (!el) return;
-        const b = pt(el, "left");
-        next.push({ id: `a-${p.id}`, x1: a.x, y1: a.y, x2: b.x, y2: b.y });
-      });
-    }
     columnGroups.forEach(([table, cols]) => {
       cols.forEach((c) => {
         const propEl = propertyRefs.current.get(c.propertyId);
@@ -301,8 +291,9 @@ function EntityDetailCanvas({
     setLines(next);
 
     const nextRelated: Line[] = [];
-    if (anchorEl) {
-      const a = pt(anchorEl, "left");
+    const cardEl = propsCardRef.current;
+    if (cardEl) {
+      const a = pt(cardEl, "left");
       related.forEach((other) => {
         const el = relatedRefs.current.get(other.id);
         if (!el) return;
@@ -344,9 +335,10 @@ function EntityDetailCanvas({
           ))}
         </svg>
 
-        {/* anchor row: related entities (subtle, click to re-focus) beside the anchor itself */}
-        <div className="relative z-10 flex items-center gap-14">
-          <div className="flex flex-col items-center gap-6">
+        {/* Properties <-> Columns: the central relationship. Related entities (subtle, click to
+            re-focus) connect straight into the Properties card — no separate anchor circle. */}
+        <div className="relative z-10 flex items-start gap-20">
+          <div className="flex flex-col items-center gap-6 pt-8">
             {related.map((other) => (
               <button
                 key={other.id}
@@ -362,17 +354,12 @@ function EntityDetailCanvas({
               </button>
             ))}
           </div>
-          <div ref={anchorRef}>
-            <EntityNode entity={entity} size={100} />
-          </div>
-          {/* spacer to balance the related column so the anchor stays visually centered */}
-          <div className="w-14" />
-        </div>
 
-        {/* Properties <-> Columns: the central relationship */}
-        <div className="relative z-10 flex items-start gap-20">
-          <div className="flex w-56 flex-col gap-2">
-            <span className="text-center text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Properties</span>
+          <div ref={propsCardRef} className="flex w-56 flex-col gap-1.5 rounded-xl bg-white p-3 shadow-[0_0_0_1px_rgba(0,0,0,0.08)]">
+            <span className="flex items-center gap-1.5 truncate px-1 pb-1 text-[13px] font-medium text-foreground">
+              <StatusDot status={entity.status} />
+              {entity.name}
+            </span>
             {entity.properties.map((p) => (
               <div
                 key={p.id}
