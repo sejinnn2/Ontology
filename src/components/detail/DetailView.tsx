@@ -10,10 +10,30 @@ const MAX_Z = 1.5;
 const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
 
 type Line = { id: string; x1: number; y1: number; x2: number; y2: number };
-// Straight, not curved — with several items stacked close together on both sides, competing
-// S-curve bows visually crossed even when each one paired items in the same top-to-bottom order.
-// A straight line always reads as one unambiguous connection between exactly two items.
-const curve = (l: Line) => `M ${l.x1} ${l.y1} L ${l.x2} ${l.y2}`;
+const CORNER_R = 10;
+
+// Orthogonal connector: horizontal out of the start, one vertical bend at the shared midpoint,
+// horizontal into the end — the standard flowchart-style elbow, with quarter-round corners
+// (drawn as quadratic Beziers centered on the actual corner point) instead of sharp turns. Lines
+// pairing items in the same top-to-bottom order stay parallel and never cross, since they all
+// bend at the same midX. Falls back to a straight line when there's no vertical offset to route
+// around, or too little room on either side for a rounded corner.
+const curve = (l: Line) => {
+  const { x1, y1, x2, y2 } = l;
+  const dy = y2 - y1;
+  const midX = (x1 + x2) / 2;
+  const r = Math.max(0, Math.min(CORNER_R, Math.abs(dy) / 2, Math.abs(midX - x1), Math.abs(x2 - midX)));
+  if (Math.abs(dy) < 1 || r < 1) return `M ${x1} ${y1} L ${x2} ${y2}`;
+  const sy = dy > 0 ? 1 : -1;
+  return [
+    `M ${x1} ${y1}`,
+    `L ${midX - r} ${y1}`,
+    `Q ${midX} ${y1} ${midX} ${y1 + sy * r}`,
+    `L ${midX} ${y2 - sy * r}`,
+    `Q ${midX} ${y2} ${midX + r} ${y2}`,
+    `L ${x2} ${y2}`,
+  ].join(" ");
+};
 
 function StatusDot({ status }: { status: "confirmed" | "suggested" }) {
   return <span className={cn("size-2 shrink-0 rounded-full", status === "confirmed" ? "bg-ok" : "bg-review")} />;
