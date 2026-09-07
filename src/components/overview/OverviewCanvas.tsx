@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useRef } from "react";
 import { Minus, Plus, Table2, Waypoints } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { curvePath, edgeAnchors } from "@/lib/geometry";
+import { edgeAnchors, orthogonalPath } from "@/lib/geometry";
 import type { OntologyApp } from "@/lib/app-state";
 import { EntityNode } from "./EntityNode";
 
@@ -101,7 +101,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                 return (
                   <path
                     key={r.id}
-                    d={curvePath(p1, p2)}
+                    d={orthogonalPath(p1, p2)}
                     fill="none"
                     strokeLinecap="round"
                     className={cn(
