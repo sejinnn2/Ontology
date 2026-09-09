@@ -23,7 +23,13 @@ export function DraggableHandle({
       role="button"
       tabIndex={-1}
       onPointerDown={onPointerDown}
-      onClick={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        // A plain click here does nothing and must not reach whatever's underneath (e.g. a
+        // property row's own click-to-preview). A shift/cmd/ctrl-click, though, is a multi-select
+        // gesture aimed at the row, not at this handle — let it bubble so the row still toggles
+        // selection even when the click happens to land on this small icon.
+        if (!e.shiftKey && !e.metaKey && !e.ctrlKey) e.stopPropagation();
+      }}
       aria-label={ariaLabel}
       title={title}
       className={cn("inline-flex size-[10px] shrink-0 cursor-grab items-center justify-center active:cursor-grabbing", className)}

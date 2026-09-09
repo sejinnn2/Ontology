@@ -12,6 +12,8 @@ import { Agentation } from "agentation";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { OntologyAppProvider } from "@/lib/ontology-context";
 
 function NotFoundComponent() {
   return (
@@ -127,8 +129,17 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
-      <Outlet />
+      {/* One shared delay for every Confidence/status-icon tooltip in the app — see
+          components/ui/tooltip.tsx for the shared black/white look those tooltips use. */}
+      <TooltipProvider delayDuration={150}>
+        {/* One shared ontology app instance for every route (the canvas at `/`, the Trash page
+            at `/trash`) — mounted here, above the Outlet, so navigating between them never
+            resets or forks the entities/relations/trash state. */}
+        <OntologyAppProvider>
+          {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
+          <Outlet />
+        </OntologyAppProvider>
+      </TooltipProvider>
     </QueryClientProvider>
   );
 }

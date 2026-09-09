@@ -32,12 +32,17 @@ export function ConnectionHandle({
       role="button"
       tabIndex={-1}
       onPointerDown={onPointerDown}
-      onClick={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        // Same reasoning as DraggableHandle: swallow a plain click (this handle only starts a
+        // connector drag), but let a shift/cmd/ctrl-click bubble to the row underneath so
+        // multi-select still works when the click happens to land on this handle.
+        if (!e.shiftKey && !e.metaKey && !e.ctrlKey) e.stopPropagation();
+      }}
       aria-label={ariaLabel}
       title={title}
       style={style}
       className={cn(
-        "pointer-events-auto box-content size-3 shrink-0 cursor-grab rounded-full border-[1.5px] border-[#61b2ff] shadow-[0_0_0_2px_#f6f6f6] transition-colors hover:bg-[#61b2ff] active:cursor-grabbing",
+        "pointer-events-auto box-border size-3 shrink-0 cursor-grab rounded-full border-[1.5px] border-[#61b2ff] shadow-[0_0_0_2px_#f6f6f6] transition-colors hover:bg-[#61b2ff] active:cursor-grabbing",
         active ? "bg-[#61b2ff]" : "bg-white",
         className,
       )}
