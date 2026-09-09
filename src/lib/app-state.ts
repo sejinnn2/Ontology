@@ -102,12 +102,86 @@ export type TrashedRelation = {
  *     just those two setters.
  * None of that is built yet — only the mutation surface itself.
  */
+// Everything a single undo/redo step needs to restore — the ontology's own mutable data (see
+// `useOntologyApp`'s own doc comment above) plus Trash, since a delete/restore is exactly as much
+// a "step" as any other edit and leaving Trash out of a snapshot would let an undone delete bring
+// an entity back onto the canvas while a stale copy of it stayed sitting in Trash. UI-only state
+// (selection, Detail anchor, pan/zoom, the confidence filter) is deliberately NOT part of this —
+// undoing an edit shouldn't also yank the user's camera or selection around.
+type HistorySnapshot = {
+  entities: Entity[];
+  relations: Relation[];
+  trashedEntities: TrashedEntity[];
+  trashedProperties: TrashedProperty[];
+  trashedRelations: TrashedRelation[];
+};
+
 export function useOntologyApp() {
   const [entities, setEntities] = useState<Entity[]>(initialEntities);
   const [relations, setRelations] = useState<Relation[]>(initialRelations);
   const [trashedEntities, setTrashedEntities] = useState<TrashedEntity[]>([]);
   const [trashedProperties, setTrashedProperties] = useState<TrashedProperty[]>([]);
   const [trashedRelations, setTrashedRelations] = useState<TrashedRelation[]>([]);
+
+  // Undo/redo history — see `HistorySnapshot` above. `past`'s last entry is always "the state
+  // right before whatever the user just did"; `future` only ever holds anything right after an
+  // undo, and is thrown away the moment a NEW edit happens (the standard "you can't redo past a
+  // fresh change" rule). `pushHistory` is called once per user-facing action, at the very top of
+  // each mutator below, BEFORE that mutator's own setEntities/setRelations/setTrashed* calls — so
+  // one action (even one that touches several of those setters at once, like a cascading delete)
+  // always produces exactly one undo step, never several.
+  const [past, setPast] = useState<HistorySnapshot[]>([]);
+  const [future, setFuture] = useState<HistorySnapshot[]>([]);
+  const pushHistory = useCallback(() => {
+    setPast((p) => [
+      ...p,
+      { entities, relations, trashedEntities, trashedProperties, trashedRelations },
+    ]);
+    setFuture([]);
+  }, [entities, relations, trashedEntities, trashedProperties, trashedRelations]);
+  const restoreSnapshot = useCallback((snap: HistorySnapshot) => {
+    setEntities(snap.entities);
+    setRelations(snap.relations);
+    setTrashedEntities(snap.trashedEntities);
+    setTrashedProperties(snap.trashedProperties);
+    setTrashedRelations(snap.trashedRelations);
+  }, []);
+  const undo = useCallback(() => {
+    if (past.length === 0) return;
+    const prev = past[past.length - 1]!;
+    setPast((p) => p.slice(0, -1));
+    setFuture((f) => [
+      ...f,
+      { entities, relations, trashedEntities, trashedProperties, trashedRelations },
+    ]);
+    restoreSnapshot(prev);
+  }, [
+    past,
+    entities,
+    relations,
+    trashedEntities,
+    trashedProperties,
+    trashedRelations,
+    restoreSnapshot,
+  ]);
+  const redo = useCallback(() => {
+    if (future.length === 0) return;
+    const next = future[future.length - 1]!;
+    setFuture((f) => f.slice(0, -1));
+    setPast((p) => [
+      ...p,
+      { entities, relations, trashedEntities, trashedProperties, trashedRelations },
+    ]);
+    restoreSnapshot(next);
+  }, [
+    future,
+    entities,
+    relations,
+    trashedEntities,
+    trashedProperties,
+    trashedRelations,
+    restoreSnapshot,
+  ]);
 
   const [selection, setSelection] = useState<Selection>(null);
   const [detail, setDetail] = useState<DetailAnchor>(null);
@@ -135,6 +209,12 @@ export function useOntologyApp() {
   // Every one of these applies an immutable patch and re-renders both Overview and Detail from
   // the same updated state, since both read `entities`/`relations` from this same hook.
 
+  // Deliberately does NOT push undo history itself — this is the one mutator called both for a
+  // single discrete edit (rename/description, committed once on blur) AND continuously while
+  // dragging an Entity node on the Overview canvas (once per pointermove). A caller on the
+  // continuous path pushes history itself exactly once, right as the drag starts (see
+  // OverviewCanvas's own node-drag code); a caller on the discrete path (`handleRenameEntity`/
+  // `handleEditEntityDescription` below) pushes right before calling this.
   const updateEntity = useCallback(
     (id: string, patch: Partial<Omit<Entity, "id" | "properties">>) => {
       setEntities((es) => es.map((e) => (e.id === id ? { ...e, ...patch } : e)));
@@ -144,6 +224,7 @@ export function useOntologyApp() {
 
   const updateProperty = useCallback(
     (entityId: string, propertyId: string, patch: Partial<Omit<Property, "id">>) => {
+      pushHistory();
       setEntities((es) =>
         es.map((e) =>
           e.id === entityId
@@ -155,7 +236,7 @@ export function useOntologyApp() {
         ),
       );
     },
-    [],
+    [pushHistory],
   );
 
   // A named wrapper over updateProperty for the specific "connect/disconnect/reconnect a column"
@@ -168,9 +249,13 @@ export function useOntologyApp() {
     [updateProperty],
   );
 
-  const updateRelation = useCallback((id: string, patch: Partial<Omit<Relation, "id">>) => {
-    setRelations((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
-  }, []);
+  const updateRelation = useCallback(
+    (id: string, patch: Partial<Omit<Relation, "id">>) => {
+      pushHistory();
+      setRelations((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+    },
+    [pushHistory],
+  );
 
   // A user typing a brand-new Entity Type into the panel's "+" popover is asserting it's real,
   // not proposing something for review — the opposite situation from every AI-suggested seed
@@ -179,42 +264,52 @@ export function useOntologyApp() {
   // relies on exactly that default, since there the user places it themselves via drag; Overview
   // has no panel to hold it in, so it passes the current viewport's own center instead (see
   // OverviewCanvas's own `handleCreateEntity`) so the new entity is immediately visible.
-  const createEntity = useCallback((name: string, position?: { x: number; y: number }) => {
-    const id = entityUid();
-    const newEntity: Entity = {
-      id,
-      name: name.trim(),
-      description: "",
-      confidence: 1,
-      status: "confirmed",
-      table: "",
-      x: position?.x ?? 0,
-      y: position?.y ?? 0,
-      properties: [],
-    };
-    setEntities((es) => [...es, newEntity]);
-    return id;
-  }, []);
+  const createEntity = useCallback(
+    (name: string, position?: { x: number; y: number }) => {
+      pushHistory();
+      const id = entityUid();
+      const newEntity: Entity = {
+        id,
+        name: name.trim(),
+        description: "",
+        confidence: 1,
+        status: "confirmed",
+        table: "",
+        x: position?.x ?? 0,
+        y: position?.y ?? 0,
+        properties: [],
+      };
+      setEntities((es) => [...es, newEntity]);
+      return id;
+    },
+    [pushHistory],
+  );
 
   // Same "the user is asserting this, not an AI proposing it" reasoning as createEntity above —
   // "confirmed" at full confidence, and never mapped to a column automatically (an unmapped
   // Property is a perfectly valid, non-Error state — see mock-data's own ReviewFlags note).
-  const createProperty = useCallback((entityId: string, name: string) => {
-    const id = propUid();
-    const newProperty: Property = {
-      id,
-      name: name.trim(),
-      description: "",
-      type: "string",
-      confidence: 1,
-      status: "confirmed",
-      mapping: null,
-    };
-    setEntities((es) =>
-      es.map((e) => (e.id === entityId ? { ...e, properties: [...e.properties, newProperty] } : e)),
-    );
-    return id;
-  }, []);
+  const createProperty = useCallback(
+    (entityId: string, name: string) => {
+      pushHistory();
+      const id = propUid();
+      const newProperty: Property = {
+        id,
+        name: name.trim(),
+        description: "",
+        type: "string",
+        confidence: 1,
+        status: "confirmed",
+        mapping: null,
+      };
+      setEntities((es) =>
+        es.map((e) =>
+          e.id === entityId ? { ...e, properties: [...e.properties, newProperty] } : e,
+        ),
+      );
+      return id;
+    },
+    [pushHistory],
+  );
 
   // Applies the global Confirm dialog's outcome in one atomic pass — every id here already
   // passed the confirmation-eligibility check (see `buildConfirmPlan`), so this never needs to
@@ -226,6 +321,7 @@ export function useOntologyApp() {
       propertyIds: { entityId: string; propertyId: string }[];
       relationIds: string[];
     }) => {
+      pushHistory();
       const entitySet = new Set(ids.entityIds);
       const propByEntity = new Map<string, Set<string>>();
       ids.propertyIds.forEach(({ entityId, propertyId }) => {
@@ -254,7 +350,7 @@ export function useOntologyApp() {
         rs.map((r) => (relationSet.has(r.id) ? { ...r, status: "confirmed" as const } : r)),
       );
     },
-    [],
+    [pushHistory],
   );
 
   // Moves one or more properties from one entity to another in a single atomic update (drag a
@@ -268,6 +364,7 @@ export function useOntologyApp() {
   const moveProperties = useCallback(
     (fromEntityId: string, toEntityId: string, items: { id: string; name: string }[]) => {
       if (fromEntityId === toEntityId || items.length === 0) return;
+      pushHistory();
       setEntities((es) => {
         const source = es.find((e) => e.id === fromEntityId);
         if (!source) return es;
@@ -284,7 +381,7 @@ export function useOntologyApp() {
         });
       });
     },
-    [],
+    [pushHistory],
   );
 
   // Connects two entities with a new relation — but if any relation already connects them (in
@@ -302,6 +399,7 @@ export function useOntologyApp() {
         (r) => (r.from === fromId && r.to === toId) || (r.from === toId && r.to === fromId),
       );
       if (existing) return existing.id;
+      pushHistory();
       const id = relationUid();
       const newRelation: Relation = {
         id,
@@ -316,7 +414,7 @@ export function useOntologyApp() {
       setRelations((rs) => [...rs, newRelation]);
       return id;
     },
-    [relations],
+    [relations, pushHistory],
   );
 
   // Placing an Entity Type next to another in Detail's center card column (dragging a related
@@ -326,21 +424,25 @@ export function useOntologyApp() {
   // unnamed, Error-status placeholder for that specific pair instead of leaving them looking
   // unrelated forever, so there's something concrete for the reviewer to either name (resolving
   // the Error — see `renameRelation`) or delete outright.
-  const createPlaceholderRelation = useCallback((fromId: string, toId: string) => {
-    const id = relationUid();
-    const newRelation: Relation = {
-      id,
-      name: "",
-      description: "",
-      from: fromId,
-      to: toId,
-      confidence: 0,
-      status: "error",
-      errorReason: PLACEHOLDER_RELATION_REASON,
-    };
-    setRelations((rs) => [...rs, newRelation]);
-    return id;
-  }, []);
+  const createPlaceholderRelation = useCallback(
+    (fromId: string, toId: string) => {
+      pushHistory();
+      const id = relationUid();
+      const newRelation: Relation = {
+        id,
+        name: "",
+        description: "",
+        from: fromId,
+        to: toId,
+        confidence: 0,
+        status: "error",
+        errorReason: PLACEHOLDER_RELATION_REASON,
+      };
+      setRelations((rs) => [...rs, newRelation]);
+      return id;
+    },
+    [pushHistory],
+  );
 
   // Renaming a Relation is a plain field update for any other Relation, but one that's still
   // unnamed (whichever of the two "no name yet" creation paths put it in Error — a drag-created
@@ -353,6 +455,7 @@ export function useOntologyApp() {
     (id: string, name: string) => {
       const relation = relations.find((r) => r.id === id);
       if (!relation) return;
+      pushHistory();
       const trimmed = name.trim();
       const patch: Partial<Omit<Relation, "id">> = { name: trimmed };
       if (relation.status === "error" && relation.name.trim() === "" && trimmed !== "") {
@@ -360,7 +463,7 @@ export function useOntologyApp() {
       }
       setRelations((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
     },
-    [relations],
+    [relations, pushHistory],
   );
 
   // Delete moves the item into Trash rather than destroying it — see the `Trashed*` types above.
@@ -369,11 +472,12 @@ export function useOntologyApp() {
     (id: string) => {
       const relation = relations.find((r) => r.id === id);
       if (!relation) return;
+      pushHistory();
       setRelations((rs) => rs.filter((r) => r.id !== id));
       setTrashedRelations((ts) => [...ts, { relation, trashedAt: Date.now() }]);
       setSelection((s) => (s?.kind === "relation" && s.id === id ? null : s));
     },
-    [relations],
+    [relations, pushHistory],
   );
 
   // Deleting an Entity Type takes its own Properties with it (they only ever exist attached to
@@ -386,6 +490,7 @@ export function useOntologyApp() {
     (entityId: string) => {
       const target = entities.find((e) => e.id === entityId);
       if (!target) return;
+      pushHistory();
       const cascaded = relations.filter((r) => r.from === entityId || r.to === entityId);
       setEntities((es) => es.filter((e) => e.id !== entityId));
       setRelations((rs) => rs.filter((r) => r.from !== entityId && r.to !== entityId));
@@ -406,7 +511,7 @@ export function useOntologyApp() {
       setDetail((d) => (d?.kind === "entity" && d.id === entityId ? null : d));
       setSelection((s) => (s?.kind === "entity" && s.id === entityId ? null : s));
     },
-    [entities, relations],
+    [entities, relations, pushHistory],
   );
 
   // Deleting a Property only ever removes it from its one parent Entity Type — the mapping (if
@@ -417,6 +522,7 @@ export function useOntologyApp() {
       const owner = entities.find((e) => e.id === entityId);
       const property = owner?.properties.find((p) => p.id === propertyId);
       if (!property) return;
+      pushHistory();
       setEntities((es) =>
         es.map((e) =>
           e.id === entityId
@@ -426,7 +532,7 @@ export function useOntologyApp() {
       );
       setTrashedProperties((ts) => [...ts, { entityId, property, trashedAt: Date.now() }]);
     },
-    [entities],
+    [entities, pushHistory],
   );
 
   // Batch counterpart to deleteEntity — for the multi-select contextual "Delete" action (2+
@@ -440,6 +546,7 @@ export function useOntologyApp() {
       const idSet = new Set(entityIds);
       const targets = entities.filter((e) => idSet.has(e.id));
       if (targets.length === 0) return;
+      pushHistory();
       const cascaded = relations.filter((r) => idSet.has(r.from) || idSet.has(r.to));
       const now = Date.now();
       setEntities((es) => es.filter((e) => !idSet.has(e.id)));
@@ -463,7 +570,7 @@ export function useOntologyApp() {
       setDetail((d) => (d?.kind === "entity" && idSet.has(d.id) ? null : d));
       setSelection((s) => (s?.kind === "entity" && idSet.has(s.id) ? null : s));
     },
-    [entities, relations],
+    [entities, relations, pushHistory],
   );
 
   // Batch counterpart to deleteProperty — for the multi-select contextual "Delete" action (2+
@@ -488,6 +595,7 @@ export function useOntologyApp() {
         });
       });
       if (trashedBatch.length === 0) return;
+      pushHistory();
       setEntities((es) =>
         es.map((e) => {
           const ids = idsByEntity.get(e.id);
@@ -497,7 +605,7 @@ export function useOntologyApp() {
       );
       setTrashedProperties((ts) => [...ts, ...trashedBatch]);
     },
-    [entities],
+    [entities, pushHistory],
   );
 
   // Batch counterpart to deleteRelation — for the multi-select contextual "Delete" action (1+
@@ -508,6 +616,7 @@ export function useOntologyApp() {
       const idSet = new Set(relationIds);
       const targets = relations.filter((r) => idSet.has(r.id));
       if (targets.length === 0) return;
+      pushHistory();
       const now = Date.now();
       setRelations((rs) => rs.filter((r) => !idSet.has(r.id)));
       setTrashedRelations((ts) => [
@@ -516,7 +625,7 @@ export function useOntologyApp() {
       ]);
       setSelection((s) => (s?.kind === "relation" && idSet.has(s.id) ? null : s));
     },
-    [relations],
+    [relations, pushHistory],
   );
 
   // Restores a trashed Relation only when both its connected Entity Types currently exist —
@@ -529,10 +638,11 @@ export function useOntologyApp() {
       const fromExists = entities.some((e) => e.id === trashed.relation.from);
       const toExists = entities.some((e) => e.id === trashed.relation.to);
       if (!fromExists || !toExists) return;
+      pushHistory();
       setRelations((rs) => (rs.some((r) => r.id === relationId) ? rs : [...rs, trashed.relation]));
       setTrashedRelations((ts) => ts.filter((t) => t.relation.id !== relationId));
     },
-    [trashedRelations, entities],
+    [trashedRelations, entities, pushHistory],
   );
 
   // Restores a trashed Entity Type (with every one of its Properties, and its previous canvas
@@ -544,6 +654,7 @@ export function useOntologyApp() {
     (entityId: string) => {
       const trashed = trashedEntities.find((t) => t.entity.id === entityId);
       if (!trashed) return;
+      pushHistory();
       setEntities((es) => (es.some((e) => e.id === entityId) ? es : [...es, trashed.entity]));
       setTrashedEntities((ts) => ts.filter((t) => t.entity.id !== entityId));
       const nextIds = new Set([...entities.map((e) => e.id), entityId]);
@@ -559,7 +670,7 @@ export function useOntologyApp() {
         setTrashedRelations((ts) => ts.filter((t) => !eligibleIds.has(t.relation.id)));
       }
     },
-    [trashedEntities, entities, trashedRelations],
+    [trashedEntities, entities, trashedRelations, pushHistory],
   );
 
   // Restores a trashed Property back onto its original Entity Type — only possible while that
@@ -573,6 +684,7 @@ export function useOntologyApp() {
       if (!trashed) return;
       const ownerExists = entities.some((e) => e.id === trashed.entityId);
       if (!ownerExists) return;
+      pushHistory();
       const mapping = trashed.property.mapping;
       const mappingStillValid =
         mapping != null &&
@@ -590,7 +702,7 @@ export function useOntologyApp() {
       );
       setTrashedProperties((ts) => ts.filter((t) => t.property.id !== propertyId));
     },
-    [trashedProperties, entities],
+    [trashedProperties, entities, pushHistory],
   );
 
   // Splits an entity's properties into two entities: the original keeps whichever properties
@@ -604,6 +716,7 @@ export function useOntologyApp() {
       const moved = original.properties.filter((p) => moveSet.has(p.id));
       const kept = original.properties.filter((p) => !moveSet.has(p.id));
       if (moved.length === 0 || kept.length === 0) return null;
+      pushHistory();
       const newId = entityUid();
       const newEntity: Entity = {
         id: newId,
@@ -621,7 +734,7 @@ export function useOntologyApp() {
       );
       return newId;
     },
-    [entities],
+    [entities, pushHistory],
   );
 
   // Combines two or more entities into one new entity: every property from every source entity
@@ -633,6 +746,7 @@ export function useOntologyApp() {
       const idSet = new Set(ids);
       const merged = entities.filter((e) => idSet.has(e.id));
       if (merged.length < 2 || !name.trim()) return null;
+      pushHistory();
       const first = merged[0]!;
       const newId = entityUid();
       const properties = merged.flatMap((e) => e.properties.map((p) => ({ ...p, id: propUid() })));
@@ -661,7 +775,7 @@ export function useOntologyApp() {
       );
       return newId;
     },
-    [entities],
+    [entities, pushHistory],
   );
 
   return {
@@ -693,6 +807,11 @@ export function useOntologyApp() {
     restoreRelation,
     splitEntity,
     mergeEntities,
+    pushHistory,
+    undo,
+    redo,
+    canUndo: past.length > 0,
+    canRedo: future.length > 0,
     selection,
     select,
     clearSelection,

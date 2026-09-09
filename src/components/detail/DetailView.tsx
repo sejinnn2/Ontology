@@ -327,12 +327,12 @@ const RELATION_LABEL_FONT = "500 10.5px 'IBM Plex Sans', ui-sans-serif, system-u
  */
 function DetailShell({
   entityItems,
-  onPreviewEntity,
+  onFocusEntity,
   onCreateEntity,
   onDropEntity,
   tableItems,
   entities,
-  onPreviewTable,
+  onFocusTable,
   onDropTable,
   onDragMove,
   onDragEnd,
@@ -352,15 +352,22 @@ function DetailShell({
   onDeleteEntity,
   onDeleteProperty,
   onDeleteRelation,
+  onUndo,
+  onRedo,
+  canUndo,
+  canRedo,
   confidenceRange,
   onCanvasPointerDown,
   children,
 }: {
   entityItems: Entity[];
-  /** Clicking an Entity Types toolbox row previews it — shows its name/description in the
-   * bottom contextual panel — rather than navigating Detail to a different anchor or touching
-   * the canvas at all. */
-  onPreviewEntity: (id: string) => void;
+  /** Clicking an Entity Types toolbox row navigates Detail to a new anchor centered on that
+   * Entity Type — "panel = take me there", the opposite of a canvas click (which only inspects,
+   * never navigates; see the canvas's own click handlers below). Dragging the row instead places
+   * it into the CURRENT workspace without navigating — see `onDropEntity`. The optional second
+   * argument additionally focuses one matched Property in the newly-opened anchor, for a
+   * Property search-result row. */
+  onFocusEntity: (id: string, focusPropertyId?: string) => void;
   /** Creates a brand-new Entity Type from the panel's own "+" popover — never placed on any
    * canvas automatically, and never treated as an AI suggestion (see app-state's `createEntity`):
    * it only ever appears here until the user drags it onto a canvas themselves. */
@@ -373,8 +380,9 @@ function DetailShell({
   tableItems: TableSchema[];
   /** Live entities, used only to compute each table's mapping-status badge in the toolbox. */
   entities: Entity[];
-  /** Same idea as `onPreviewEntity`, for the Data Tables toolbox. */
-  onPreviewTable: (name: string) => void;
+  /** Same idea as `onFocusEntity`, for the Data Tables toolbox — the optional second argument
+   * focuses one matched Column, for a Column search-result row. */
+  onFocusTable: (name: string, focusColumnName?: string) => void;
   onDropTable: (name: string, clientX: number, clientY: number) => void;
   /** Fired continuously (post drag-threshold) while a toolbox item is being dragged, so the
    * canvas underneath can show drop-zone feedback at the live cursor position. */
@@ -411,6 +419,11 @@ function DetailShell({
   onDeleteEntity: (entityId: string) => void;
   onDeleteProperty: (entityId: string, propertyId: string) => void;
   onDeleteRelation: (relationId: string) => void;
+  /** The canvas controls' own Undo/Redo pill — same app-wide history stack as Overview's. */
+  onUndo: () => void;
+  onRedo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
   /** The Header's Confidence score range — filters which rows the Entity types / Data Tables
    * toolboxes below show, same "pure display filter" treatment as search and sort. */
   confidenceRange: ConfidenceRange;
@@ -645,17 +658,17 @@ function DetailShell({
   // Latest callbacks in refs so the single mount-time window listener below always calls the
   // current version without needing to resubscribe on every render.
   const callbacksRef = useRef({
-    onPreviewEntity,
+    onFocusEntity,
     onDropEntity,
-    onPreviewTable,
+    onFocusTable,
     onDropTable,
     onDragMove,
     onDragEnd,
   });
   callbacksRef.current = {
-    onPreviewEntity,
+    onFocusEntity,
     onDropEntity,
-    onPreviewTable,
+    onFocusTable,
     onDropTable,
     onDragMove,
     onDragEnd,
@@ -704,9 +717,9 @@ function DetailShell({
         }
         cb.onDragEnd?.();
       } else if (info.kind === "entity") {
-        cb.onPreviewEntity(info.id);
+        cb.onFocusEntity(info.id);
       } else {
-        cb.onPreviewTable(info.id);
+        cb.onFocusTable(info.id);
       }
     };
     window.addEventListener("pointermove", onMove);
@@ -763,27 +776,28 @@ function DetailShell({
           )}
           <div className="flex shrink-0 items-center justify-between border-b border-node-border px-4 py-3">
             {entityPanelOpen && (
-              <span className="truncate text-[14px] font-semibold">Entity types</span>
+              <span className="min-w-0 flex-1 truncate text-[14px] font-semibold">
+                Entity types
+              </span>
             )}
-            {entityPanelOpen && <CreateEntityButton onCreate={onCreateEntity} />}
-            <button
-              type="button"
-              onClick={() => setEntityPanelOpen((v) => !v)}
-              aria-label={
-                entityPanelOpen ? "Collapse Entity types panel" : "Expand Entity types panel"
-              }
-              title={entityPanelOpen ? "Collapse" : "Expand"}
-              className={cn(
-                "flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent",
-                !entityPanelOpen && "ml-auto",
-              )}
-            >
-              {entityPanelOpen ? (
-                <ChevronLeft className="size-4" />
-              ) : (
-                <ChevronRight className="size-4" />
-              )}
-            </button>
+            <div className={cn("flex shrink-0 items-center gap-1", !entityPanelOpen && "ml-auto")}>
+              {entityPanelOpen && <CreateEntityButton onCreate={onCreateEntity} />}
+              <button
+                type="button"
+                onClick={() => setEntityPanelOpen((v) => !v)}
+                aria-label={
+                  entityPanelOpen ? "Collapse Entity types panel" : "Expand Entity types panel"
+                }
+                title={entityPanelOpen ? "Collapse" : "Expand"}
+                className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent"
+              >
+                {entityPanelOpen ? (
+                  <ChevronLeft className="size-4" />
+                ) : (
+                  <ChevronRight className="size-4" />
+                )}
+              </button>
+            </div>
           </div>
           {!entityPanelOpen && (
             <div className="flex flex-1 items-center justify-center">
@@ -846,9 +860,9 @@ function DetailShell({
                     // goes through pointerdown at all and has event.detail === 0, so this only
                     // ever fires for that.
                     onClick={(ev) => {
-                      if (ev.detail === 0) onPreviewEntity(e.id);
+                      if (ev.detail === 0) onFocusEntity(e.id);
                     }}
-                    title={`Click for name and description, or drag onto the canvas to place ${e.name} here`}
+                    title={`Click to open ${e.name}, or drag onto the canvas to place it here`}
                     className={cn(
                       "flex w-full shrink-0 items-center gap-2 rounded-[10px] border bg-white px-3 py-2 font-normal text-left hover:bg-accent",
                       contextItem?.kind === "entity" && contextItem.entity.id === e.id
@@ -880,12 +894,22 @@ function DetailShell({
                   </button>
                   {/* A Property-name match keeps its parent Entity Type visible even when the
                       Entity Type's own name doesn't match — this lists exactly which Property
-                      matched, never the rest of that entity's (unmatched) properties. */}
+                      matched, never the rest of that entity's (unmatched) properties. A search
+                      result is still a PANEL click, so it navigates too — into this Entity Type,
+                      with the matched Property already focused. */}
                   {matchedProperties && (
                     <ul className="flex flex-col gap-0.5 pl-9">
                       {matchedProperties.map((p) => (
-                        <li key={p.id} className="truncate text-[10.5px] text-muted-foreground">
-                          {p.name}
+                        <li key={p.id}>
+                          <button
+                            type="button"
+                            onPointerDown={(ev) => ev.stopPropagation()}
+                            onClick={() => onFocusEntity(e.id, p.id)}
+                            title={`Click to open ${e.name} with ${p.name} focused`}
+                            className="w-full truncate rounded-md px-1 text-left text-[10.5px] text-muted-foreground hover:bg-accent hover:text-foreground"
+                          >
+                            {p.name}
+                          </button>
                         </li>
                       ))}
                     </ul>
@@ -955,6 +979,10 @@ function DetailShell({
             onZoomOut={() => zoomBy(1 / 1.2)}
             onZoomIn={() => zoomBy(1.2)}
             onFitToContent={fitToContent}
+            onUndo={onUndo}
+            onRedo={onRedo}
+            canUndo={canUndo}
+            canRedo={canRedo}
           />
         </div>
 
@@ -1053,9 +1081,9 @@ function DetailShell({
                       startToolboxDrag("table", t.name, t.name, ev.clientX, ev.clientY);
                     }}
                     onClick={(ev) => {
-                      if (ev.detail === 0) onPreviewTable(t.name);
+                      if (ev.detail === 0) onFocusTable(t.name);
                     }}
-                    title={`Click for name and description, or drag onto the canvas to place ${t.name} here`}
+                    title={`Click to open ${t.name}, or drag onto the canvas to place it here`}
                     className={cn(
                       "flex w-full shrink-0 items-center gap-2 rounded-[10px] border bg-white px-3 py-2 font-normal text-left hover:bg-accent",
                       contextItem?.kind === "table" && contextItem.table.name === t.name
@@ -1082,12 +1110,22 @@ function DetailShell({
                   </button>
                   {/* A Column-name match keeps its parent Table visible even when the Table's own
                       name doesn't match — this lists exactly which Column matched, never the
-                      rest of that table's (unmatched) columns. */}
+                      rest of that table's (unmatched) columns. A search result is still a PANEL
+                      click, so it navigates too — into this Table, with the matched Column
+                      already focused. */}
                   {matchedColumns && (
                     <ul className="flex flex-col gap-0.5 pl-9">
                       {matchedColumns.map((c) => (
-                        <li key={c.name} className="truncate text-[10.5px] text-muted-foreground">
-                          {c.name}
+                        <li key={c.name}>
+                          <button
+                            type="button"
+                            onPointerDown={(ev) => ev.stopPropagation()}
+                            onClick={() => onFocusTable(t.name, c.name)}
+                            title={`Click to open ${t.name} with ${c.name} focused`}
+                            className="w-full truncate rounded-md px-1 text-left text-[10.5px] text-muted-foreground hover:bg-accent hover:text-foreground"
+                          >
+                            {c.name}
+                          </button>
                         </li>
                       ))}
                     </ul>
@@ -1121,8 +1159,14 @@ export function DetailView({
   anchor: NonNullable<DetailAnchor>;
 }) {
   const { entities, tables, openDetail } = app;
-  const onFocusEntity = useCallback((id: string) => openDetail("entity", id), [openDetail]);
-  const onFocusTable = useCallback((name: string) => openDetail("table", name), [openDetail]);
+  const onFocusEntity = useCallback(
+    (id: string, focusPropertyId?: string) => openDetail("entity", id, focusPropertyId),
+    [openDetail],
+  );
+  const onFocusTable = useCallback(
+    (name: string, focusColumnName?: string) => openDetail("table", name, focusColumnName),
+    [openDetail],
+  );
 
   if (anchor.kind === "entity") {
     const entity = entities.find((e) => e.id === anchor.id);
@@ -1189,8 +1233,8 @@ function EntityDetailCanvas({
 }: {
   app: OntologyApp;
   entity: Entity;
-  onFocusEntity: (id: string) => void;
-  onFocusTable: (name: string) => void;
+  onFocusEntity: (id: string, focusPropertyId?: string) => void;
+  onFocusTable: (name: string, focusColumnName?: string) => void;
   entityItems: Entity[];
   tableItems: TableSchema[];
   /** Arrive with this Property (owned by `entity`) already selected in the bottom contextual
@@ -1243,6 +1287,11 @@ function EntityDetailCanvas({
     deleteEntities,
     deleteProperties,
     deleteRelations,
+    pushHistory,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
     confidenceRange,
   } = app;
   const [zoom, setZoom] = useState(1);
@@ -1648,11 +1697,13 @@ function EntityDetailCanvas({
 
   const extraRelatedRefs = useRef<Map<string, HTMLElement>>(new Map());
 
-  // Placing an Entity Type in the center card column next to the anchor only draws a connector
-  // (see `mainRelatedLines`) when a real Relation already connects the two — otherwise they'd
-  // just sit side by side looking related with nothing to back that up. Called only for an entity
-  // genuinely new to the column (never on a reorder of one already there), this is what creates
-  // the unnamed, Error-status placeholder relation for that gap instead.
+  // Placing an Entity Type in the LEFT satellite column next to the anchor's card is exactly what
+  // that column visually means — "related to this" — so it always backs that up with a real
+  // Relation, never just a look. Called only for an entity genuinely new to the column (never on a
+  // reorder of one already there), this is what creates the unnamed, Error-status placeholder
+  // relation for that pair. Placing one in the CENTER column instead (stacking another full main
+  // row above/below) carries no such meaning — vertical order there is purely layout, not a
+  // relationship — so that drop path never calls this.
   const ensureMainEntityRelation = useCallback(
     (otherId: string) => {
       const hasRelation = relations.some(
@@ -1683,8 +1734,10 @@ function EntityDetailCanvas({
           const clamped = Math.min(insertAt, without.length);
           return [...without.slice(0, clamped), id, ...without.slice(clamped)];
         });
-        if (!relatedIds.has(id)) {
+        const isNewToColumn = !relatedIds.has(id);
+        if (isNewToColumn) {
           setExtraEntityIds((ids) => (ids.includes(id) ? ids : [...ids, id]));
+          ensureMainEntityRelation(id);
         }
         return;
       }
@@ -1700,16 +1753,14 @@ function EntityDetailCanvas({
             break;
           }
         }
-        const isNewToColumn = !extraMainEntityIds.includes(id);
         setExtraMainEntityIds((ids) => {
           const without = ids.filter((x) => x !== id);
           const clamped = Math.min(Math.max(0, insertAt), without.length);
           return [...without.slice(0, clamped), id, ...without.slice(clamped)];
         });
-        if (isNewToColumn) ensureMainEntityRelation(id);
       }
     },
-    [entity.id, relatedIds, allRelated, mainEntities, extraMainEntityIds, ensureMainEntityRelation],
+    [entity.id, relatedIds, allRelated, mainEntities, ensureMainEntityRelation],
   );
 
   const onDropTable = useCallback(
@@ -1886,9 +1937,12 @@ function EntityDetailCanvas({
       // `onDropEntity`'s `inCenterColumnBand` branch) — so any already-related entity can be
       // pulled in for a full row too, not just ones dragged from the toolbox. The pill's own nudge
       // offset is cleared on promotion so it snaps back to its normal slot in the satellite column
-      // instead of sitting dragged-away next to the new card.
+      // instead of sitting dragged-away next to the new card. Promoting to the CENTER column never
+      // creates or requires a Relation on its own (see `ensureMainEntityRelation`'s own comment) —
+      // this entity is already a satellite here precisely because a real Relation already backs
+      // it, from whichever gesture (drag into the LEFT column, or a genuine seeded Relation) put
+      // it in `allRelated` in the first place.
       if (allRelated.some((r) => r.id === info.id) && inCenterColumnBand(e.clientX, e.clientY)) {
-        const isNewToColumn = !extraMainEntityIds.includes(info.id);
         setExtraMainEntityIds((ids) => (ids.includes(info.id) ? ids : [...ids, info.id]));
         setNodeOffsets((prev) => {
           if (!(info.id in prev)) return prev;
@@ -1896,7 +1950,6 @@ function EntityDetailCanvas({
           delete next[info.id];
           return next;
         });
-        if (isNewToColumn) ensureMainEntityRelation(info.id);
       }
     };
     window.addEventListener("pointermove", onMove);
@@ -1905,7 +1958,7 @@ function EntityDetailCanvas({
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [zoom, allRelated, extraMainEntityIds, ensureMainEntityRelation]);
+  }, [zoom, allRelated]);
 
   const nodeTransform = (id: string): React.CSSProperties | undefined => {
     const o = nodeOffsets[id];
@@ -2552,21 +2605,6 @@ function EntityDetailCanvas({
     );
   }, [selectedRelationIds, deleteRelations]);
 
-  // The Entity types / Data Tables toolboxes preview their items (Name + Description in the
-  // bottom panel) rather than navigating Detail elsewhere — same contextItem the canvas itself
-  // uses, so a toolbox item and its on-canvas counterpart (if any) always agree on "selected".
-  const onPreviewEntity = useCallback(
-    (id: string) => {
-      const found = entities.find((e) => e.id === id);
-      if (found) setContextItem({ kind: "entity", entity: found });
-    },
-    [entities],
-  );
-  const onPreviewTable = useCallback((name: string) => {
-    const schema = tableByName(name);
-    if (schema) setContextItem({ kind: "table", table: schema });
-  }, []);
-
   // Swap direction is an explicit action only — never a drag-reconnect — and Confirm re-derives
   // the block from live `entities`/`relations` on every call, so it always reflects whatever the
   // two connected Entity Types' status is *right now*, not whatever it was when the panel opened.
@@ -2626,6 +2664,10 @@ function EntityDetailCanvas({
   // re-derived from `entities` on every render.
   const handleRenameEntity = useCallback(
     (entityId: string, name: string) => {
+      // `updateEntity` itself deliberately never pushes undo history (see its own comment in
+      // app-state.ts) since it's also used for continuous position dragging — a discrete, one-shot
+      // edit like this one has to push explicitly, right before making the actual change.
+      pushHistory();
       updateEntity(entityId, { name });
       setContextItem((cur) =>
         cur?.kind === "entity" && cur.entity.id === entityId
@@ -2633,10 +2675,11 @@ function EntityDetailCanvas({
           : cur,
       );
     },
-    [updateEntity],
+    [updateEntity, pushHistory],
   );
   const handleEditEntityDescription = useCallback(
     (entityId: string, description: string) => {
+      pushHistory();
       updateEntity(entityId, { description });
       setContextItem((cur) =>
         cur?.kind === "entity" && cur.entity.id === entityId
@@ -2644,7 +2687,7 @@ function EntityDetailCanvas({
           : cur,
       );
     },
-    [updateEntity],
+    [updateEntity, pushHistory],
   );
   const handleRenameProperty = useCallback(
     (entityId: string, propertyId: string, name: string) => {
@@ -2719,12 +2762,12 @@ function EntityDetailCanvas({
     <>
       <DetailShell
         entityItems={entityItems}
-        onPreviewEntity={onPreviewEntity}
+        onFocusEntity={onFocusEntity}
         onCreateEntity={createEntity}
         onDropEntity={onDropEntity}
         tableItems={tableItems}
         entities={entities}
-        onPreviewTable={onPreviewTable}
+        onFocusTable={onFocusTable}
         onDropTable={onDropTable}
         onSwapRelation={handleSwapRelation}
         onRenameRelation={handleRenameRelation}
@@ -2736,6 +2779,10 @@ function EntityDetailCanvas({
         onDeleteEntity={handleDeleteEntity}
         onDeleteProperty={handleDeleteProperty}
         onDeleteRelation={handleDeleteRelation}
+        onUndo={undo}
+        onRedo={redo}
+        canUndo={canUndo}
+        canRedo={canRedo}
         confidenceRange={confidenceRange}
         onDragMove={onToolboxDragMove}
         onDragEnd={onToolboxDragEnd}
@@ -3105,7 +3152,13 @@ function EntityDetailCanvas({
                   )}
                 {!collapsedMainIds.has(entity.id) &&
                   allRelated.map((other, i) => {
-                    nodeClickActionsRef.current[other.id] = () => onFocusEntity(other.id);
+                    // Canvas click = inspect, never navigate — a related satellite pill shows its
+                    // own name/description in the Context Panel, same as any other canvas object,
+                    // while the CURRENT Detail anchor stays exactly where it is. Only clicking this
+                    // same Entity Type in the Entity Types PANEL navigates (see DetailShell's own
+                    // `onFocusEntity`).
+                    nodeClickActionsRef.current[other.id] = () =>
+                      setContextItem({ kind: "entity", entity: other });
                     return (
                       <div key={other.id} className="contents">
                         {relatedInsertIndex === i && <DropInsertionPlaceholder variant="pill" />}
@@ -3116,13 +3169,13 @@ function EntityDetailCanvas({
                           }}
                           style={nodeTransform(other.id)}
                           className="flex flex-col items-center gap-1 rounded-full"
-                          title="Click to focus, drag to reposition, or drop a dragged property here to move it"
+                          title="Click for name and description, drag to reposition, or drop a dragged property here to move it"
                         >
                           <EntityNode
                             entity={other}
                             scale={1}
                             moveTarget={moveTargetId === other.id}
-                            onClick={() => onFocusEntity(other.id)}
+                            onClick={() => setContextItem({ kind: "entity", entity: other })}
                             onStartMove={(clientX, clientY) =>
                               startNodeDrag(other.id, clientX, clientY)
                             }
@@ -3649,7 +3702,7 @@ function EntityDetailCanvas({
                             <EntityNode
                               entity={sat}
                               scale={1}
-                              onClick={() => onFocusEntity(sat.id)}
+                              onClick={() => setContextItem({ kind: "entity", entity: sat })}
                             />
                           </div>
                         ))}

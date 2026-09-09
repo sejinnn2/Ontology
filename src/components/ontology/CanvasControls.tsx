@@ -62,10 +62,9 @@ export function useCanvasToolShortcuts(tool: CanvasTool, setTool: (tool: CanvasT
  * Controls" component (node 94:7751) exactly: a Select/Pan tool switch, Zoom out/in + Fit to
  * content, and an Undo/Redo group, each its own pill.
  *
- * Undo/Redo stay permanently disabled — same as the stub DetailView already shipped before this
- * component existed — since there's no undo/redo history anywhere in this app yet; rendering them
- * enabled would be a control that visibly does something but silently doesn't, which is worse
- * than an honest disabled state.
+ * Undo/Redo are wired to the app's own history stack (see `useOntologyApp`'s `undo`/`redo`/
+ * `canUndo`/`canRedo`) — disabled only when that stack is actually empty in that direction, never
+ * permanently.
  */
 export function CanvasControls({
   tool,
@@ -74,6 +73,10 @@ export function CanvasControls({
   onZoomOut,
   onZoomIn,
   onFitToContent,
+  onUndo,
+  onRedo,
+  canUndo,
+  canRedo,
   className,
 }: {
   tool: CanvasTool;
@@ -82,6 +85,10 @@ export function CanvasControls({
   onZoomOut: () => void;
   onZoomIn: () => void;
   onFitToContent: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
   className?: string;
 }) {
   const toolButton =
@@ -152,17 +159,21 @@ export function CanvasControls({
       <div className="flex h-[34px] items-center gap-1 rounded-lg border border-node-border bg-node px-1 py-[3px] shadow-[var(--shadow-node)]">
         <button
           type="button"
-          className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-30"
-          disabled
+          onClick={onUndo}
+          disabled={!canUndo}
+          className={cn(squareButton, !canUndo && "pointer-events-none opacity-30")}
           aria-label="Undo"
+          title="Undo"
         >
           <Undo2 className="size-4" />
         </button>
         <button
           type="button"
-          className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-30"
-          disabled
+          onClick={onRedo}
+          disabled={!canRedo}
+          className={cn(squareButton, !canRedo && "pointer-events-none opacity-30")}
           aria-label="Redo"
+          title="Redo"
         >
           <Redo2 className="size-4" />
         </button>

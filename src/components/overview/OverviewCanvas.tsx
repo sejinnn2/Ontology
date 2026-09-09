@@ -64,6 +64,11 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     createEntity,
     addRelation,
     deleteRelation,
+    pushHistory,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
     view,
     setView,
     confidenceRange,
@@ -285,7 +290,14 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       if (!info) return;
       const dx = e.clientX - info.sx;
       const dy = e.clientY - info.sy;
-      if (!info.moved && Math.hypot(dx, dy) > 6) info.moved = true;
+      // `updateEntity` deliberately never pushes undo history itself (see its own comment in
+      // app-state.ts) since this is exactly the continuous case that would otherwise push one
+      // snapshot per pointermove — pushing once here, right as the drag actually starts, gives
+      // the whole drag exactly one undo step regardless of how far it travels.
+      if (!info.moved && Math.hypot(dx, dy) > 6) {
+        info.moved = true;
+        pushHistory();
+      }
       if (info.moved) {
         updateEntity(info.id, { x: info.startX + dx / view.z, y: info.startY + dy / view.z });
       }
@@ -301,7 +313,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [updateEntity, openDetail, view.z]);
+  }, [updateEntity, openDetail, view.z, pushHistory]);
 
   const zoomBy = useCallback(
     (factor: number) => {
@@ -854,6 +866,10 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
             onZoomOut={() => zoomBy(1 / 1.2)}
             onZoomIn={() => zoomBy(1.2)}
             onFitToContent={fitToContent}
+            onUndo={undo}
+            onRedo={redo}
+            canUndo={canUndo}
+            canRedo={canRedo}
           />
         </div>
       </div>
