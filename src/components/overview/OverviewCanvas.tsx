@@ -1,29 +1,28 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Search, Trash2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Search as SearchIcon, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import {
-  edgeAnchors,
-  nearestSide,
-  nodeCenter,
-  pointInNode,
-  orthogonalPath,
-  NODE_W,
-  NODE_H,
-} from "@/lib/geometry";
-import type { Side } from "@/lib/geometry";
+import { sideBetween, pointInRect, distanceToSegment } from "@/lib/geometry";
+import type { Pt, Rect, Side } from "@/lib/geometry";
 import {
   relationLabel,
   tableMappingStatus,
+  tableMappingCompleteness,
+  tableColumnUsage,
   entitiesUsingTable,
   tablesUsedByEntity,
   entityStatus,
   entityErrorReason,
-  type Property,
-  type TableColumn,
+  isTableInScope,
+  isReviewItemInScope,
+  tableHighestMappingConfidence,
+  type SearchResultRef,
 } from "@/lib/mock-data";
 import { CreateEntityButton } from "@/components/ontology/CreateEntityButton";
+import { CreateEntityWizard } from "@/components/ontology/CreateEntityWizard";
+import { DefineRelationDialog } from "@/components/ontology/DefineRelationDialog";
+import { OntologyNode, ONTOLOGY_NODE_SIZE, ONTOLOGY_NODE_WRAPPER_W } from "./OntologyNode";
 import {
-  CanvasControls,
+  CanvasToolStack,
   useCanvasToolShortcuts,
   type CanvasTool,
 } from "@/components/ontology/CanvasControls";
@@ -34,22 +33,247 @@ import {
   sortByState,
   type SortState,
 } from "@/components/ontology/SortDropdown";
-import { SearchInput } from "@/components/ontology/SearchInput";
-import type { OntologyApp } from "@/lib/app-state";
-import { EntityNode } from "./EntityNode";
+import { suggestionKey, parseSuggestionKey, type OntologyApp } from "@/lib/app-state";
 import { MappingStatusBadge } from "./MappingStatusBadge";
 import { StatusBadge, statusBorderColor } from "@/components/ontology/StatusBadge";
-import { ConfidenceChip } from "@/components/ontology/ConfidenceChip";
+import { SuggestionSelectionBar } from "@/components/nav/SuggestionSelectionBar";
+import { EntitySelectionBar } from "@/components/nav/EntitySelectionBar";
+import { RelationSelectionBar } from "@/components/nav/RelationSelectionBar";
+import { AiReviewBar } from "@/components/ontology/AiReviewBar";
+import { circledNumber } from "@/components/nav/HistoryPanel";
 
 const MIN_Z = 0.4;
 const MAX_Z = 2;
 const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
 
+// A second plain click on the same Entity node within this window resolves as a double-click
+// (jump straight into Editing Mode) rather than two independent single-clicks/selections — see
+// this file's own `lastEntityClickRef`.
+const DOUBLE_CLICK_MS = 400;
+
+// Overview's canvas nodes are a fixed 40x40 circle (see OntologyNode) — connectors and hit-
+// testing always anchor to that footprint, regardless of whether the node is currently showing
+// its `detailed` (zoomed past 100%) text underneath. `entity.x`/`entity.y` position that OUTER
+// wrapper, not the circle — the circle sits 28px in from the wrapper's left edge (horizontally
+// centered in a wider wrapper that also fits the name label below it), flush with its top (no
+// vertical offset). See `ONTOLOGY_NODE_WRAPPER_W`'s own comment for why this asymmetry exists.
+const NODE_CIRCLE_X_OFFSET = (ONTOLOGY_NODE_WRAPPER_W - ONTOLOGY_NODE_SIZE) / 2;
+const nodeRect = (n: { x: number; y: number }): Rect => ({
+  x: n.x + NODE_CIRCLE_X_OFFSET,
+  y: n.y,
+  width: ONTOLOGY_NODE_SIZE,
+  height: ONTOLOGY_NODE_SIZE,
+});
+const ontologyNodeCenter = (n: { x: number; y: number }) => ({
+  x: n.x + NODE_CIRCLE_X_OFFSET + ONTOLOGY_NODE_SIZE / 2,
+  y: n.y + ONTOLOGY_NODE_SIZE / 2,
+});
+
+// The inverse of `ontologyNodeCenter` above — given the world point a new node's CENTER should
+// land on, returns the `x`/`y` to actually store on the Entity (its wrapper's own top-left,
+// which is what `x`/`y` mean everywhere else on this canvas).
+const wrapperOriginForCenter = (center: Pt) => ({
+  x: center.x - NODE_CIRCLE_X_OFFSET - ONTOLOGY_NODE_SIZE / 2,
+  y: center.y - ONTOLOGY_NODE_SIZE / 2,
+});
+
+// Hidden for now per product decision (the create-Entity-Type toolbar row reads as an empty bar
+// with the design's new header above it) — `CreateEntityButton` and `handleCreateEntity` stay
+// fully wired below, just not rendered, so restoring this is a one-line flip back to `true`.
+const SHOW_CREATE_ENTITY_TOOLBAR = false;
+
+// Hidden for now per product decision — see this flag's own use at the "Search focus: …" pill's
+// render site for what stays wired underneath (searchFocus's pan-to-target/dimming/dismissal
+// behavior is all unaffected; only the pill itself is suppressed).
+const SHOW_SEARCH_FOCUS_PILL = false;
+
+const RELATION_GAP = 6;
+// How close a third node's center may come to a connector before it's treated as an obstacle to
+// bow around — the node's own radius plus a visible margin, so the curve clears it by more than
+// just touching the edge.
+const OBSTACLE_CLEARANCE = ONTOLOGY_NODE_SIZE / 2 + 14;
+// Each end's Bezier handle length, as a fraction of the point-to-point distance — a workflow-
+// editor canvas (n8n and similar) always extends a connector's handle along its PORT's fixed exit
+// direction, never straight at the target — that mismatch between "the direction this side always
+// exits" and "where the target actually is" is what produces the curve at all; extending a handle
+// straight at the target (what this used to do) draws 4 collinear points, i.e. a straight line
+// with extra steps. See `graphEdgePath` below.
+const CURVE_STRENGTH = 0.55;
+const MIN_HANDLE = 28;
+const MAX_HANDLE = 130;
+// Same-(node, exit side) edges fan out by rotating their anchor angle apart, in radians per edge
+// — an ANGULAR spread (not a linear/tangential one) so every anchor point stays exactly on the
+// node's own circle no matter how many edges share that side, rather than sliding off it sideways
+// (which used to leave a visible gap between the line and the node it's supposedly attached to).
+const FAN_ANGLE_STEP = (14 * Math.PI) / 180;
+// Even a perfectly axis-aligned pair still gets a hint of curve, capped low enough to stay
+// invisible for two adjacent nodes but present on a long connector — a very long, perfectly
+// ruler-straight line reads as rigid/mechanical next to everything else's soft curves.
+const MIN_CURVE_HANDLE = 8;
+
+/** Which of a node's 4 anchor sides a Relation exits/enters through — like `sideBetween`, but
+ * with a dominance threshold: only commits to a horizontal or vertical side when that axis
+ * clearly leads (>= 1.5x the other), so a genuinely diagonal relationship doesn't flip
+ * unpredictably between two nearly-tied sides as a node moves a few px. Inside that dead zone a
+ * `Side` still has to resolve to something concrete (there's no "diagonal" member) — falls back to
+ * `sideBetween`'s own plain larger-of-the-two rule there, since the alignment-scaled curvature in
+ * `graphEdgePath` already gives a genuinely diagonal edge its own proportionally large, natural
+ * bend regardless of exactly which of the two nearly-tied sides it lands in. */
+const SIDE_DOMINANCE = 1.5;
+const graphSide = (from: Pt, toward: Pt): Side => {
+  const dx = toward.x - from.x;
+  const dy = toward.y - from.y;
+  const adx = Math.abs(dx);
+  const ady = Math.abs(dy);
+  if (ady > adx * SIDE_DOMINANCE) return dy >= 0 ? "bottom" : "top";
+  if (adx > ady * SIDE_DOMINANCE) return dx >= 0 ? "right" : "left";
+  return sideBetween(from, toward);
+};
+
+/** A cubic Bezier's own point at parameter `t` — used both to sample the curve for obstacle
+ * detection and to place the Relation pill exactly on the rendered path (never off of it). */
+const cubicPointAt = (p0: Pt, p1: Pt, p2: Pt, p3: Pt, t: number): Pt => {
+  const mt = 1 - t;
+  const a = mt * mt * mt;
+  const b = 3 * mt * mt * t;
+  const c = 3 * mt * t * t;
+  const d = t * t * t;
+  return {
+    x: a * p0.x + b * p1.x + c * p2.x + d * p3.x,
+    y: a * p0.y + b * p1.y + c * p2.y + d * p3.y,
+  };
+};
+
+// A side's own fixed outward angle (radians, standard atan2 convention) — the same left/right/
+// top/bottom vocabulary `sideBetween` already classifies node-to-node direction into.
+const SIDE_ANGLE: Record<Side, number> = {
+  right: 0,
+  bottom: Math.PI / 2,
+  left: Math.PI,
+  top: -Math.PI / 2,
+};
+
+/** One end of a graph edge, already resolved to its node's actual current side/position — see
+ * `EdgeEnd`'s own construction in `relationGeometry` for how `fanIndex`/`fanCount` get assigned. */
+type EdgeEnd = { center: Pt; side: Side; fanIndex: number; fanCount: number };
+
+/** The anchor point ALWAYS sits exactly on the node's own circle (never slid off to one side) —
+ * fanning same-side edges apart rotates each one's angle around that circle instead of offsetting
+ * the point linearly, which used to leave a visible gap between the line and the node. Returns the
+ * direction (the anchor's own outward radial direction, post-rotation) alongside the point, since
+ * that's also each end's Bezier handle direction below — still generally different from "straight
+ * at the other node" (this is what actually produces the curve), except in the columns where a
+ * fan angle happens to land exactly on the target's own bearing. */
+const edgeEndAnchor = (end: EdgeEnd): { point: Pt; dir: Pt } => {
+  const spread = (end.fanIndex - (end.fanCount - 1) / 2) * FAN_ANGLE_STEP;
+  const angle = SIDE_ANGLE[end.side] + spread;
+  const dir: Pt = { x: Math.cos(angle), y: Math.sin(angle) };
+  const radius = ONTOLOGY_NODE_SIZE / 2;
+  const point: Pt = {
+    x: end.center.x + dir.x * (radius + RELATION_GAP),
+    y: end.center.y + dir.y * (radius + RELATION_GAP),
+  };
+  return { point, dir };
+};
+
+/** A Relation's connector between two circular nodes — a graph edge, not a flowchart step. Always
+ * a smooth cubic Bezier: each end anchors to a FIXED side of its node (left/right/top/bottom, via
+ * `sideBetween` — the same adaptive-side classification Detail's own rectangular-card connectors
+ * use), spread apart from any other edge sharing that same (node, side) so they leave together and
+ * fan out, then each end's Bezier handle extends further along THAT side's own fixed outward
+ * direction — never straight at the target, which is what actually produces the curve (the
+ * mismatch between "the direction this side exits" and "where the target really is"). Bows
+ * further, away from a third node, only when the plain curve would otherwise cut through its
+ * circle. */
+// How much an end's fixed exit direction actually mismatches the straight bearing toward the
+// OTHER end — 0 when they point exactly the same way (nothing to curve away from, so that end's
+// own handle should collapse toward a straight line instead of bending "just because"), rising
+// smoothly toward 1 as the mismatch approaches 90°. Side is always chosen as whichever axis
+// dominates toward the target (see `sideBetween`), so in practice this mismatch never exceeds
+// ~45° — a small mismatch (a target only slightly off-axis from its side's cardinal direction, as
+// "almost directly below" is off-axis from "exactly below") now produces a proportionally small,
+// barely-there bend rather than the SAME fixed handle length every edge used to get regardless of
+// how well-aligned it already was.
+const exitAlignment = (dir: Pt, from: Pt, toward: Pt): number => {
+  const bearing = Math.atan2(toward.y - from.y, toward.x - from.x);
+  const dirAngle = Math.atan2(dir.y, dir.x);
+  let diff = bearing - dirAngle;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  return Math.abs(Math.sin(diff));
+};
+
+function graphEdgePath(
+  fromEnd: EdgeEnd,
+  toEnd: EdgeEnd,
+  others: { id: string; x: number; y: number }[],
+  excludeIds: readonly [string, string],
+): { d: string; mid: Pt } {
+  const { point: p1, dir: dir1 } = edgeEndAnchor(fromEnd);
+  const { point: p2, dir: dir2 } = edgeEndAnchor(toEnd);
+  const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
+  const baseHandle = Math.min(MAX_HANDLE, Math.max(MIN_HANDLE, dist * CURVE_STRENGTH));
+  const curveFloor = Math.min(MIN_CURVE_HANDLE, dist * 0.05);
+  const handle1 = Math.max(curveFloor, baseHandle * exitAlignment(dir1, p1, p2));
+  const handle2 = Math.max(curveFloor, baseHandle * exitAlignment(dir2, p2, p1));
+
+  let c1: Pt = { x: p1.x + dir1.x * handle1, y: p1.y + dir1.y * handle1 };
+  let c2: Pt = { x: p2.x + dir2.x * handle2, y: p2.y + dir2.y * handle2 };
+
+  // Obstacle check against the plain curve's own sampled shape (not just the straight p1-p2
+  // segment) — a gentle curve can already clear a node the straight line would have cut through,
+  // so this only bows further when the CURVE itself still comes too close.
+  const sampleCount = 9;
+  const samples: Pt[] = [];
+  for (let i = 0; i <= sampleCount; i++)
+    samples.push(cubicPointAt(p1, c1, c2, p2, i / sampleCount));
+
+  let minDist = OBSTACLE_CLEARANCE;
+  let obstacle: Pt | null = null;
+  for (const o of others) {
+    if (o.id === excludeIds[0] || o.id === excludeIds[1]) continue;
+    const oc = ontologyNodeCenter(o);
+    for (let i = 0; i < samples.length - 1; i++) {
+      const dist2 = distanceToSegment(oc, samples[i]!, samples[i + 1]!);
+      if (dist2 < minDist) {
+        minDist = dist2;
+        obstacle = oc;
+      }
+    }
+  }
+
+  if (obstacle) {
+    const mx = (p1.x + p2.x) / 2;
+    const my = (p1.y + p2.y) / 2;
+    let nx = -(p2.y - p1.y) / dist;
+    let ny = (p2.x - p1.x) / dist;
+    // Bow away from the obstacle, not toward it.
+    if (nx * (obstacle.x - mx) + ny * (obstacle.y - my) > 0) {
+      nx = -nx;
+      ny = -ny;
+    }
+    // Deliberately small relative to the curve's own length — just enough to nudge clear of the
+    // obstacle, never enough to drag both control points so far sideways that the whole curve
+    // reads as "swings over near that other node" rather than "still clearly a connector between
+    // its own two endpoints" (each end still anchors exactly on its own node's circle regardless —
+    // only the curve's middle moves — but a large bow here used to make that hard to see).
+    const bow = Math.min(OBSTACLE_CLEARANCE - minDist + 10, dist * 0.15, 36);
+    c1 = { x: c1.x + nx * bow, y: c1.y + ny * bow };
+    c2 = { x: c2.x + nx * bow, y: c2.y + ny * bow };
+  }
+
+  return {
+    d: `M ${p1.x} ${p1.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${p2.x} ${p2.y}`,
+    mid: cubicPointAt(p1, c1, c2, p2, 0.5),
+  };
+}
+
 /**
- * The Overview workspace: the ontology graph (pan/zoom, entity nodes, relation lines) plus a
- * side panel for Source Tables. Clicking an Entity or a Table opens Detail directly — no separate
- * confirmation step — via openDetail(), which also updates selection so the click reads as
- * "select and go" in one step. Clicking a Relation only selects it (Inspect) since Relations
+ * The Overview workspace: the ontology graph (pan/zoom, entity nodes, relation lines) alongside a
+ * side panel for Source Tables — the Data Tables panel is collapsible (see `tablePanelOpen`
+ * below), the Ontology canvas is not. Clicking an Entity or a Table opens Detail directly — no
+ * separate confirmation step — via openDetail(), which also updates selection so the click reads
+ * as "select and go" in one step. Clicking a Relation only selects it (Inspect) since Relations
  * don't have a Detail view of their own.
  */
 export function OverviewCanvas({ app }: { app: OntologyApp }) {
@@ -60,10 +284,16 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     selection,
     select,
     openDetail,
+    openDetailWithMorph,
     updateEntity,
     createEntity,
-    addRelation,
+    createEntityWithProperties,
+    createRelation,
+    deleteEntity,
     deleteRelation,
+    deleteEntities,
+    deleteProperties,
+    deleteRelations,
     pushHistory,
     undo,
     redo,
@@ -72,65 +302,48 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     view,
     setView,
     confidenceRange,
+    setConfidenceRange,
+    selectSuggestionKeys,
+    statusFilter,
+    searchFocus,
+    clearSearchFocus,
+    historyPanelOpen,
+    historyInspection,
+    toggleHistoryChangeSelected,
+    historyInspectionHoveredNumber,
+    setHistoryInspectionHoveredNumber,
+    historyRestoreHighlight,
+    suggestionSelection,
+    toggleSuggestionSelected,
+    clearSuggestionSelection,
+    acceptSuggestions,
+    declineSuggestions,
   } = app;
-  // Tables carry an optional confidence (schema discovery sometimes has no signal at all — see
-  // mock-data's own note on `TableSchema.confidence`) — one with none is never excluded by this
-  // filter, the same "no data renders as no opinion" rule the Confidence chip itself follows.
-  const inConfidenceRange = useCallback(
-    (confidence: number | undefined) => {
-      if (confidence == null) return true;
-      const pct = Math.round(confidence * 100);
-      return pct >= confidenceRange.min && pct <= confidenceRange.max;
-    },
-    [confidenceRange],
-  );
 
   const ref = useRef<HTMLDivElement>(null);
   const drag = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
 
-  // The Data Tables panel's own resizable width — grippable at its left edge (see the resize
-  // handle rendered on it below). Can only grow from its default, never shrink below it.
-  const DATA_TABLES_MIN_W = 280;
-  const DATA_TABLES_MAX_W = 520;
-  const [dataTablesWidth, setDataTablesWidth] = useState(DATA_TABLES_MIN_W);
-  const panelResize = useRef<{ startX: number; startWidth: number } | null>(null);
-  const startPanelResize = useCallback(
-    (e: React.PointerEvent) => {
-      e.stopPropagation();
-      e.preventDefault();
-      panelResize.current = { startX: e.clientX, startWidth: dataTablesWidth };
-    },
-    [dataTablesWidth],
-  );
-  useEffect(() => {
-    const onMove = (e: PointerEvent) => {
-      const r = panelResize.current;
-      if (!r) return;
-      // Pinned to the right edge of the screen, so dragging left (negative dx) is what grows it.
-      const dx = e.clientX - r.startX;
-      setDataTablesWidth(clamp(r.startWidth - dx, DATA_TABLES_MIN_W, DATA_TABLES_MAX_W));
-    };
-    const onUp = () => {
-      panelResize.current = null;
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    return () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-    };
-  }, []);
+  // The Select/Pan tool switch in the canvas controls bar below — "select" is the default (a
+  // background drag does nothing but deselect); switching to "pan" is what lets a background drag
+  // move the view instead. Clicking/dragging any node itself works exactly the same in either
+  // tool, regardless of which one is active.
+  const [tool, setTool] = useState<CanvasTool>("select");
+  useCanvasToolShortcuts(tool, setTool, undo, redo);
 
-  // The Select/Pan tool switch in the canvas controls bar below — "pan" (the default, matching
-  // this canvas's original always-drag-to-pan behavior) lets a background drag move the view;
-  // "select" turns that off, so a background drag no longer pans (clicking still deselects and
-  // clicking/dragging any node still works exactly the same in either tool).
-  const [tool, setTool] = useState<CanvasTool>("pan");
-  useCanvasToolShortcuts(tool, setTool);
+  // The Data Tables panel's own collapse toggle — independent of the Ontology canvas, which is
+  // always shown at full width alongside it. Collapsing only hides this panel's own content; it
+  // never touches canvas content, selection, or the ontology itself.
+  const TABLE_PANEL_OPEN_W = 280;
+  const TABLE_PANEL_COLLAPSED_W = 44;
+  const [tablePanelOpen, setTablePanelOpen] = useState(true);
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
     select(null);
+    // Clicking empty canvas is one of Global Search's own "exit this focus state" gestures (see
+    // app-state's `searchFocus` doc comment) — harmless to call unconditionally even when no
+    // search focus is active, since clearing an already-null value is a no-op.
+    clearSearchFocus();
     if (tool !== "pan") return;
     drag.current = { sx: e.clientX, sy: e.clientY, ox: view.x, oy: view.y };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -153,8 +366,10 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     const rect = el.getBoundingClientRect();
     const minX = Math.min(...entities.map((e) => e.x));
     const minY = Math.min(...entities.map((e) => e.y));
-    const maxX = Math.max(...entities.map((e) => e.x + NODE_W));
-    const maxY = Math.max(...entities.map((e) => e.y + NODE_H));
+    // +40 below the node's own footprint gives the name/subtitle label room in the fit, so it
+    // never clips at the bottom edge of the canvas.
+    const maxX = Math.max(...entities.map((e) => e.x + ONTOLOGY_NODE_SIZE));
+    const maxY = Math.max(...entities.map((e) => e.y + ONTOLOGY_NODE_SIZE + 40));
     const contentW = maxX - minX;
     const contentH = maxY - minY;
     const pad = 72;
@@ -188,9 +403,34 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     [view],
   );
 
-  // Direct-manipulation connector drag — creates a relation by dragging from one entity node's
-  // hover-revealed handle onto another. Relations can only ever be created or deleted this way,
-  // never re-pointed once they exist.
+  // The canvas-first creation wizard's own request state — set the moment a connect-drag (see
+  // `connectDrag` just below) is released over empty canvas, and cleared the moment the wizard
+  // closes, however it closes. `source` is `null` for a fully standalone Entity; `centerPosition`
+  // is always where the new node's own CIRCLE (not its wrapper) should land, in world space — see
+  // `wrapperOriginForCenter`'s own doc comment for why that distinction matters once the wizard
+  // actually finishes and calls `createEntityWithProperties`. Nothing here touches Current
+  // Ontology on its own — this is purely "which draft is the wizard currently showing."
+  const [creationRequest, setCreationRequest] = useState<{
+    centerPosition: Pt;
+    source: { entityId: string; side: Side } | null;
+  } | null>(null);
+
+  // `centerPosition` is always the actual drop point of the connect-drag that triggered this (see
+  // `connectDrag`'s own pointer-up handler below) — the new Entity lands exactly where the user
+  // released the drag, never a fixed offset from the source.
+  const startCreateConnectedEntity = useCallback(
+    (sourceId: string, side: Side, centerPosition: Pt) => {
+      setCreationRequest({ centerPosition, source: { entityId: sourceId, side } });
+    },
+    [],
+  );
+
+  // Direct-manipulation connector drag — dragging from one entity node's hover-revealed handle
+  // (see `OntologyNode`'s own doc comment on `onStartConnect`) resolves to one of two outcomes
+  // purely by where it's released: onto an existing Entity, it creates a Relation between the two;
+  // onto empty canvas, it opens the creation wizard for a brand-new, connected Entity Type placed
+  // at the drop point. Relations can only ever be created or deleted this way, never re-pointed
+  // once they exist.
   const [connectDrag, setConnectDrag] = useState<{
     sourceId: string;
     side: Side;
@@ -206,8 +446,8 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       let bestDist = Infinity;
       for (const en of entities) {
         if (en.id === excludeId) continue;
-        if (!pointInNode(p, en)) continue;
-        const c = nodeCenter(en);
+        if (!pointInRect(p, nodeRect(en))) continue;
+        const c = ontologyNodeCenter(en);
         const dist = Math.hypot(p.x - c.x, p.y - c.y);
         if (dist < bestDist) {
           best = en;
@@ -236,7 +476,32 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     };
     const onUp = (e: PointerEvent) => {
       const hit = findEntityAt(e.clientX, e.clientY, connectDrag.sourceId);
-      if (hit) addRelation(connectDrag.sourceId, hit.id);
+      const dropPoint = toWorld(e.clientX, e.clientY);
+      // `findEntityAt` deliberately excludes the drag's own source (so the hover-highlight above
+      // never rings the source's own opposite side while dragging near it) — but a self-relation
+      // is explicitly allowed, so the final drop still needs its own check for "landed back on the
+      // entity it started from," separate from that general hit-test.
+      const sourceEntity = entities.find((en) => en.id === connectDrag.sourceId);
+      const droppedOnSource = sourceEntity && pointInRect(dropPoint, nodeRect(sourceEntity));
+      if (hit) {
+        setRelationDialogRequest({ sourceId: connectDrag.sourceId, targetId: hit.id });
+      } else if (droppedOnSource) {
+        setRelationDialogRequest({
+          sourceId: connectDrag.sourceId,
+          targetId: connectDrag.sourceId,
+        });
+      } else {
+        // A release that never really left the handle (e.g. a plain click that started a drag by
+        // accident) is a no-op, not "create a new Entity Type here" — same 6px click-vs-drag
+        // threshold the rest of the canvas uses.
+        const dragDistance = Math.hypot(
+          dropPoint.x - connectDrag.origin.x,
+          dropPoint.y - connectDrag.origin.y,
+        );
+        if (dragDistance > 6) {
+          startCreateConnectedEntity(connectDrag.sourceId, connectDrag.side, dropPoint);
+        }
+      }
       setConnectDrag(null);
       setConnectPos(null);
       setConnectTargetId(null);
@@ -247,13 +512,53 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [connectDrag, toWorld, findEntityAt, addRelation]);
+  }, [connectDrag, toWorld, findEntityAt, startCreateConnectedEntity, entities]);
+
+  // The "Define Relation" dialog's own request state — set the moment a connect-drag (see
+  // `connectDrag` just above) is released ON an existing Entity, replacing the old behavior where
+  // that same drop created an unnamed Relation immediately. Cleared on Cancel or once `createRelation`
+  // actually runs; nothing here touches Current Ontology on its own.
+  const [relationDialogRequest, setRelationDialogRequest] = useState<{
+    sourceId: string;
+    targetId: string;
+  } | null>(null);
+  const relationDialogSource = relationDialogRequest
+    ? (entities.find((e) => e.id === relationDialogRequest.sourceId) ?? null)
+    : null;
+  const relationDialogTarget = relationDialogRequest
+    ? (entities.find((e) => e.id === relationDialogRequest.targetId) ?? null)
+    : null;
+  const handleRelationDialogCancel = useCallback(() => setRelationDialogRequest(null), []);
+  const handleRelationDialogCreate = useCallback(
+    ({ name, direction }: { name: string; direction: "fromSource" | "toSource" }) => {
+      if (!relationDialogRequest) return;
+      const fromId =
+        direction === "fromSource"
+          ? relationDialogRequest.sourceId
+          : relationDialogRequest.targetId;
+      const toId =
+        direction === "fromSource"
+          ? relationDialogRequest.targetId
+          : relationDialogRequest.sourceId;
+      createRelation(fromId, toId, name);
+      setRelationDialogRequest(null);
+    },
+    [relationDialogRequest, createRelation],
+  );
 
   const connectTargetEntity = connectTargetId
     ? entities.find((e) => e.id === connectTargetId)
     : undefined;
   const connectTargetSide =
-    connectTargetEntity && connectPos ? nearestSide(connectTargetEntity, connectPos) : null;
+    connectTargetEntity && connectPos
+      ? sideBetween(ontologyNodeCenter(connectTargetEntity), connectPos)
+      : null;
+
+  // Every rendered Entity node's own outer DOM wrapper, keyed by entity id — read once, at the
+  // moment a click (not a drag) resolves, purely to measure exactly where its status circle and
+  // name label currently sit on screen for the Overview→Editing morph transition (see
+  // `EntityMorphOrigin`). Never used for anything else (no re-render depends on this ref).
+  const nodeElRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
   // Direct-manipulation node move — dragging an entity's own body (not a connection handle)
   // repositions it, persisted as its x/y in app-state so the layout survives a re-render. Below
@@ -284,6 +589,33 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     [entities],
   );
 
+  // "Go to Editing Mode" — the entity-selection bar's own explicit navigation action (see
+  // `onUp` below for why a plain click no longer does this by itself). Reuses the exact same
+  // "measure the node's own circle + name label right now, then morph" logic a click used to run
+  // inline, just triggered by the button (or a double-click — see `onUp`) instead — falling back
+  // to a plain `openDetail` whenever either piece can't be measured, same as before. Declared
+  // ahead of the node-drag effect below so that effect can call it directly.
+  const goToEditingMode = useCallback(
+    (id: string) => {
+      const wrapperEl = nodeElRefs.current.get(id);
+      const circleEl = wrapperEl?.querySelector(".rounded-full");
+      const labelEl = wrapperEl?.querySelector("[data-morph-label]");
+      if (circleEl && labelEl) {
+        openDetailWithMorph(id, circleEl.getBoundingClientRect(), labelEl.getBoundingClientRect());
+      } else {
+        openDetail("entity", id);
+      }
+    },
+    [openDetail, openDetailWithMorph],
+  );
+
+  // A second plain click on the SAME Entity within `DOUBLE_CLICK_MS` resolves as a double-click
+  // (see `onUp` below) rather than two independent single-clicks — tracked by hand (not the native
+  // `dblclick` event) since this canvas already resolves click-vs-drag itself from raw pointer
+  // events, and mixing in a second, browser-native gesture recognizer for just this one case would
+  // only add a second source of truth to keep in sync with the first.
+  const lastEntityClickRef = useRef<{ id: string; at: number } | null>(null);
+
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
       const info = nodeDragInfo.current;
@@ -302,10 +634,33 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
         updateEntity(info.id, { x: info.startX + dx / view.z, y: info.startY + dy / view.z });
       }
     };
-    const onUp = () => {
+    const onUp = (e: PointerEvent) => {
       const info = nodeDragInfo.current;
       nodeDragInfo.current = null;
-      if (info && !info.moved) openDetail("entity", info.id);
+      if (!info || info.moved) return;
+      // Shift-click adds/removes this Entity from the multi-select set instead of the plain single
+      // `selection` — the same Set `suggestionSelection` already uses for "Select all in range",
+      // so a shift-click multi-selection shows the exact same composition-breakdown bar (see the
+      // bottom-center stack below) rather than a second, parallel multi-select concept.
+      if (e.shiftKey) {
+        toggleSuggestionSelected({ kind: "entity", id: info.id });
+        return;
+      }
+      // A second plain click on this same Entity within `DOUBLE_CLICK_MS` jumps straight into
+      // Editing Mode — the fast path alongside the contextual bar's own explicit "Go to Editing
+      // Mode" button, not a replacement for it.
+      const last = lastEntityClickRef.current;
+      if (last && last.id === info.id && Date.now() - last.at < DOUBLE_CLICK_MS) {
+        lastEntityClickRef.current = null;
+        goToEditingMode(info.id);
+        return;
+      }
+      lastEntityClickRef.current = { id: info.id, at: Date.now() };
+      // A plain (single) click only SELECTS the Entity — it no longer jumps straight into Editing
+      // Mode on its own. Selecting reveals the contextual action bar in place of the default AI
+      // Review bar (see the bottom-center stack below), which offers "Go to Editing Mode" as its
+      // own explicit action too.
+      select({ kind: "entity", id: info.id });
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -313,7 +668,44 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [updateEntity, openDetail, view.z, pushHistory]);
+  }, [updateEntity, select, toggleSuggestionSelected, goToEditingMode, view.z, pushHistory]);
+
+  // Composite "Delete" for the multi-select bar (see `SuggestionSelectionBar`'s own doc comment
+  // on `onDeleteSuggestions`) — a selection can mix Entities/Properties/Relations at once (e.g.
+  // "Select all in range"), so this partitions by kind and calls each kind's own batch delete
+  // exactly once, rather than looping single-item deletes (which would re-trash a Relation once
+  // per side if both its Entities happen to be in the same batch — see `deleteEntities`'s own doc
+  // comment in app-state.ts). Clearing the selection afterward mirrors Accept/Decline, which
+  // already implicitly empty it by removing every selected key's own underlying object.
+  const deleteSuggestionKeys = useCallback(
+    (keys: string[]) => {
+      const entityIds: string[] = [];
+      const propertyItems: { entityId: string; propertyId: string }[] = [];
+      const relationIds: string[] = [];
+      keys.forEach((key) => {
+        const ref = parseSuggestionKey(key);
+        if (!ref) return;
+        if (ref.kind === "entity") entityIds.push(ref.id);
+        else if (ref.kind === "relation") relationIds.push(ref.id);
+        else propertyItems.push({ entityId: ref.entityId, propertyId: ref.propertyId });
+      });
+      if (entityIds.length > 0) deleteEntities(entityIds);
+      if (propertyItems.length > 0) deleteProperties(propertyItems);
+      if (relationIds.length > 0) deleteRelations(relationIds);
+      clearSuggestionSelection();
+    },
+    [deleteEntities, deleteProperties, deleteRelations, clearSuggestionSelection],
+  );
+
+  // The single-Entity contextual bar's own subject — `null` whenever the current `selection`
+  // isn't an Entity (a Relation/Table selection, or nothing at all) at all, in which case the
+  // bottom-center stack falls back to the default `AiReviewBar` — see the render site below.
+  const selectedEntity =
+    selection?.kind === "entity" ? (entities.find((e) => e.id === selection.id) ?? null) : null;
+  // Same idea, for the single-Relation contextual bar (`RelationSelectionBar`) — `null` whenever
+  // `selection` isn't a Relation.
+  const selectedRelation =
+    selection?.kind === "relation" ? (relations.find((r) => r.id === selection.id) ?? null) : null;
 
   const zoomBy = useCallback(
     (factor: number) => {
@@ -331,6 +723,76 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     [setView],
   );
 
+  // Jumps straight to an exact zoom level (the Zoom menu's own presets — see CanvasToolStack's
+  // `onSetZoomPercent` doc comment) instead of the multiplicative `zoomBy` above, but keeps the
+  // same viewport-center-preserving math so a preset pick doesn't also re-center the canvas.
+  const setZoomPercent = useCallback(
+    (pct: number) => {
+      const el = ref.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const px = rect.width / 2;
+      const py = rect.height / 2;
+      setView((v) => {
+        const next = clamp(pct / 100, MIN_Z, MAX_Z);
+        const k = next / v.z;
+        return { z: next, x: px - (px - v.x) * k, y: py - (py - v.y) * k };
+      });
+    },
+    [setView],
+  );
+
+  // Same viewport-anchored math as `zoomBy` above, but around an arbitrary screen point (the
+  // cursor) instead of always the viewport center — used by the trackpad-pinch/Cmd+wheel zoom
+  // gesture below, so the point under the cursor stays fixed while the rest of the canvas scales
+  // around it, matching every other pan/zoom-capable canvas app's own convention.
+  const zoomAtPoint = useCallback(
+    (px: number, py: number, factor: number) => {
+      setView((v) => {
+        const next = clamp(v.z * factor, MIN_Z, MAX_Z);
+        const k = next / v.z;
+        return { z: next, x: px - (px - v.x) * k, y: py - (py - v.y) * k };
+      });
+    },
+    [setView],
+  );
+
+  // Trackpad/mouse-wheel pan+zoom — a native, non-passive listener (rather than JSX `onWheel`)
+  // since `preventDefault` on a wheel event is only reliable off a listener explicitly registered
+  // as non-passive; without it the browser's own page-zoom/back-swipe gestures fight this one.
+  // Deliberately NOT gated on `tool`/`historyPanelOpen` — every other pan/zoom-capable canvas app
+  // treats wheel/trackpad navigation as always-on regardless of the active tool, and History
+  // Inspection already keeps zoom/pan live (see this file's own `CanvasToolStack` doc comment
+  // above) since navigating to look at markers is exactly what Inspection is for.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      if (e.ctrlKey || e.metaKey) {
+        // Trackpad pinch (browsers report this as a wheel event with `ctrlKey: true` regardless
+        // of whether Ctrl is actually held) and an explicit Cmd/Ctrl+wheel both zoom around the
+        // cursor — the same gesture, so the same branch handles both.
+        const factor = Math.exp(-e.deltaY * 0.01);
+        zoomAtPoint(px, py, factor);
+      } else if (e.shiftKey) {
+        // Shift+wheel pans horizontally — a plain mouse only ever reports its scroll on deltaY,
+        // so that's what Shift retargets to the x-axis; a trackpad with Shift held may already
+        // report the motion on deltaX itself, so prefer whichever axis actually moved.
+        const dx = e.deltaX !== 0 ? e.deltaX : e.deltaY;
+        setView((v) => ({ ...v, x: v.x - dx }));
+      } else {
+        // Plain wheel (mouse: vertical only) or a trackpad two-finger scroll (both axes at once).
+        setView((v) => ({ ...v, x: v.x - e.deltaX, y: v.y - e.deltaY }));
+      }
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [zoomAtPoint, setView]);
+
   // "In focus" emphasis: whichever entity is hovered (falling back to the current Inspect
   // selection when nothing is hovered, e.g. right after Back returns here) — plus whichever
   // entities it's directly related to. Hover rather than click/selection drives this because a
@@ -346,102 +808,123 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
   // takes priority over a stale Inspect selection above.
   const [hoveredTableName, setHoveredTableName] = useState<string | null>(null);
 
-  // Search for the two side panels below — collapsed behind a Search icon in each panel's own
-  // header rather than a permanently-visible input, and scoped separately per the panel it lives
-  // in: Ontology searches Entity Type / Property / Relation
-  // names, Data Tables searches Table / Column names. Pure display filtering either way — it
-  // narrows which rows render, never the canvas or the ontology data itself. Closing a panel's
-  // search also clears its own query, so a collapsed search never leaves the list silently
-  // filtered.
-  const [entitySearchOpen, setEntitySearchOpen] = useState(false);
-  const [tableSearchOpen, setTableSearchOpen] = useState(false);
-  const [entitySearch, setEntitySearch] = useState("");
-  const [tableSearch, setTableSearch] = useState("");
   // Data Tables panel's own compact sort control (see SortDropdown) — Entity Types has no
-  // equivalent panel here anymore (see the Ontology canvas header's on-demand search below), so
-  // only this one list needs it.
+  // equivalent panel here anymore. Per-panel local search (Entity Type/Property/Relation here,
+  // Table/Column in the Data Tables panel below) has been removed in favor of the Header's own
+  // Global Search, which covers the exact same object types across the whole Ontology + Data
+  // model at once — see `GlobalSearchPalette`/app-state's `searchFocus` doc comments for why
+  // keeping both would just be two ways to do the same search.
   const [tableSort, setTableSort] = useState<SortState>(DEFAULT_SORT);
-  const toggleEntitySearch = useCallback(() => {
-    setEntitySearchOpen((open) => {
-      if (open) setEntitySearch("");
-      return !open;
-    });
-  }, []);
-  const toggleTableSearch = useCallback(() => {
-    setTableSearchOpen((open) => {
-      if (open) setTableSearch("");
-      return !open;
-    });
-  }, []);
 
-  const entityQuery = entitySearch.trim().toLowerCase();
-  // Hierarchical match, same "parent stays visible for a matching child" rule Detail's own panel
-  // search already uses: a Property match keeps its owning Entity Type visible (and shows which
-  // Property matched underneath) even when the Entity Type's own name doesn't match.
-  const matchedPropertiesByEntity = useMemo(() => {
-    const map = new Map<string, Property[]>();
-    if (!entityQuery) return map;
-    entities.forEach((e) => {
-      const matches = e.properties.filter((p) => p.name.toLowerCase().includes(entityQuery));
-      if (matches.length > 0) map.set(e.id, matches);
-    });
-    return map;
-  }, [entities, entityQuery]);
-  const matchedRelations = useMemo(() => {
-    if (!entityQuery) return [];
-    return relations.filter((r) => r.name.toLowerCase().includes(entityQuery));
-  }, [relations, entityQuery]);
-  const filteredEntities = useMemo(
-    () =>
-      entities.filter(
-        (e) =>
-          (e.name.toLowerCase().includes(entityQuery) || matchedPropertiesByEntity.has(e.id)) &&
-          inConfidenceRange(e.confidence),
-      ),
-    [entities, entityQuery, matchedPropertiesByEntity, inConfidenceRange],
-  );
-
-  const tableQuery = tableSearch.trim().toLowerCase();
-  const matchedColumnsByTable = useMemo(() => {
-    const map = new Map<string, TableColumn[]>();
-    if (!tableQuery) return map;
-    tables.forEach((t) => {
-      const matches = t.columns.filter((c) => c.name.toLowerCase().includes(tableQuery));
-      if (matches.length > 0) map.set(t.name, matches);
-    });
-    return map;
-  }, [tables, tableQuery]);
-  const filteredTables = useMemo(
-    () =>
-      tables.filter(
-        (t) =>
-          (t.name.toLowerCase().includes(tableQuery) || matchedColumnsByTable.has(t.name)) &&
-          inConfidenceRange(t.confidence),
-      ),
-    [tables, tableQuery, matchedColumnsByTable, inConfidenceRange],
-  );
+  // Confidence range and Filter now affect Data Tables the same way they already affect Entity
+  // Types — de-emphasized, never removed — so every Table always stays in this list; Confidence
+  // dims a Table row (via `isTableInScope`) instead of hiding it. Tables have no Confidence or
+  // ReviewStatus of their own — `isTableInScope`/`tableHighestMappingConfidence` derive both from
+  // whichever Property↔Column Mapping(s) touch the table instead (see their own doc comments).
   const sortedTables = useMemo(
     () =>
       sortByState(
-        filteredTables,
+        tables,
         tableSort,
         (t) => t.name,
-        (t) => t.confidence,
+        (t) => tableHighestMappingConfidence(t.name, entities),
       ),
-    [filteredTables, tableSort],
+    [tables, tableSort, entities],
   );
+  // Global Search's connected context (see app-state's own `searchFocus`/`selectSearchResult` doc
+  // comments) — null whenever no search result is currently focused. `primaryEntityId` is the one
+  // entity `focusEntity`/`focusRelation` below actually centers the camera on; `connectedEntityIds`
+  // is that entity plus everything "reveal connected context" calls for (an Entity result's direct
+  // relation-neighbors; a Property result's own owning Entity; both endpoints of a Relation result;
+  // every Entity mapped to a Table/Column result); `tableNames` is which Data Table row(s) to
+  // scroll to and highlight in the panel on the right.
+  const searchContext = useMemo(() => {
+    if (!searchFocus) return null;
+    const connectedEntityIds = new Set<string>();
+    const tableNames = new Set<string>();
+    let primaryEntityId: string | undefined;
+
+    if (searchFocus.kind === "entity") {
+      const entity = entities.find((e) => e.id === searchFocus.id);
+      if (!entity) return null;
+      primaryEntityId = entity.id;
+      connectedEntityIds.add(entity.id);
+      relations.forEach((r) => {
+        if (r.from === entity.id) connectedEntityIds.add(r.to);
+        if (r.to === entity.id) connectedEntityIds.add(r.from);
+      });
+      tablesUsedByEntity(entity).forEach((t) => tableNames.add(t));
+    } else if (searchFocus.kind === "property") {
+      const entity = entities.find((e) => e.id === searchFocus.entityId);
+      if (!entity) return null;
+      primaryEntityId = entity.id;
+      connectedEntityIds.add(entity.id);
+      const property = entity.properties.find((p) => p.id === searchFocus.propertyId);
+      if (property?.mapping) tableNames.add(property.mapping.table);
+    } else if (searchFocus.kind === "relation") {
+      const relation = relations.find((r) => r.id === searchFocus.id);
+      if (!relation) return null;
+      primaryEntityId = relation.from;
+      connectedEntityIds.add(relation.from);
+      connectedEntityIds.add(relation.to);
+    } else if (searchFocus.kind === "table") {
+      tableNames.add(searchFocus.name);
+      entitiesUsingTable(searchFocus.name, entities).forEach((e) => {
+        connectedEntityIds.add(e.id);
+        primaryEntityId ??= e.id;
+      });
+    } else {
+      tableNames.add(searchFocus.table);
+      const column = tableColumnUsage(searchFocus.table, entities).find(
+        (c) => c.name === searchFocus.column,
+      );
+      column?.mappedBy.forEach((m) => {
+        connectedEntityIds.add(m.entityId);
+        primaryEntityId ??= m.entityId;
+      });
+    }
+
+    return { primaryEntityId, connectedEntityIds, tableNames };
+  }, [searchFocus, entities, relations]);
+
   // A hovered table's own "neighbors" are just every entity mapped to it — there's no further
   // "related" tier the way an entity's relation-neighbors form one, so this only ever produces
   // "active" or "muted", never "related". Takes priority over `highlightId` (the entity-hover
-  // basis) whenever a table is actively hovered.
+  // basis) whenever a table is actively hovered — Global Search's own connected context takes top
+  // priority over BOTH, the same way a deliberate search should outrank incidental mouse hover.
   const activeEntityIds = useMemo(() => {
+    if (searchContext) {
+      return searchContext.primaryEntityId
+        ? new Set([searchContext.primaryEntityId])
+        : new Set(searchContext.connectedEntityIds);
+    }
     if (hoveredTableName)
       return new Set(entitiesUsingTable(hoveredTableName, entities).map((e) => e.id));
     if (highlightId) return new Set([highlightId]);
     return null;
-  }, [hoveredTableName, highlightId, entities]);
+  }, [searchContext, hoveredTableName, highlightId, entities]);
+
+  // The mirror image of `hoveredTableName`'s own entity-highlight above: which Data Table rows to
+  // highlight because the currently "active" Entity (hover, or the same selection-fallback
+  // `highlightId` already uses) maps into them. Skipped entirely while a table is the one actively
+  // hovered — that direction already owns the highlight (see `activeEntityIds`), so this never
+  // fights it by re-highlighting a different set of tables at the same time.
+  const activeEntityTableNames = useMemo(() => {
+    if (hoveredTableName || !activeEntityIds) return null;
+    const names = new Set<string>();
+    activeEntityIds.forEach((id) => {
+      const entity = entities.find((e) => e.id === id);
+      if (entity) tablesUsedByEntity(entity).forEach((name) => names.add(name));
+    });
+    return names;
+  }, [hoveredTableName, activeEntityIds, entities]);
 
   const neighborIds = useMemo(() => {
+    if (searchContext) {
+      const set = new Set(searchContext.connectedEntityIds);
+      if (searchContext.primaryEntityId) set.delete(searchContext.primaryEntityId);
+      return set;
+    }
     if (!highlightId || hoveredTableName) return null;
     const set = new Set<string>();
     relations.forEach((r) => {
@@ -449,13 +932,227 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       if (r.to === highlightId) set.add(r.from);
     });
     return set;
-  }, [highlightId, relations, hoveredTableName]);
+  }, [searchContext, highlightId, relations, hoveredTableName]);
+
+  // Each Relation's connector geometry, computed once per render and shared by the SVG path, the
+  // Relation pill's position, and focusRelation's camera-centering below — so the line, the pill
+  // sitting on it, and "pan to here" all agree on exactly the same curve.
+  const relationGeometry = useMemo(() => {
+    const centerOf = new Map<string, Pt>();
+    entities.forEach((e) => centerOf.set(e.id, ontologyNodeCenter(e)));
+
+    // Every edge touches two node-sides (its `from` end and its `to` end) — group ALL of them by
+    // (nodeId, side) first, since two different Relations can easily share the same node exiting
+    // the same side (e.g. two edges both leaving a node's "right" side toward different targets),
+    // and those need to know their own position within that shared group to fan out instead of
+    // leaving from the exact same point. Ordered by each end's actual angle to its OTHER node, so
+    // the fan reads top-to-bottom/left-to-right sensibly rather than in an arbitrary order.
+    type PendingEnd = { key: string; nodeId: string; side: Side; angle: number };
+    const endKey = (relationId: string, role: "from" | "to") => `${relationId}|${role}`;
+    const pendingByKey = new Map<string, PendingEnd>();
+    const groups = new Map<string, string[]>();
+    relations.forEach((r) => {
+      const ca = centerOf.get(r.from);
+      const cb = centerOf.get(r.to);
+      if (!ca || !cb) return;
+      const ends: { role: "from" | "to"; nodeId: string; side: Side; angle: number }[] = [
+        {
+          role: "from",
+          nodeId: r.from,
+          side: graphSide(ca, cb),
+          angle: Math.atan2(cb.y - ca.y, cb.x - ca.x),
+        },
+        {
+          role: "to",
+          nodeId: r.to,
+          side: graphSide(cb, ca),
+          angle: Math.atan2(ca.y - cb.y, ca.x - cb.x),
+        },
+      ];
+      ends.forEach(({ role, nodeId, side, angle }) => {
+        const key = endKey(r.id, role);
+        pendingByKey.set(key, { key, nodeId, side, angle });
+        const groupKey = `${nodeId}|${side}`;
+        groups.set(groupKey, [...(groups.get(groupKey) ?? []), key]);
+      });
+    });
+    groups.forEach((keys) =>
+      keys.sort((ka, kb) => pendingByKey.get(ka)!.angle - pendingByKey.get(kb)!.angle),
+    );
+
+    const resolveEnd = (relationId: string, role: "from" | "to"): EdgeEnd | null => {
+      const pending = pendingByKey.get(endKey(relationId, role));
+      if (!pending) return null;
+      const group = groups.get(`${pending.nodeId}|${pending.side}`)!;
+      return {
+        center: centerOf.get(pending.nodeId)!,
+        side: pending.side,
+        fanIndex: group.indexOf(pending.key),
+        fanCount: group.length,
+      };
+    };
+
+    const map = new Map<string, { d: string; mid: Pt }>();
+    relations.forEach((r) => {
+      const fromEnd = resolveEnd(r.id, "from");
+      const toEnd = resolveEnd(r.id, "to");
+      if (!fromEnd || !toEnd) return;
+      map.set(r.id, graphEdgePath(fromEnd, toEnd, entities, [r.from, r.to]));
+    });
+    return map;
+  }, [relations, entities]);
+
+  // Resolves any of the History/Search `ref` kinds this canvas can actually place to a world-space
+  // point — shared by the numbered inspection markers and the post-restore highlight below. A
+  // Property/Column ref has no node of its own on this canvas, so it resolves to the owning
+  // Entity's node instead, the same "closest thing that IS shown here" fallback `searchContext`
+  // above already uses for Property results. A ref this canvas simply can't place (e.g. one whose
+  // object was deleted, or a Trash-only object with no node here at all) resolves to `undefined`
+  // and is silently skipped, never shown floating at (0,0).
+  const centerOfMap = useMemo(() => {
+    const map = new Map<string, Pt>();
+    entities.forEach((e) => map.set(e.id, ontologyNodeCenter(e)));
+    return map;
+  }, [entities]);
+  const pointForRef = useCallback(
+    (ref: SearchResultRef): Pt | undefined => {
+      if (ref.kind === "entity") return centerOfMap.get(ref.id);
+      if (ref.kind === "property") return centerOfMap.get(ref.entityId);
+      if (ref.kind === "relation") return relationGeometry.get(ref.id)?.mid;
+      return undefined;
+    },
+    [centerOfMap, relationGeometry],
+  );
+
+  // History Inspection Mode's own numbered ①②③... markers (see app-state's own
+  // `HistoryInspection` doc comment) — one per change that has a `ref` this canvas can place,
+  // without filtering out anything else on the canvas (preserve context, never hide). Each marker
+  // doubles as the same select/deselect control as its matching row in the History panel — see
+  // the marker's own click handler below.
+  const historyMarkers = useMemo(() => {
+    if (!historyInspection) return [];
+    const markers: { number: number; x: number; y: number; restorable: boolean }[] = [];
+    historyInspection.changes.forEach((c) => {
+      if (!c.ref) return;
+      const pt = pointForRef(c.ref);
+      if (!pt) return;
+      // Offset to the node's own top-right corner rather than dead center — an Entity/Property
+      // marker sitting exactly on top of the node it's badging would be camouflaged against (or
+      // hidden behind) that same node's own circle; a Relation marker (already its own free-
+      // floating midpoint on the edge, not on top of any node) needs no such offset.
+      const badgeOffset = c.ref.kind === "relation" ? 0 : ONTOLOGY_NODE_SIZE / 2;
+      markers.push({
+        number: c.number,
+        x: pt.x + badgeOffset,
+        y: pt.y - badgeOffset,
+        restorable: c.restorable,
+      });
+    });
+    return markers;
+  }, [historyInspection, pointForRef]);
+
+  // Every Entity Type touched by the event currently being inspected — used only to give those
+  // nodes a brief "active" emphasis (see `emphasisFor` below) so they stand out from the rest of
+  // the (still fully visible, never hidden) canvas while inspecting.
+  const historyInspectionEntityIds = useMemo(() => {
+    if (!historyInspection) return null;
+    const ids = new Set<string>();
+    historyInspection.changes.forEach((c) => {
+      const changeRef = c.ref;
+      if (!changeRef) return;
+      if (changeRef.kind === "entity") ids.add(changeRef.id);
+      else if (changeRef.kind === "property") ids.add(changeRef.entityId);
+      else if (changeRef.kind === "relation") {
+        const r = relations.find((x) => x.id === changeRef.id);
+        if (r) {
+          ids.add(r.from);
+          ids.add(r.to);
+        }
+      }
+    });
+    return ids;
+  }, [historyInspection, relations]);
+
+  // The brief post-restore "this just came back" glow (see app-state's own
+  // `historyRestoreHighlight` doc comment) — resolved to canvas points the exact same way the
+  // inspection markers above are.
+  const restoreHighlightMarkers = useMemo(() => {
+    return historyRestoreHighlight.map((ref) => pointForRef(ref)).filter((pt): pt is Pt => !!pt);
+  }, [historyRestoreHighlight, pointForRef]);
+
+  // Overlays a patch change's own "before" value on top of Current Ontology's Entity name/
+  // description — the only two fields this canvas actually renders text for — so the canvas can
+  // show what the ontology looked like at the inspected point without a second, parallel copy of
+  // the whole graph (see this feature's own spec on reconstructing "just enough" historical
+  // state). Only ever cosmetic: nothing here touches `entities` itself, and it's read fresh from
+  // `historyInspection.changes` every time, so it can never drift from what the panel shows for
+  // the exact same event.
+  const historyValueOverrides = useMemo(() => {
+    if (!historyInspection) return null;
+    const map = new Map<string, { name?: string; description?: string }>();
+    historyInspection.changes.forEach((c) => {
+      if (c.restore?.kind !== "entityPatch") return;
+      const existing = map.get(c.restore.id) ?? {};
+      if (c.restore.before.name !== undefined) existing.name = c.restore.before.name;
+      if (c.restore.before.description !== undefined) {
+        existing.description = c.restore.before.description;
+      }
+      map.set(c.restore.id, existing);
+    });
+    return map;
+  }, [historyInspection]);
+
+  const displayEntities = useMemo(() => {
+    if (!historyValueOverrides || historyValueOverrides.size === 0) return entities;
+    return entities.map((e) => {
+      const override = historyValueOverrides.get(e.id);
+      return override ? { ...e, ...override } : e;
+    });
+  }, [entities, historyValueOverrides]);
+
+  // Pans/centers on the first placeable change the moment a NEW History Inspection starts (never
+  // re-fires on a later selection/hover change within the same inspection) — the same "camera
+  // moves, nothing about the graph itself does" mechanism `focusEntity`/`focusRelation` already
+  // are, just triggered by entering Inspection Mode instead of a Search result.
+  const lastPannedInspectionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!historyInspection) {
+      lastPannedInspectionRef.current = null;
+      return;
+    }
+    if (lastPannedInspectionRef.current === historyInspection.entryId) return;
+    lastPannedInspectionRef.current = historyInspection.entryId;
+    const primaryRef = historyInspection.changes.find((c) => c.ref)?.ref;
+    if (!primaryRef) return;
+    const pt = pointForRef(primaryRef);
+    const el = ref.current;
+    if (!pt || !el) return;
+    const rect = el.getBoundingClientRect();
+    setView((v) => ({ ...v, x: rect.width / 2 - pt.x * v.z, y: rect.height / 2 - pt.y * v.z }));
+  }, [historyInspection, pointForRef, setView]);
 
   const emphasisFor = (entityId: string) => {
-    // Confidence filtering always wins — an out-of-range entity stays muted regardless of hover,
-    // the same way it's simply left out of the Entity types / Data Tables lists below.
+    // History Inspection Mode takes over emphasis entirely while it's active: every Entity Type
+    // the inspected event actually touched gets a brief "active" ring, everything else gets the
+    // same "dim, never hide" treatment the app already uses for Confidence/Filter scope — nothing
+    // is removed from the canvas, so the rest of the graph stays there for context.
+    if (historyInspectionEntityIds) {
+      return historyInspectionEntityIds.has(entityId) ? ("active" as const) : ("muted" as const);
+    }
     const entity = entities.find((e) => e.id === entityId);
-    if (entity && !inConfidenceRange(entity.confidence)) return "muted" as const;
+    // Global Search's connected context is exempt from Confidence/Filter muting entirely — Search
+    // "may temporarily reveal/focus relevant context even if that context is currently
+    // de-emphasized by the active view" (see app-state's own `searchFocus` doc comment), which is
+    // a different question from either one: Search never changes what's IN Confidence range or
+    // Filter's own statuses, it just temporarily overrides their VISUAL muting for what it found.
+    const searchConnected = searchContext?.connectedEntityIds.has(entityId) ?? false;
+    if (
+      !searchConnected &&
+      entity &&
+      !isReviewItemInScope(entity.status, entity.confidence, confidenceRange, statusFilter)
+    ) {
+      return "muted" as const;
+    }
     if (!activeEntityIds) return "normal" as const;
     if (activeEntityIds.has(entityId)) return "active" as const;
     if (neighborIds?.has(entityId)) return "related" as const;
@@ -468,12 +1165,9 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
   // by re-centering the pan, without ever changing zoom or rearranging any node's own position.
   const focusRelation = useCallback(
     (relationId: string) => {
-      const relation = relations.find((r) => r.id === relationId);
-      const a = relation && entities.find((e) => e.id === relation.from);
-      const b = relation && entities.find((e) => e.id === relation.to);
       const el = ref.current;
-      if (a && b && el) {
-        const { mid } = edgeAnchors(a, b);
+      const mid = relationGeometry.get(relationId)?.mid;
+      if (mid && el) {
         const rect = el.getBoundingClientRect();
         setView((v) => ({
           ...v,
@@ -483,7 +1177,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       }
       select({ kind: "relation", id: relationId });
     },
-    [relations, entities, setView, select],
+    [relationGeometry, setView, select],
   );
 
   // An Entity result from the on-demand ontology search stays on Overview (unlike a Property
@@ -496,7 +1190,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       const entity = entities.find((e) => e.id === entityId);
       const el = ref.current;
       if (entity && el) {
-        const center = nodeCenter(entity);
+        const center = ontologyNodeCenter(entity);
         const rect = el.getBoundingClientRect();
         setView((v) => ({
           ...v,
@@ -508,6 +1202,75 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     },
     [entities, setView, select],
   );
+
+  // Where each Data Tables panel row actually sits in the DOM, keyed by table name — populated by
+  // a callback ref on every row below, purely so the effect right after this can scroll the right
+  // one into view when Global Search focuses a Table/Column/Property result. Never read for
+  // anything else (the visual highlight itself is a plain className check against
+  // `searchContext.tableNames`, not this map).
+  const tableRowRefs = useRef(new Map<string, HTMLDivElement>());
+
+  // Reacts to a NEW Global Search selection by panning the canvas to it (same camera-move-only
+  // mechanism `focusEntity`/`focusRelation` already are) and scrolling the Data Tables panel to
+  // whichever table it's connected to — "reveal connected context", not just locate an isolated
+  // object (see app-state's `selectSearchResult` doc comment). Guarded on the `searchFocus`
+  // reference itself (not `searchContext`, which is also a function of `entities`/`relations` and
+  // would otherwise re-fire this on every unrelated edit while a focus is still active) so this
+  // only runs once per actual selection, never as a side effect of editing the ontology elsewhere.
+  const lastPannedSearchFocusRef = useRef<typeof searchFocus>(null);
+  useEffect(() => {
+    if (searchFocus === lastPannedSearchFocusRef.current) return;
+    lastPannedSearchFocusRef.current = searchFocus;
+    if (!searchFocus) return;
+    if (searchFocus.kind === "relation") {
+      focusRelation(searchFocus.id);
+    } else if (searchContext?.primaryEntityId) {
+      focusEntity(searchContext.primaryEntityId);
+    }
+    const tableName = searchContext?.tableNames.values().next().value;
+    if (tableName) {
+      setTablePanelOpen(true);
+      requestAnimationFrame(() => {
+        tableRowRefs.current
+          .get(tableName)
+          ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      });
+    }
+  }, [searchFocus, searchContext, focusRelation, focusEntity]);
+
+  // A short human label for the "Search focus: …" chip below — same per-kind formatting the
+  // search palette's own result rows use ("Parent → child" for a Property/Column), just resolved
+  // straight from the ref instead of from a fresh `searchOntologyAndData` query.
+  const searchFocusLabel = useMemo(() => {
+    if (!searchFocus) return null;
+    if (searchFocus.kind === "entity") {
+      return entities.find((e) => e.id === searchFocus.id)?.name || "Untitled entity";
+    }
+    if (searchFocus.kind === "property") {
+      const entity = entities.find((e) => e.id === searchFocus.entityId);
+      const property = entity?.properties.find((p) => p.id === searchFocus.propertyId);
+      return entity && property ? `${entity.name} → ${property.name}` : "Property";
+    }
+    if (searchFocus.kind === "relation") {
+      const relation = relations.find((r) => r.id === searchFocus.id);
+      return relation ? relationLabel(relation) : "Relation";
+    }
+    if (searchFocus.kind === "table") return searchFocus.name;
+    return `${searchFocus.table} → ${searchFocus.column}`;
+  }, [searchFocus, entities, relations]);
+
+  // Escape is one of Global Search's own "exit this focus state" gestures (see app-state's
+  // `searchFocus` doc comment) — the palette's own input already stops an Escape it handles itself
+  // from bubbling here (closing the palette without necessarily clearing an already-committed
+  // focus), so this only ever fires once the palette isn't the one consuming the key.
+  useEffect(() => {
+    if (!searchFocus) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") clearSearchFocus();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [searchFocus, clearSearchFocus]);
 
   // Creating an Entity Type from the Ontology header (there's no side panel to hold it in
   // anymore) places it at the current viewport's own center in world space, so it's immediately
@@ -528,176 +1291,78 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     [createEntity, toWorld],
   );
 
-  // On-demand ontology search — a floating popover off the Ontology canvas header's own Search
-  // toggle (see CreateEntityButton for the identical outside-click-closes pattern this mirrors).
-  // Deliberately not the Data Tables panel's own inline Row-3 search row: this one floats over
-  // the canvas rather than pushing it down, since there's no side panel here to expand into.
-  const ontologySearchRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!entitySearchOpen) return;
-    const onPointerDown = (e: PointerEvent) => {
-      if (ontologySearchRef.current && !ontologySearchRef.current.contains(e.target as Node)) {
-        toggleEntitySearch();
-      }
-    };
-    window.addEventListener("pointerdown", onPointerDown);
-    return () => window.removeEventListener("pointerdown", onPointerDown);
-  }, [entitySearchOpen, toggleEntitySearch]);
+  const creationSourceEntity = creationRequest?.source
+    ? (entities.find((e) => e.id === creationRequest.source!.entityId) ?? null)
+    : null;
+
+  const handleCreationCancel = useCallback(() => setCreationRequest(null), []);
+  const handleCreationSubmit = useCallback(
+    (draft: {
+      name: string;
+      properties: { name: string; type: string; isIdentifier?: boolean }[];
+      relationName: string;
+      direction: "fromSource" | "toSource";
+    }) => {
+      if (!creationRequest) return;
+      createEntityWithProperties({
+        name: draft.name,
+        position: wrapperOriginForCenter(creationRequest.centerPosition),
+        properties: draft.properties,
+        connection: creationRequest.source
+          ? {
+              sourceEntityId: creationRequest.source.entityId,
+              relationName: draft.relationName,
+              direction: draft.direction,
+            }
+          : undefined,
+      });
+      setCreationRequest(null);
+    },
+    [creationRequest, createEntityWithProperties],
+  );
 
   return (
-    <div className="flex h-full w-full gap-3 p-3">
-      <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-node-border bg-node shadow-[var(--shadow-node)]">
-        <div className="flex shrink-0 items-center justify-between border-b border-node-border px-4 py-3">
-          <span className="text-[14px] font-semibold">Ontology</span>
-          <div className="flex shrink-0 items-center gap-1">
-            <CreateEntityButton onCreate={handleCreateEntity} />
+    <div className="flex h-full w-full">
+      <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-node">
+        {SHOW_CREATE_ENTITY_TOOLBAR && (
+          <div className="flex shrink-0 items-center justify-end border-b border-node-border px-4 py-2">
+            <div className="flex shrink-0 items-center gap-1">
+              <CreateEntityButton onCreate={handleCreateEntity} />
+            </div>
+          </div>
+        )}
+
+        {/* Global Search's own "clear this focus state" affordance — the most discoverable of the
+            several ways to exit it (see app-state's `searchFocus` doc comment for the others:
+            Escape, clearing the search, picking a new result, clicking empty canvas). Floats over
+            the canvas the same way the old local search popover used to, just as a dismissible
+            pill instead of a whole panel. Hidden during History Mode, whose own docked panel
+            (`HistoryPanel`) and striped canvas background already say "you are here" without a
+            second floating indicator competing for the same space.
+            Temporarily disabled (`SHOW_SEARCH_FOCUS_PILL`) — the rest of `searchFocus`'s behavior
+            (pan-to-target, dimming unrelated content, Escape/clear-search/new-result dismissal) is
+            unchanged; only this visible pill is suppressed for now. */}
+        {SHOW_SEARCH_FOCUS_PILL && searchFocus && !historyPanelOpen && (
+          <div className="absolute right-4 top-[52px] z-30 flex max-w-[calc(100%-32px)] items-center gap-1.5 rounded-full border border-[#00ded8]/30 bg-white px-3 py-1.5 text-[12px] font-medium text-[#00ded8] shadow-[var(--shadow-node)]">
+            <SearchIcon className="size-3 shrink-0" />
+            <span className="min-w-0 truncate">Search focus: {searchFocusLabel}</span>
             <button
               type="button"
-              onClick={toggleEntitySearch}
-              aria-pressed={entitySearchOpen}
-              aria-label={entitySearchOpen ? "Close ontology search" : "Search ontology"}
-              title={entitySearchOpen ? "Close search" : "Search"}
-              className={cn(
-                "flex size-6 shrink-0 items-center justify-center rounded-md transition-colors",
-                entitySearchOpen
-                  ? "bg-black/[0.08] text-foreground"
-                  : "text-muted-foreground hover:bg-accent",
-              )}
+              onClick={clearSearchFocus}
+              aria-label="Clear search focus"
+              className="flex size-4 shrink-0 items-center justify-center rounded-full text-[#00ded8] hover:bg-[#00ded8]/10"
             >
-              <Search className="size-3.5" />
+              <X className="size-3" />
             </button>
-          </div>
-        </div>
-
-        {/* On-demand ontology search — a floating popover, not a persistent side panel: Entity
-            Types already render directly on the canvas below, so a second always-visible list of
-            them would just duplicate that. Only ever shows results for an actual query — it never
-            falls back to listing everything the way the old panel's search used to. */}
-        {entitySearchOpen && (
-          <div
-            ref={ontologySearchRef}
-            className="absolute right-4 top-[52px] z-30 flex max-h-[70%] w-80 flex-col gap-2 overflow-hidden rounded-2xl border border-node-border bg-node p-3 shadow-[var(--shadow-node-lift)]"
-          >
-            <SearchInput
-              value={entitySearch}
-              onChange={setEntitySearch}
-              placeholder="Search ontology..."
-            />
-            <div className="flex min-h-0 flex-col gap-2 overflow-y-auto">
-              {entityQuery === "" && (
-                <p className="px-1 py-2 text-center text-[11.5px] text-muted-foreground">
-                  Search Entity Type, Property, or Relation names.
-                </p>
-              )}
-              {entityQuery !== "" && (
-                <>
-                  {filteredEntities.map((e) => {
-                    const isSelected = selection?.kind === "entity" && selection.id === e.id;
-                    const matchedProperties = matchedPropertiesByEntity.get(e.id);
-                    const tableCount = tablesUsedByEntity(e).length;
-                    return (
-                      <div key={e.id} className="flex flex-col gap-1">
-                        <button
-                          onClick={() => {
-                            focusEntity(e.id);
-                            toggleEntitySearch();
-                          }}
-                          className={cn(
-                            "flex w-full shrink-0 items-center gap-2 rounded-[10px] border border-black/[0.08] bg-white px-3 py-2 font-normal text-left transition-colors",
-                            isSelected ? "ring-2 ring-primary" : "hover:bg-accent",
-                          )}
-                        >
-                          <StatusBadge
-                            status={entityStatus(e)}
-                            size={20}
-                            confidence={e.confidence}
-                            warningReason={e.warningReason}
-                            errorReason={entityErrorReason(e)}
-                          />
-                          <span className="flex min-w-0 flex-1 flex-col items-start justify-center gap-1">
-                            <span className="block w-full truncate text-[12px] font-medium leading-[16.5px] text-[#171B22]">
-                              {e.name || "Untitled entity"}
-                            </span>
-                            <span className="block w-full truncate text-[10px] font-normal leading-[10px] text-[#909090]">
-                              {e.properties.length} props · {tableCount} table
-                              {tableCount === 1 ? "" : "s"}
-                            </span>
-                          </span>
-                          <ConfidenceChip confidence={e.confidence} />
-                        </button>
-                        {/* A Property-name match keeps its parent Entity Type visible even when
-                            the Entity Type's own name doesn't match — since a Property can only
-                            be inspected inside Detail, selecting it navigates there (unlike the
-                            Entity result above, which stays on Overview) with the matched
-                            Property already highlighted. */}
-                        {matchedProperties && (
-                          <ul className="flex flex-col gap-0.5 pl-9">
-                            {matchedProperties.map((p) => (
-                              <li key={p.id}>
-                                <button
-                                  onClick={() => {
-                                    openDetail("entity", e.id, p.id);
-                                    toggleEntitySearch();
-                                  }}
-                                  className="w-full truncate rounded-md px-1 text-left text-[10.5px] text-muted-foreground hover:bg-accent hover:text-foreground"
-                                >
-                                  {p.name}
-                                </button>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </div>
-                    );
-                  })}
-                  {matchedRelations.map((r) => {
-                    const isSelected = selection?.kind === "relation" && selection.id === r.id;
-                    return (
-                      <button
-                        key={r.id}
-                        onClick={() => {
-                          focusRelation(r.id);
-                          toggleEntitySearch();
-                        }}
-                        className={cn(
-                          "flex w-full shrink-0 flex-col items-start gap-1 rounded-[10px] border border-black/[0.08] bg-white px-3 py-2 font-normal text-left transition-colors",
-                          isSelected ? "ring-2 ring-primary" : "hover:bg-accent",
-                        )}
-                      >
-                        <span className="flex w-full items-center gap-2">
-                          <StatusBadge
-                            status={r.status}
-                            size={20}
-                            confidence={r.confidence}
-                            warningReason={r.warningReason}
-                            errorReason={r.errorReason}
-                          />
-                          <span className="block min-w-0 flex-1 truncate text-[12px] font-medium leading-[16.5px] text-[#171B22]">
-                            {relationLabel(r)}
-                          </span>
-                          <ConfidenceChip confidence={r.confidence} />
-                        </span>
-                        <span className="pl-7 text-[10.5px] text-muted-foreground">
-                          {entities.find((e) => e.id === r.from)?.name || "Untitled"} →{" "}
-                          {entities.find((e) => e.id === r.to)?.name || "Untitled"}
-                        </span>
-                      </button>
-                    );
-                  })}
-                  {filteredEntities.length === 0 && matchedRelations.length === 0 && (
-                    <p className="px-1 text-center text-[11.5px] text-muted-foreground">
-                      No matches for "{entitySearch}".
-                    </p>
-                  )}
-                </>
-              )}
-            </div>
           </div>
         )}
 
         <div
           ref={ref}
-          className="relative min-h-0 flex-1 select-none overflow-hidden canvas-grid"
+          className={cn(
+            "relative min-h-0 flex-1 select-none overflow-hidden",
+            historyPanelOpen ? "canvas-grid-history" : "canvas-grid",
+          )}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={endDrag}
@@ -709,53 +1374,78 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
           >
             <svg className="pointer-events-none absolute overflow-visible" width={1} height={1}>
               <defs>
-                {/* Arrowhead for relation lines, pointing at the relation's actual `to` entity —
-                    `edgeAnchors(a, b)` always returns p1 on the `from` side and p2 on the `to`
-                    side (see below), so the marker on `p2` is already correct regardless of which
-                    side of the screen the `to` entity happens to be on. Same marker as Detail's
-                    own relation lines, so both canvases read consistently. */}
+                {/* Arrowhead for relation lines — always visible, pointing at the relation's
+                    actual `to` entity (since `graphEdgePath` always returns p2 on the `to`
+                    side). `context-stroke` picks up whatever color the referencing path is
+                    currently drawn in (muted/normal/selected), so the arrow always matches its
+                    own line rather than needing a separate state. */}
                 <marker
                   id="relation-arrow"
-                  viewBox="0 0 8 8"
-                  refX="7"
-                  refY="4"
-                  markerWidth={6}
-                  markerHeight={6}
+                  viewBox="0 0 10 10"
+                  refX="8.5"
+                  refY="5"
+                  markerWidth={7}
+                  markerHeight={7}
                   markerUnits="userSpaceOnUse"
                   orient="auto"
                 >
-                  <path d="M0,0 L8,4 L0,8 Z" className="fill-zinc-400" />
+                  <path
+                    d="M2,1.5 L8.5,5 L2,8.5"
+                    fill="none"
+                    stroke="context-stroke"
+                    strokeWidth={1.8}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
                 </marker>
               </defs>
               {relations.map((r) => {
                 const a = entities.find((e) => e.id === r.from);
                 const b = entities.find((e) => e.id === r.to);
-                if (!a || !b) return null;
-                const { p1, p2 } = edgeAnchors(a, b);
+                const geo = relationGeometry.get(r.id);
+                if (!a || !b || !geo) return null;
                 const isSelected = selection?.kind === "relation" && selection.id === r.id;
-                const isFocusEdge = activeEntityIds
-                  ? activeEntityIds.has(r.from) || activeEntityIds.has(r.to)
+                // Only genuinely relevant while a search is active — both endpoints in the
+                // connected set, not just one, so a Relation search result highlights exactly
+                // that relation (and any other directly connecting two connected entities)
+                // rather than every edge merely touching the primary entity.
+                const bothSearchConnected = searchContext
+                  ? searchContext.connectedEntityIds.has(r.from) &&
+                    searchContext.connectedEntityIds.has(r.to)
                   : false;
-                const outOfRange =
-                  !inConfidenceRange(a.confidence) || !inConfidenceRange(b.confidence);
-                const isMuted = outOfRange || (activeEntityIds !== null && !isFocusEdge);
+                // Table-hover's own `activeEntityIds` (the entities using that table) highlights
+                // those Entity Types only — relations never light up for it, only for an actual
+                // Entity hover/search focus, hence the `!hoveredTableName` guard here.
+                const isFocusEdge = searchContext
+                  ? bothSearchConnected
+                  : activeEntityIds && !hoveredTableName
+                    ? activeEntityIds.has(r.from) || activeEntityIds.has(r.to)
+                    : false;
+                // A Relation's own review-scope uses ITS OWN status/confidence (Relations →
+                // Relation suggestion confidence), not either connected Entity's — same
+                // `isReviewItemInScope` predicate Confidence/Filter apply to every other object
+                // type with. Dims the line, never removes it — the graph's shape stays intact so
+                // users can still see how everything connects outside the active review scope.
+                const outOfScope =
+                  !bothSearchConnected &&
+                  !isReviewItemInScope(r.status, r.confidence, confidenceRange, statusFilter);
+                const isMuted = outOfScope || (activeEntityIds !== null && !isFocusEdge);
                 return (
                   <path
                     key={r.id}
-                    d={orthogonalPath(
-                      p1,
-                      p2,
-                      undefined,
-                      Math.abs(b.x - a.x) >= Math.abs(b.y - a.y) ? "horizontal" : "vertical",
-                    )}
+                    d={geo.d}
                     fill="none"
                     strokeLinecap="round"
                     className={cn(
                       "transition-opacity",
-                      isSelected || isFocusEdge ? "stroke-primary" : "stroke-zinc-400",
-                      isMuted && "opacity-25",
+                      isSelected
+                        ? "stroke-primary"
+                        : isFocusEdge
+                          ? "stroke-[#3b82f6]"
+                          : "stroke-zinc-400",
+                      isMuted && "opacity-20",
                     )}
-                    strokeWidth={isSelected ? 2.4 : isFocusEdge ? 2 : 1.4}
+                    strokeWidth={isSelected ? 2.4 : isFocusEdge ? 1.9 : 1.5}
                     markerEnd="url(#relation-arrow)"
                   />
                 );
@@ -767,7 +1457,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                 <path
                   d={`M ${connectDrag.origin.x} ${connectDrag.origin.y} L ${connectPos.x} ${connectPos.y}`}
                   fill="none"
-                  stroke="#61b2ff"
+                  stroke="#00ded8"
                   strokeWidth={2}
                   strokeDasharray="4 3"
                   opacity={0.9}
@@ -778,9 +1468,32 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
             {relations.map((r) => {
               const a = entities.find((e) => e.id === r.from);
               const b = entities.find((e) => e.id === r.to);
-              if (!a || !b) return null;
-              const { mid } = edgeAnchors(a, b);
+              const geo = relationGeometry.get(r.id);
+              if (!a || !b || !geo) return null;
+              const { mid } = geo;
               const isSelected = selection?.kind === "relation" && selection.id === r.id;
+              const isMultiSelected = suggestionSelection.has(
+                suggestionKey({ kind: "relation", id: r.id }),
+              );
+              // Same dimming the connector line itself already computes above (confidence/status
+              // Filter scope, plus the entity-hover focus dim) — kept identical so the badge and
+              // the line it sits on always read as one visually-consistent object, never one dimmed
+              // without the other.
+              const bothSearchConnected = searchContext
+                ? searchContext.connectedEntityIds.has(r.from) &&
+                  searchContext.connectedEntityIds.has(r.to)
+                : false;
+              // Same table-hover guard as the connector line above — relations only ever light up
+              // for an actual Entity hover/search focus, never for Table hover's own entity set.
+              const isFocusEdge = searchContext
+                ? bothSearchConnected
+                : activeEntityIds && !hoveredTableName
+                  ? activeEntityIds.has(r.from) || activeEntityIds.has(r.to)
+                  : false;
+              const outOfScope =
+                !bothSearchConnected &&
+                !isReviewItemInScope(r.status, r.confidence, confidenceRange, statusFilter);
+              const isMuted = outOfScope || (activeEntityIds !== null && !isFocusEdge);
               return (
                 <div
                   key={r.id}
@@ -789,24 +1502,41 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                   onPointerDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation();
+                    // History Mode is strictly inspection-only — normal canvas selection (plain or
+                    // shift multi-select alike) is switched off for its whole duration, not just
+                    // once a specific event is open (see this file's own `historyPanelOpen` gates
+                    // elsewhere, e.g. the Entity node click handler right above).
+                    if (historyPanelOpen) return;
+                    // Shift-click adds/removes this Relation from the multi-select set instead of
+                    // the plain single `selection` — see the matching Entity node click handler's
+                    // own doc comment on why that's the same Set `suggestionSelection` already
+                    // uses for "Select all in range", not a second parallel mechanism.
+                    if (e.shiftKey) {
+                      toggleSuggestionSelected({ kind: "relation", id: r.id });
+                      return;
+                    }
                     select({ kind: "relation", id: r.id });
                   }}
                   className={cn(
-                    "group/relpill absolute z-10 -translate-x-1/2 -translate-y-1/2 cursor-pointer",
-                    isSelected && "ring-2 ring-primary rounded-full",
+                    "group/relpill absolute z-10 -translate-x-1/2 -translate-y-1/2 transition-opacity",
+                    historyPanelOpen ? "cursor-default" : "cursor-pointer",
+                    (isSelected || isMultiSelected) && "ring-2 ring-primary rounded-full",
+                    isMuted && "opacity-20",
                   )}
                 >
                   {/* Icon-only by default; hovering reveals the name as a labeled pill (Figma:
-                      "Relation / Default / *" vs "Relation / Hover / *"). Hover-to-delete is
-                      temporarily disabled — the badge no longer swaps to a delete action. */}
+                      "Relation / Default / *" vs "Relation / Hover / *"). No inline delete on this
+                      badge any more — Delete now lives on the contextual selection bar (single- or
+                      multi-select alike, see the bottom-center stack below), matching how Entity
+                      Types already work. */}
                   <div
                     style={{ borderColor: statusBorderColor(r.status) }}
                     className="inline-flex items-center justify-center gap-0 rounded-full border-[1.5px] bg-white p-1 shadow-[0_2.281px_1.14px_0_rgba(0,0,0,0.1)] transition-[gap,padding] group-hover/relpill:gap-1 group-hover/relpill:pr-2"
                   >
-                    <span className="flex size-4 shrink-0 items-center justify-center rounded-full">
+                    <span className="flex size-[18px] shrink-0 items-center justify-center rounded-full">
                       <StatusBadge
                         status={r.status}
-                        size={16}
+                        size={18}
                         confidence={r.confidence}
                         warningReason={r.warningReason}
                         errorReason={r.errorReason}
@@ -815,165 +1545,326 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                     <span className="block max-w-0 overflow-hidden whitespace-nowrap text-[10.5px] font-medium leading-[15.75px] text-[#171B22] opacity-0 transition-[max-width,opacity] group-hover/relpill:max-w-[160px] group-hover/relpill:opacity-100">
                       {relationLabel(r)}
                     </span>
-                    {/* Hover-revealed delete — removes only this Relation/connector, never either
-                        connected Entity Type. */}
-                    <button
-                      type="button"
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        deleteRelation(r.id);
-                      }}
-                      aria-label={`Delete relation ${relationLabel(r)}`}
-                      title="Delete this relation"
-                      className="ml-0 flex size-0 shrink-0 items-center justify-center overflow-hidden rounded-full text-muted-foreground opacity-0 transition-[width,opacity,margin-left] hover:bg-accent hover:text-foreground group-hover/relpill:ml-0.5 group-hover/relpill:size-4 group-hover/relpill:opacity-100"
-                    >
-                      <Trash2 className="size-3" />
-                    </button>
                   </div>
                 </div>
               );
             })}
 
-            {entities.map((entity) => (
+            {displayEntities.map((entity) => (
               <div
                 key={entity.id}
+                ref={(el) => {
+                  if (el) nodeElRefs.current.set(entity.id, el);
+                  else nodeElRefs.current.delete(entity.id);
+                }}
                 className="absolute"
                 style={{ left: entity.x, top: entity.y }}
                 onMouseEnter={() => setHoveredEntityId(entity.id)}
                 onMouseLeave={() => setHoveredEntityId((cur) => (cur === entity.id ? null : cur))}
               >
-                <EntityNode
+                <OntologyNode
                   entity={entity}
+                  detailed={view.z > 1}
                   emphasis={emphasisFor(entity.id)}
-                  onClick={() => openDetail("entity", entity.id)}
-                  onStartMove={(clientX, clientY) => startNodeMove(entity.id, clientX, clientY)}
-                  onStartConnect={(side, clientX, clientY) =>
-                    startConnectFromEntity(entity.id, side, clientX, clientY)
+                  // Editing the canvas while previewing a historical point would silently apply
+                  // to CURRENT Ontology underneath — see this feature's own spec on why a preview
+                  // must never let that happen — so normal click/drag/connect are switched off for
+                  // the whole of History Mode (opening History now goes straight into it, not just
+                  // once a specific event is being inspected); only the numbered markers below stay
+                  // interactive (to select/deselect a change) once one is, and the panel's own
+                  // Back/close/Restore are the only ways out.
+                  onClick={historyPanelOpen ? undefined : () => openDetail("entity", entity.id)}
+                  onStartMove={
+                    historyPanelOpen
+                      ? undefined
+                      : (clientX, clientY) => startNodeMove(entity.id, clientX, clientY)
+                  }
+                  onStartConnect={
+                    historyPanelOpen
+                      ? undefined
+                      : (side, clientX, clientY) =>
+                          startConnectFromEntity(entity.id, side, clientX, clientY)
+                  }
+                  onOpenTable={
+                    historyPanelOpen ? undefined : (tableName) => openDetail("table", tableName)
                   }
                   connectSourceSide={connectDrag?.sourceId === entity.id ? connectDrag.side : null}
                   connectTargetSide={connectTargetId === entity.id ? connectTargetSide : null}
                 />
               </div>
             ))}
+
+            {/* History Inspection Mode's own numbered ①②③... markers (see app-state's own
+                `HistoryInspection` doc comment) — purely a transient overlay: never affects
+                hit-testing or the ontology itself, and disappears the moment inspection closes.
+                Doubles as the canvas-side half of Selective Restore — clicking a marker (when its
+                change is restorable) selects/deselects it, exactly like clicking its row in the
+                History panel; both read/write the exact same `selected` set. */}
+            {historyMarkers.map((marker) => {
+              const hovered = historyInspectionHoveredNumber === marker.number;
+              const selected = historyInspection?.selected.has(marker.number) ?? false;
+              return (
+                <div
+                  key={marker.number}
+                  className="absolute z-30 -translate-x-1/2 -translate-y-1/2"
+                  style={{ left: marker.x, top: marker.y }}
+                >
+                  <button
+                    type="button"
+                    disabled={!marker.restorable}
+                    title={
+                      marker.restorable
+                        ? "Select or deselect this change for restore"
+                        : "This change can't be restored"
+                    }
+                    onMouseEnter={() => setHistoryInspectionHoveredNumber(marker.number)}
+                    onMouseLeave={() =>
+                      setHistoryInspectionHoveredNumber((cur) =>
+                        cur === marker.number ? null : cur,
+                      )
+                    }
+                    onClick={() => marker.restorable && toggleHistoryChangeSelected(marker.number)}
+                    className={cn(
+                      "flex size-6 shrink-0 items-center justify-center rounded-full border-[1.5px] text-[12px] font-semibold shadow-[0_2px_2px_0_rgba(0,0,0,0.1)] transition-transform",
+                      marker.restorable ? "cursor-pointer" : "cursor-not-allowed opacity-50",
+                      selected
+                        ? "border-[#00ded8] bg-[#00ded8] text-white"
+                        : "border-[#00DED8]/60 bg-white text-[#00ADB0]",
+                      hovered && "scale-125",
+                    )}
+                  >
+                    {circledNumber(marker.number)}
+                  </button>
+                </div>
+              );
+            })}
+
+            {/* The brief post-restore highlight — a ring around each just-restored object, purely
+                cosmetic and self-clearing (see app-state's own `historyRestoreHighlight` doc
+                comment); never a marker/number, since these objects are back in Current Ontology
+                proper by the time this shows. */}
+            {restoreHighlightMarkers.map((pt, i) => (
+              <div
+                key={i}
+                className="pointer-events-none absolute z-30 -translate-x-1/2 -translate-y-1/2 animate-pulse rounded-full ring-[3px] ring-[#00ded8]"
+                style={{
+                  left: pt.x,
+                  top: pt.y,
+                  width: ONTOLOGY_NODE_SIZE + 12,
+                  height: ONTOLOGY_NODE_SIZE + 12,
+                }}
+              />
+            ))}
           </div>
 
-          <CanvasControls
-            className="absolute bottom-4 left-1/2 z-20 -translate-x-1/2"
+          {/* Bottom-center floating stack — exactly ONE of these three at a time, never stacked:
+              a multi-item Suggestion selection (e.g. "Select all in range") outranks a single
+              Entity selection, which in turn REPLACES (not sits alongside) the default AI Review
+              control — each answers a different question ("what do I want to do with what I just
+              selected" vs. "what am I reviewing ontology-wide"), so showing more than one at once
+              would leave it ambiguous which control a click actually acts on. See
+              `EntitySelectionBar`'s own doc comment for why a plain click no longer jumps straight
+              into Editing Mode, and `AiReviewBar`'s own doc comment for why IT is a separate
+              control from the Header's Mapping Status pills. */}
+          <div
+            className={cn(
+              "absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 flex-col items-center gap-3",
+              // History Mode is strictly inspection-only — the entire AI-review surface (accept/
+              // decline, suggestion multi-select, Confidence range, Generate Suggestions) is
+              // switched off for its whole duration. It stays VISIBLE (context for what review
+              // state the ontology is actually in) but inert, rather than disappearing — the same
+              // "remain visible, non-interactive" treatment as the canvas's own hover affordances.
+              // Any stale selection/suggestionSelection from before History Mode opened is
+              // deliberately ignored below (always falls through to the plain `AiReviewBar`), so a
+              // leftover selection never shows a live-looking Delete/Accept/Decline bar here.
+              historyPanelOpen && "pointer-events-none opacity-50",
+            )}
+          >
+            {!historyPanelOpen && suggestionSelection.size > 0 ? (
+              <SuggestionSelectionBar
+                entities={entities}
+                relations={relations}
+                suggestionSelection={suggestionSelection}
+                onClearSuggestionSelection={clearSuggestionSelection}
+                onAcceptSuggestions={acceptSuggestions}
+                onDeclineSuggestions={declineSuggestions}
+                onDeleteSuggestions={deleteSuggestionKeys}
+              />
+            ) : !historyPanelOpen && selectedEntity ? (
+              <EntitySelectionBar
+                entity={selectedEntity}
+                onDelete={() => deleteEntity(selectedEntity.id)}
+                onAccept={() =>
+                  acceptSuggestions([suggestionKey({ kind: "entity", id: selectedEntity.id })])
+                }
+                onDecline={() =>
+                  declineSuggestions([suggestionKey({ kind: "entity", id: selectedEntity.id })])
+                }
+                onGoToEditingMode={() => goToEditingMode(selectedEntity.id)}
+              />
+            ) : !historyPanelOpen && selectedRelation ? (
+              <RelationSelectionBar
+                relation={selectedRelation}
+                onDelete={() => deleteRelation(selectedRelation.id)}
+                onAccept={() =>
+                  acceptSuggestions([suggestionKey({ kind: "relation", id: selectedRelation.id })])
+                }
+                onDecline={() =>
+                  declineSuggestions([suggestionKey({ kind: "relation", id: selectedRelation.id })])
+                }
+              />
+            ) : (
+              <AiReviewBar
+                entities={entities}
+                relations={relations}
+                tables={tables}
+                confidenceRange={confidenceRange}
+                onConfidenceRangeChange={setConfidenceRange}
+                onSelectSuggestionsInRange={selectSuggestionKeys}
+              />
+            )}
+          </div>
+
+          {/* The canvas's whole control surface — tool switch, Undo/Redo, and zoom — as one
+              compact horizontal pill at the canvas's own top-right corner, matching Figma's own
+              Overview reference exactly (see CanvasToolStack's own `orientation` doc comment).
+              Undo/Redo specifically are switched off during History Mode (they'd otherwise
+              silently mutate Current Ontology underneath the preview) — Select/Hand/Zoom stay
+              live since navigating the canvas to look at markers is exactly what Inspection is
+              for. */}
+          <CanvasToolStack
+            className="absolute right-3 top-3 z-20"
+            orientation="horizontal"
+            compact
             tool={tool}
             onToolChange={setTool}
             zoomPercent={Math.round(view.z * 100)}
             onZoomOut={() => zoomBy(1 / 1.2)}
             onZoomIn={() => zoomBy(1.2)}
             onFitToContent={fitToContent}
+            onSetZoomPercent={setZoomPercent}
             onUndo={undo}
             onRedo={redo}
-            canUndo={canUndo}
-            canRedo={canRedo}
+            canUndo={canUndo && !historyPanelOpen}
+            canRedo={canRedo && !historyPanelOpen}
           />
         </div>
       </div>
-
-      <div
-        style={{ width: dataTablesWidth }}
-        className="relative flex shrink-0 flex-col overflow-hidden rounded-2xl border border-node-border bg-node shadow-[var(--shadow-node)]"
-      >
-        <div
-          onPointerDown={startPanelResize}
-          title="Drag to resize"
-          aria-hidden="true"
-          className="absolute left-0 top-0 z-10 h-full w-2 cursor-col-resize"
+      {creationRequest && (
+        <CreateEntityWizard
+          sourceEntity={creationSourceEntity}
+          onCancel={handleCreationCancel}
+          onCreate={handleCreationSubmit}
         />
-        <div className="flex shrink-0 items-center justify-between border-b border-node-border px-4 py-3">
-          <span className="text-[14px] font-semibold">Data Tables</span>
+      )}
+      {relationDialogSource && relationDialogTarget && (
+        <DefineRelationDialog
+          sourceEntity={relationDialogSource}
+          targetEntity={relationDialogTarget}
+          onCancel={handleRelationDialogCancel}
+          onCreate={handleRelationDialogCreate}
+        />
+      )}
+      <div
+        style={{ width: tablePanelOpen ? TABLE_PANEL_OPEN_W : TABLE_PANEL_COLLAPSED_W }}
+        className="relative flex shrink-0 flex-col overflow-hidden border-l border-[#E3E5E4] bg-node transition-[width]"
+      >
+        <div className="flex shrink-0 items-center gap-1 border-b border-node-border py-3 pl-2 pr-4">
+          <button
+            type="button"
+            onClick={() => setTablePanelOpen((v) => !v)}
+            aria-label={tablePanelOpen ? "Collapse Data Tables panel" : "Expand Data Tables panel"}
+            title={tablePanelOpen ? "Collapse" : "Expand"}
+            className="flex size-6 shrink-0 items-center justify-center rounded-[10px] text-muted-foreground hover:bg-accent"
+          >
+            {tablePanelOpen ? (
+              <ChevronRight className="size-4" />
+            ) : (
+              <ChevronLeft className="size-4" />
+            )}
+          </button>
+          {tablePanelOpen && (
+            <span className="truncate text-base font-medium text-foreground">Data Tables</span>
+          )}
         </div>
-        <div className="flex shrink-0 flex-col gap-1.5 border-b border-node-border px-3 py-1.5">
-          <div className="flex items-center justify-between">
-            <SortDropdown
-              sort={tableSort}
-              onChange={(k) => setTableSort((s) => nextSortState(s, k))}
-            />
-            <button
-              type="button"
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={toggleTableSearch}
-              aria-pressed={tableSearchOpen}
-              aria-label={tableSearchOpen ? "Close data tables search" : "Search data tables"}
-              title={tableSearchOpen ? "Close search" : "Search"}
-              className={cn(
-                "flex size-6 shrink-0 items-center justify-center rounded-md transition-colors",
-                tableSearchOpen
-                  ? "bg-black/[0.08] text-foreground"
-                  : "text-muted-foreground hover:bg-accent",
-              )}
-            >
-              {tableSearchOpen ? <X className="size-3.5" /> : <Search className="size-3.5" />}
-            </button>
+        {!tablePanelOpen && (
+          <div className="flex flex-1 items-center justify-center">
+            <span className="text-[11px] font-medium text-muted-foreground [writing-mode:vertical-rl]">
+              Data Tables
+            </span>
           </div>
-          {tableSearchOpen && (
-            <SearchInput
-              value={tableSearch}
-              onChange={setTableSearch}
-              placeholder="Search data..."
-            />
-          )}
-        </div>
-        <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-3">
-          {sortedTables.map((t) => {
-            const isSelected = selection?.kind === "table" && selection.id === t.name;
-            const matchedColumns = matchedColumnsByTable.get(t.name);
-            const entityCount = entitiesUsingTable(t.name, entities).length;
-            return (
-              <div key={t.name} className="flex flex-col gap-1">
-                <button
-                  onClick={() => openDetail("table", t.name)}
-                  onMouseEnter={() => setHoveredTableName(t.name)}
-                  onMouseLeave={() => setHoveredTableName((cur) => (cur === t.name ? null : cur))}
-                  className={cn(
-                    "flex w-full shrink-0 items-center gap-2 rounded-[10px] border border-black/[0.08] bg-white px-3 py-2 font-normal text-left transition-colors",
-                    isSelected ? "ring-2 ring-primary" : "hover:bg-accent",
-                  )}
-                >
-                  <MappingStatusBadge status={tableMappingStatus(t.name, entities)} size={20} />
-                  <span className="flex min-w-0 flex-1 flex-col items-start justify-center gap-1">
-                    <span className="block w-full truncate text-[12px] font-medium leading-[16.5px] text-[#171B22]">
-                      {t.name}
-                    </span>
-                    <span className="block w-full truncate text-[10px] font-normal leading-[10px] text-[#909090]">
-                      {t.columns.length} columns · {entityCount} entit
-                      {entityCount === 1 ? "y" : "ies"}
-                    </span>
-                  </span>
-                  <span className="inline-flex shrink-0 items-center justify-center gap-2.5 rounded-[10px] bg-black/[0.08] px-[6px] text-center text-[10px] font-normal leading-[16px] tracking-[-0.076px] text-[#3C3C3C]">
-                    {t.confidence != null ? `${Math.round(t.confidence * 100)}%` : "—"}
-                  </span>
-                </button>
-                {/* A Column-name match keeps its parent Table visible even when the Table's own
-                    name doesn't match — selecting it navigates into that Table's Detail view
-                    with the matched Column already highlighted. */}
-                {matchedColumns && (
-                  <ul className="flex flex-col gap-0.5 pl-9">
-                    {matchedColumns.map((c) => (
-                      <li key={c.name}>
-                        <button
-                          onClick={() => openDetail("table", t.name, c.name)}
-                          className="w-full truncate rounded-md px-1 text-left text-[10.5px] text-muted-foreground hover:bg-accent hover:text-foreground"
-                        >
-                          {c.name}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            );
-          })}
-          {filteredTables.length === 0 && (
-            <p className="px-1 text-center text-[11.5px] text-muted-foreground">
-              No data tables match "{tableSearch}".
-            </p>
-          )}
-        </div>
+        )}
+        {tablePanelOpen && (
+          <>
+            <div className="flex shrink-0 items-center justify-between px-2.5 pb-1.5 pt-1.5">
+              <SortDropdown
+                sort={tableSort}
+                onChange={(k) => setTableSort((s) => nextSortState(s, k))}
+                showPrefix={false}
+              />
+            </div>
+            <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
+              {sortedTables.map((t) => {
+                const isSelected = selection?.kind === "table" && selection.id === t.name;
+                const isSearchFocused = searchContext?.tableNames.has(t.name) ?? false;
+                const isEntityHoverFocused = activeEntityTableNames?.has(t.name) ?? false;
+                const entityCount = entitiesUsingTable(t.name, entities).length;
+                // Tables have no Confidence/ReviewStatus of their own — derived from whichever
+                // Property↔Column Mapping(s) touch it instead (see `isTableInScope`'s own doc
+                // comment). Out of scope dims the row; it never removes it from this list, so the
+                // full set of Data Tables is always visible regardless of Confidence/Filter.
+                const inScope = isTableInScope(t.name, entities, confidenceRange, statusFilter);
+                return (
+                  <div
+                    key={t.name}
+                    ref={(el) => {
+                      if (el) tableRowRefs.current.set(t.name, el);
+                      else tableRowRefs.current.delete(t.name);
+                    }}
+                    className={cn(!inScope && "opacity-40")}
+                  >
+                    <button
+                      onClick={historyPanelOpen ? undefined : () => openDetail("table", t.name)}
+                      onMouseEnter={() => setHoveredTableName(t.name)}
+                      onMouseLeave={() =>
+                        setHoveredTableName((cur) => (cur === t.name ? null : cur))
+                      }
+                      className={cn(
+                        "flex w-full shrink-0 items-center gap-2 py-1 pl-4 pr-3 font-normal text-left transition-colors",
+                        historyPanelOpen && "cursor-default",
+                        isSelected
+                          ? "bg-[#eff6ff]"
+                          : isSearchFocused || isEntityHoverFocused
+                            ? "bg-muted"
+                            : "bg-white",
+                        !isSelected &&
+                          !isSearchFocused &&
+                          !isEntityHoverFocused &&
+                          !historyPanelOpen &&
+                          "hover:bg-muted",
+                      )}
+                    >
+                      <MappingStatusBadge
+                        status={tableMappingStatus(t.name, entities)}
+                        {...tableMappingCompleteness(t.name, entities)}
+                        size={20}
+                      />
+                      <span className="flex min-w-0 flex-1 flex-col items-start justify-center gap-1">
+                        <span className="block w-full truncate text-sm font-medium leading-6 text-foreground">
+                          {t.name}
+                        </span>
+                        <span className="block w-full truncate text-xs font-normal leading-5 text-muted-foreground">
+                          {t.columns.length} columns · {entityCount} entit
+                          {entityCount === 1 ? "y" : "ies"}
+                        </span>
+                      </span>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

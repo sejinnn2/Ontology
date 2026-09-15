@@ -32,9 +32,18 @@ export function DraggableHandle({
       }}
       aria-label={ariaLabel}
       title={title}
-      className={cn("inline-flex size-[10px] shrink-0 cursor-grab items-center justify-center active:cursor-grabbing", className)}
+      className={cn(
+        "inline-flex size-[10px] shrink-0 cursor-grab items-center justify-center active:cursor-grabbing",
+        className,
+      )}
     >
-      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <svg
+        width="10"
+        height="10"
+        viewBox="0 0 10 10"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+      >
         <circle cx="3" cy="1" r="1" fill="#C2C2C2" />
         <circle cx="7" cy="1" r="1" fill="#C2C2C2" />
         <circle cx="3" cy="5" r="1" fill="#C2C2C2" />
