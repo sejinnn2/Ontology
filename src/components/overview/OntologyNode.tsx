@@ -3,9 +3,11 @@ import { cn } from "@/lib/utils";
 import type { Side } from "@/lib/geometry";
 import {
   entityDisplayStatus,
+  propertyStatus,
   entityErrorReason,
   tablesUsedByEntity,
   type Entity,
+  type ReviewStatus,
 } from "@/lib/mock-data";
 import { ConnectionHandle } from "@/components/ontology/ConnectionHandle";
 import { StatusBadge, statusBorderColor } from "@/components/ontology/StatusBadge";
@@ -27,25 +29,145 @@ export const ONTOLOGY_NODE_WRAPPER_W = 100;
 
 const SIDES: Side[] = ["top", "right", "bottom", "left"];
 
+// Figma's own "Property status ring" palette (node 217:60226) — deliberately a separate, more
+// saturated palette from the plain ontology StatusBadge colors above (`statusBorderColor`), not a
+// reuse of them; matched to the exact hex values from that file rather than approximated.
+const PROPERTY_RING_COLORS: Record<ReviewStatus, string> = {
+  suggested: "#7C61FF",
+  confirmed: "#0AA9FF",
+  error: "#EF3636",
+  warning: "#FFAE06",
+};
+// Figma's own hover-state ring color (node 216:60197, the "hover" layer) — a third, distinct blue
+// from both the ring palette above and the plain ontology "confirmed" teal.
+const HOVER_RING_COLOR = "#0A89FF";
+
+// Both rings below share this exact geometry (Figma's own units, a 46×46 node: outer radius 23,
+// inner radius 20.24 — i.e. a center radius of 21.62 and a stroke width of 2.76), applied via a
+// matching `viewBox` rather than by hand-converting to this app's actual 44px node footprint — the
+// browser scales the two down together for free, and it keeps these numbers a direct, checkable
+// match to the file instead of a derived approximation. Shared between the default segmented ring
+// and its hover replacement so the two crossfade in place, never at a subtly different radius or
+// thickness from each other.
+const RING_VIEWBOX = 46;
+const RING_R = 21.62;
+const RING_STROKE = 2.76;
+// Figma's own badge diameter (36px) is relative to that same 46px node — scaled down to this app's
+// actual 44px node footprint (a real CSS pixel size, unlike the ring above, since `StatusBadge`
+// takes a literal `size` rather than living inside the ring's own scaled `viewBox`).
+const RING_BADGE_SIZE = (36 / RING_VIEWBOX) * ONTOLOGY_NODE_SIZE;
+
+/** Angular allocations reflect the actual distribution of this Entity's own Properties across the
+ * 4 ReviewStatuses; small white seams separate statuses. Purely a Property-status breakdown — has
+ * nothing to do with the Entity's own displayed status in the center (see `entityDisplayStatus`),
+ * which is a completely separate, independent fact. Drawn clockwise from 12 o'clock in Error →
+ * Warning → Confirmed → Suggested order. Fades out on hover — see `HoverRing` below, its
+ * replacement while the node is actually being pointed at. */
+function PropertyStatusRing({ entity }: { entity: Entity }) {
+  const statuses: ReviewStatus[] = ["error", "warning", "confirmed", "suggested"];
+  const counts = statuses.map(
+    (status) => entity.properties.filter((property) => propertyStatus(property) === status).length,
+  );
+  const total = entity.properties.length;
+  const circumference = 2 * Math.PI * RING_R;
+  const segments = counts.filter((count) => count > 0).length;
+  // A status this rare (say 1 Property out of 50) would render as a near-invisible sliver at its
+  // true proportional length — the whole point of this ring is to surface EVERY status that's
+  // actually present, not just the dominant ones, so exact proportionality isn't the goal here.
+  // Each present status first claims this minimum share of the ring regardless of its real count;
+  // only the circumference left over after every minimum is reserved gets split proportionally
+  // among the statuses that already exceed it on their own — so a dominant status still reads as
+  // visually larger, it just never fully swallows a rare one.
+  const MIN_SHARE = 0.12;
+  const minLength = circumference * MIN_SHARE;
+  const raw = counts.map((count) => ({
+    count,
+    length: count > 0 ? (circumference * count) / total : 0,
+  }));
+  const reservedForRare =
+    raw.filter((r) => r.length > 0 && r.length < minLength).length * minLength;
+  const remaining = circumference - reservedForRare;
+  const dominantTotal = raw.reduce((sum, r) => (r.length >= minLength ? sum + r.count : sum), 0);
+  const lengths = raw.map((r) => {
+    if (r.length === 0) return 0;
+    if (r.length < minLength) return minLength;
+    return dominantTotal > 0 ? (remaining * r.count) / dominantTotal : r.length;
+  });
+  let offset = 0;
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox={`0 0 ${RING_VIEWBOX} ${RING_VIEWBOX}`}
+      className="pointer-events-none absolute inset-0 size-11 -rotate-90 transition-opacity group-hover:opacity-0"
+    >
+      {total === 0 && (
+        <circle
+          cx={RING_VIEWBOX / 2}
+          cy={RING_VIEWBOX / 2}
+          r={RING_R}
+          fill="none"
+          stroke="#d4d4d8"
+          strokeWidth={RING_STROKE}
+        />
+      )}
+      {statuses.map((status, index) => {
+        const length = lengths[index];
+        if (!length) return null;
+        // ~4° seam between segments in the source file — 1.5 (of this ring's own ~135.8
+        // circumference) matches that almost exactly, shrinking only for a segment small enough
+        // that it would otherwise eat noticeably into that one status's own visible share.
+        const gap = segments > 1 ? Math.min(1.5, length * 0.2) : 0;
+        const start = offset;
+        offset += length;
+        return (
+          <circle
+            key={status}
+            cx={RING_VIEWBOX / 2}
+            cy={RING_VIEWBOX / 2}
+            r={RING_R}
+            fill="none"
+            stroke={PROPERTY_RING_COLORS[status]}
+            strokeWidth={RING_STROKE}
+            strokeDasharray={`${length - gap} ${circumference - length + gap}`}
+            strokeDashoffset={-(start + gap / 2)}
+          />
+        );
+      })}
+    </svg>
+  );
+}
+
+/** The segmented ring's hover replacement — a single solid ring in Figma's own hover-state blue
+ * (`HOVER_RING_COLOR`), same position/thickness (`RING_R`/`RING_STROKE`/`RING_VIEWBOX`) as the
+ * default ring above, so hovering the node reads as a crossfade in place rather than a size or
+ * position jump. Trades the Property-status breakdown for a plainer "this is hoverable/active"
+ * signal while the pointer is actually on the node — the breakdown itself is still one hover away
+ * (or a click, into the Entity's own Detail view) whenever it's actually wanted. */
+function HoverRing() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox={`0 0 ${RING_VIEWBOX} ${RING_VIEWBOX}`}
+      className="pointer-events-none absolute inset-0 size-11 opacity-0 transition-opacity group-hover:opacity-100"
+    >
+      <circle
+        cx={RING_VIEWBOX / 2}
+        cy={RING_VIEWBOX / 2}
+        r={RING_R}
+        fill="none"
+        stroke={HOVER_RING_COLOR}
+        strokeWidth={RING_STROKE}
+      />
+    </svg>
+  );
+}
+
 const SIDE_POSITION: Record<Side, string> = {
   top: "left-1/2 -top-[6px] -translate-x-1/2",
   bottom: "left-1/2 -bottom-[6px] -translate-x-1/2",
   left: "-left-[6px] top-1/2 -translate-y-1/2",
   right: "-right-[6px] top-1/2 -translate-y-1/2",
 };
-
-const TABLE_CHIP_RADIUS = 60;
-
-/** Fans mapped-table-name chips out in an arc centered on top-dead-center of the node, so they
- * never collide with the name label rendered directly below the circle. */
-function radialOffset(index: number, count: number): { dx: number; dy: number } {
-  const spread = Math.min(150, count * 40);
-  const start = -90 - spread / 2;
-  const step = count > 1 ? spread / (count - 1) : 0;
-  const angleDeg = count === 1 ? -90 : start + step * index;
-  const angle = (angleDeg * Math.PI) / 180;
-  return { dx: Math.cos(angle) * TABLE_CHIP_RADIUS, dy: Math.sin(angle) * TABLE_CHIP_RADIUS };
-}
 
 /**
  * Overview canvas's own Entity node — a 40px circular status badge with the entity's name below
@@ -58,12 +180,11 @@ function radialOffset(index: number, count: number): { dx: number; dy: number } 
  * layers. The circle itself never resizes between the two states; only this extra text needs the
  * room a deeper zoom provides.
  *
- * Hovering the node (its existing affordance for revealing the 4 connection handles, unchanged)
- * also fans out the entity's mapped Data Table names in a small arc above the circle. Each name
- * is a real entry point into that table's own Detail view (`onOpenTable`) — an invisible hover
- * catcher, well beyond the circle's own small hit-box, keeps the arc visible while the pointer
- * travels out to it, so reaching and clicking a name doesn't require re-hovering the node itself
- * partway there.
+ * Hovering the node still reveals its 4 connection handles (unchanged). It no longer fans out the
+ * entity's mapped Data Table names on hover — that's now surfaced by CLICKING the node instead:
+ * selecting an Entity highlights its own mapped rows in the Data Tables panel alongside this canvas
+ * (see `OverviewCanvas`'s own `activeEntityTableNames`), which stays visible as long as the
+ * selection does rather than disappearing the moment the pointer leaves.
  */
 export function OntologyNode({
   entity,
@@ -72,13 +193,16 @@ export function OntologyNode({
   onClick,
   onStartMove,
   onStartConnect,
-  onOpenTable,
   connectSourceSide = null,
   connectTargetSide = null,
   moveTarget = false,
-  showMappedTables = true,
+  propertyStatusRing = true,
 }: {
   entity: Entity;
+  /** On by default wherever this node shows an Entity's own status at all — Overview's own
+   * canvas nodes and Detail's related-entity satellites alike, so the ring/hover treatment reads
+   * the same across the whole app. */
+  propertyStatusRing?: boolean;
   /** Show confidence + props/table count below the name — Overview passes `view.z > 1` (zoomed
    * past 100%), matching Figma's own zoomed-in variant. */
   detailed: boolean;
@@ -96,25 +220,17 @@ export function OntologyNode({
    * the creation wizard for a brand-new, connected Entity Type, placed at the drop point. There is
    * no longer a separate "+" control — a single handle carries both outcomes now. */
   onStartConnect?: ((side: Side, clientX: number, clientY: number) => void) | undefined;
-  /** Opens a mapped Data Table's own Detail view — called with the table's name when one of the
-   * hover-revealed chips is clicked. */
-  onOpenTable?: ((tableName: string) => void) | undefined;
   connectSourceSide?: Side | null;
   connectTargetSide?: Side | null;
   /** A Property being dragged (moved, not connected) is hovering this entity as a valid place to
    * drop it — Detail's own related-satellite usage only; Overview has no such drag today. A
    * distinct affordance from the connection handles, shown as a plain ring around the circle. */
   moveTarget?: boolean;
-  /** The hover-revealed arc of this Entity's mapped Data Table names — Overview's own shortcut
-   * into a table's Detail view, on by default. Detail's own related-satellite usage turns it off:
-   * a satellite there is already sitting next to the very Table cards it maps into (rendered in
-   * full, right on the same canvas), so the same chip would be pure redundant hover noise. */
-  showMappedTables?: boolean;
 }) {
   const dragging = connectSourceSide !== null;
   const isTarget = connectTargetSide !== null;
   const tableNames = tablesUsedByEntity(entity);
-  const status = entityDisplayStatus(entity);
+  const status = propertyStatusRing ? entity.status : entityDisplayStatus(entity);
   // Which of the 4 handles the pointer is directly over right now — drives the "enlarge + show a
   // plus" progressive-reveal step described on `ConnectionHandle`'s own `enlarged`/`showPlus`
   // props. Purely local, per-node UI state; never touches app-state.
@@ -122,10 +238,6 @@ export function OntologyNode({
 
   return (
     <div className="group relative flex w-[100px] shrink-0 flex-col items-center gap-2 text-center">
-      {/* Invisible, well beyond the circle's own 40px hit-box, purely so the pointer can travel
-          from the node out to a table chip without the hover state dropping partway there. */}
-      <div aria-hidden="true" className="absolute -inset-x-16 -top-16 -bottom-2" />
-
       <button
         type="button"
         onPointerDown={(e) => {
@@ -143,20 +255,32 @@ export function OntologyNode({
         )}
       >
         <span
-          style={{ borderColor: statusBorderColor(status) }}
+          style={{ borderColor: propertyStatusRing ? "transparent" : statusBorderColor(status) }}
           className={cn(
-            "relative flex size-11 shrink-0 items-center justify-center rounded-full border-[1.5px] bg-white shadow-[0px_1px_1.5px_rgba(0,0,0,0.1),0px_1px_1px_rgba(0,0,0,0.1)] transition-[opacity,box-shadow]",
+            "relative flex size-11 shrink-0 items-center justify-center rounded-full bg-white shadow-[0px_1px_1.5px_rgba(0,0,0,0.1),0px_1px_1px_rgba(0,0,0,0.1)] transition-[opacity,box-shadow]",
+            // A real (if transparent) border here — even at 0 color — still eats into the padding
+            // box that `PropertyStatusRing`'s `inset-0` SVG anchors to, while `StatusBadge` below
+            // stays centered by flexbox instead — the two would end up centered on two DIFFERENT
+            // points, a fraction of a pixel apart, reading as the ring not quite hugging the badge.
+            // No border at all when the ring is doing that job instead keeps both concentric.
+            propertyStatusRing ? "border-0" : "border-[1.5px]",
             emphasis === "active" && "ring-[3px] ring-[#3b82f6]",
             emphasis === "muted" && "opacity-20",
             moveTarget && "ring-[4px] ring-primary",
           )}
         >
+          {propertyStatusRing && (
+            <>
+              <PropertyStatusRing entity={entity} />
+              <HoverRing />
+            </>
+          )}
           <StatusBadge
             status={status}
-            size={35}
+            size={propertyStatusRing ? RING_BADGE_SIZE : 35}
             confidence={entity.confidence}
             warningReason={entity.warningReason}
-            errorReason={entityErrorReason(entity)}
+            errorReason={propertyStatusRing ? entity.errorReason : entityErrorReason(entity)}
           />
           {onStartConnect &&
             SIDES.map((side) => {
@@ -209,7 +333,7 @@ export function OntologyNode({
             </span>
             {detailed && <ConfidenceChip confidence={entity.confidence} />}
           </span>
-          {detailed && (
+          {detailed && !propertyStatusRing && (
             <span className="whitespace-nowrap text-[10px] font-normal leading-[10px] text-[#909090]">
               {entity.properties.length} props · {tableNames.length} table
               {tableNames.length === 1 ? "" : "s"}
@@ -217,30 +341,6 @@ export function OntologyNode({
           )}
         </span>
       </button>
-
-      {showMappedTables && tableNames.length > 0 && (
-        <div className="pointer-events-none absolute left-1/2 top-5 -translate-x-1/2 -translate-y-1/2 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
-          {tableNames.map((name, i) => {
-            const { dx, dy } = radialOffset(i, tableNames.length);
-            return (
-              <button
-                key={name}
-                type="button"
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onOpenTable?.(name);
-                }}
-                title={`Open ${name}`}
-                style={{ transform: `translate(${dx}px, ${dy}px)` }}
-                className="pointer-events-auto absolute left-0 top-0 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded-full border border-black/[0.08] bg-white px-2 py-0.5 text-[10px] font-medium text-[#171B22] shadow-[0_2px_2px_rgba(0,0,0,0.1)] transition-colors hover:border-primary/40 hover:bg-accent"
-              >
-                {name}
-              </button>
-            );
-          })}
-        </div>
-      )}
     </div>
   );
 }

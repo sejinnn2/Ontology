@@ -905,10 +905,11 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
   }, [searchContext, hoveredTableName, highlightId, entities]);
 
   // The mirror image of `hoveredTableName`'s own entity-highlight above: which Data Table rows to
-  // highlight because the currently "active" Entity (hover, or the same selection-fallback
-  // `highlightId` already uses) maps into them. Skipped entirely while a table is the one actively
-  // hovered — that direction already owns the highlight (see `activeEntityIds`), so this never
-  // fights it by re-highlighting a different set of tables at the same time.
+  // highlight (a gray background, never hiding the rest — see `selectedEntityTableNames` below for
+  // the stronger, selection-driven FILTER that does hide rows) because the currently "active"
+  // Entity (hover, or the same selection-fallback `highlightId` already uses) maps into them.
+  // Skipped entirely while a table is the one actively hovered — that direction already owns the
+  // highlight in reverse.
   const activeEntityTableNames = useMemo(() => {
     if (hoveredTableName || !activeEntityIds) return null;
     const names = new Set<string>();
@@ -918,6 +919,18 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     });
     return names;
   }, [hoveredTableName, activeEntityIds, entities]);
+
+  // A SELECTED Entity (a click, never a hover — unlike the plain highlight above) narrows the
+  // whole Data Tables panel down to just the tables it actually maps into, with its own header
+  // ("Data Tables connected to '<name>'" — see the panel's own render below) rather than merely
+  // graying a row out among all of them. `null` (every table shown, plain "Data Tables" header)
+  // the moment nothing's selected, or the selection is a Table/Relation instead of an Entity.
+  const selectedEntityForTables =
+    selection?.kind === "entity" ? (entities.find((e) => e.id === selection.id) ?? null) : null;
+  const selectedEntityTableNames = useMemo(
+    () => (selectedEntityForTables ? new Set(tablesUsedByEntity(selectedEntityForTables)) : null),
+    [selectedEntityForTables],
+  );
 
   const neighborIds = useMemo(() => {
     if (searchContext) {
@@ -1585,9 +1598,6 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                       : (side, clientX, clientY) =>
                           startConnectFromEntity(entity.id, side, clientX, clientY)
                   }
-                  onOpenTable={
-                    historyPanelOpen ? undefined : (tableName) => openDetail("table", tableName)
-                  }
                   connectSourceSide={connectDrag?.sourceId === entity.id ? connectDrag.side : null}
                   connectTargetSide={connectTargetId === entity.id ? connectTargetSide : null}
                 />
@@ -1784,7 +1794,11 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
             )}
           </button>
           {tablePanelOpen && (
-            <span className="truncate text-base font-medium text-foreground">Data Tables</span>
+            <span className="truncate text-base font-medium text-foreground">
+              {selectedEntityForTables
+                ? `Data Tables connected to '${selectedEntityForTables.name || "Untitled entity"}'`
+                : "Data Tables"}
+            </span>
           )}
         </div>
         {!tablePanelOpen && (
@@ -1804,10 +1818,13 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
               />
             </div>
             <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
-              {sortedTables.map((t) => {
+              {(selectedEntityTableNames
+                ? sortedTables.filter((t) => selectedEntityTableNames.has(t.name))
+                : sortedTables
+              ).map((t) => {
                 const isSelected = selection?.kind === "table" && selection.id === t.name;
                 const isSearchFocused = searchContext?.tableNames.has(t.name) ?? false;
-                const isEntityHoverFocused = activeEntityTableNames?.has(t.name) ?? false;
+                const isEntityFocused = activeEntityTableNames?.has(t.name) ?? false;
                 const entityCount = entitiesUsingTable(t.name, entities).length;
                 // Tables have no Confidence/ReviewStatus of their own — derived from whichever
                 // Property↔Column Mapping(s) touch it instead (see `isTableInScope`'s own doc
@@ -1834,12 +1851,12 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                         historyPanelOpen && "cursor-default",
                         isSelected
                           ? "bg-[#eff6ff]"
-                          : isSearchFocused || isEntityHoverFocused
+                          : isSearchFocused || isEntityFocused
                             ? "bg-muted"
                             : "bg-white",
                         !isSelected &&
                           !isSearchFocused &&
-                          !isEntityHoverFocused &&
+                          !isEntityFocused &&
                           !historyPanelOpen &&
                           "hover:bg-muted",
                       )}

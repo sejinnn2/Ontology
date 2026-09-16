@@ -4645,7 +4645,6 @@ function EntityDetailCanvas({
                             onStartConnect={(side, clientX, clientY) =>
                               startEntityConnect(other.id, side, clientX, clientY)
                             }
-                            showMappedTables={false}
                             connectSourceSide={
                               entityConnectDrag?.sourceId === other.id
                                 ? entityConnectDrag.side
@@ -5467,7 +5466,6 @@ function EntityDetailCanvas({
                                 onStartMove={(clientX, clientY) =>
                                   startNodeDrag(sat.id, clientX, clientY)
                                 }
-                                showMappedTables={false}
                                 onClick={() => setContextItem({ kind: "entity", entity: sat })}
                               />
                             </div>
