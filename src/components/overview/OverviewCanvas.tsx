@@ -328,6 +328,73 @@ function buildForceDirectedLayout<T extends { id: string; x: number; y: number }
   }));
 }
 
+/** Idea 4: a two-ring radial placement — the most-connected Entities (by Relation degree) fill an
+ * inner ring at a fixed angular step, and everything else fills a wider outer ring spaced evenly
+ * around it. Unlike Idea 1's hub/community heuristic or Idea 3's physics simulation, this is pure
+ * geometry: no simulation, no per-pair distance math, just "rank by degree, place on a circle." */
+function buildRadialPlacementLayout<T extends { id: string; x: number; y: number }>(
+  entities: T[],
+  relations: { from: string; to: string }[],
+): T[] {
+  if (entities.length < 2) return entities;
+
+  const degree = new Map(entities.map((entity) => [entity.id, 0]));
+  relations.forEach((relation) => {
+    if (!degree.has(relation.from) || !degree.has(relation.to)) return;
+    degree.set(relation.from, (degree.get(relation.from) ?? 0) + 1);
+    if (relation.to !== relation.from) {
+      degree.set(relation.to, (degree.get(relation.to) ?? 0) + 1);
+    }
+  });
+  const indexById = new Map(entities.map((entity, index) => [entity.id, index]));
+  const ranked = [...entities].sort(
+    (a, b) =>
+      (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0) ||
+      (indexById.get(a.id) ?? 0) - (indexById.get(b.id) ?? 0),
+  );
+
+  const originalCenters = entities.map(ontologyNodeCenter);
+  const center = {
+    x: originalCenters.reduce((sum, p) => sum + p.x, 0) / originalCenters.length,
+    y: originalCenters.reduce((sum, p) => sum + p.y, 0) / originalCenters.length,
+  };
+
+  const STEP_DEGREES = 20;
+  const INNER_RADIUS = 420;
+  const OUTER_RADIUS = INNER_RADIUS + INNER_RADIUS / 1.8;
+  const START_ANGLE = -120;
+  const toXY = (angleDeg: number, radius: number) => ({
+    x: center.x + radius * Math.cos((angleDeg * Math.PI) / 180),
+    y: center.y + radius * Math.sin((angleDeg * Math.PI) / 180),
+  });
+
+  const positions = new Map<string, Pt>();
+  const innerCapacity = Math.floor(360 / STEP_DEGREES);
+  if (ranked.length <= innerCapacity) {
+    // Too few Entities to need a second ring — space them all evenly around one circle.
+    const step = 360 / ranked.length;
+    ranked.forEach((entity, i) =>
+      positions.set(entity.id, toXY(START_ANGLE + i * step, INNER_RADIUS)),
+    );
+  } else {
+    const innerKeys = ranked.slice(0, innerCapacity);
+    const outerKeys = ranked.slice(innerCapacity);
+    innerKeys.forEach((entity, i) =>
+      positions.set(entity.id, toXY(START_ANGLE + i * STEP_DEGREES, INNER_RADIUS)),
+    );
+    const outerStep = 360 / outerKeys.length;
+    const outerStartAngle = START_ANGLE + innerKeys.length * STEP_DEGREES;
+    outerKeys.forEach((entity, i) =>
+      positions.set(entity.id, toXY(outerStartAngle + i * outerStep, OUTER_RADIUS)),
+    );
+  }
+
+  return entities.map((entity) => ({
+    ...entity,
+    ...wrapperOriginForCenter(positions.get(entity.id)!),
+  }));
+}
+
 // Hidden for now per product decision (the create-Entity-Type toolbar row reads as an empty bar
 // with the design's new header above it) — `CreateEntityButton` and `handleCreateEntity` stay
 // fully wired below, just not rendered, so restoring this is a one-line flip back to `true`.
@@ -573,6 +640,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
   const layoutEntities = useMemo(() => {
     if (layoutIdea === "idea2") return buildRawGridLayout(entities);
     if (layoutIdea === "idea3") return buildForceDirectedLayout(entities, relations);
+    if (layoutIdea === "idea4") return buildRadialPlacementLayout(entities, relations);
     return buildFarZoomTopologyLayout(entities, relations);
   }, [entities, relations, layoutIdea]);
 
