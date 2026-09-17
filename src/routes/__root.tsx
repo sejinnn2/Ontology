@@ -20,20 +20,20 @@ function DevScenarioSwitcher() {
   return (
     <div className="flex h-10 shrink-0 items-center justify-center gap-1 border-b border-white/10 bg-[#1c1c18] px-3">
       <span className="px-2 text-[10px] font-semibold uppercase tracking-wider text-white/55">
-        Demo fixture
+        Graph ideas
       </span>
-      {(["fresh", "in-progress"] as const).map((scenario, index) => (
+      {(["idea1", "idea2"] as const).map((idea, index) => (
         <button
-          key={scenario}
+          key={idea}
           type="button"
-          onClick={() => app.resetDemoScenario(scenario)}
+          onClick={() => app.setLayoutIdea(idea)}
           className={`rounded-full px-3 py-1 text-[11px] font-medium transition-colors ${
-            app.demoScenario === scenario
+            app.layoutIdea === idea
               ? "bg-white text-[#1c1c18]"
               : "text-white/70 hover:bg-white/10 hover:text-white"
           }`}
         >
-          {index === 0 ? "01 · Fresh" : "02 · In Progress"}
+          {`Idea ${index + 1}`}
         </button>
       ))}
     </div>

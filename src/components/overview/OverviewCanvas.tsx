@@ -194,6 +194,13 @@ function buildFarZoomTopologyLayout<T extends { id: string; x: number; y: number
   });
 }
 
+/** Idea 2: no computed layout at all — every Entity renders at its own stored x/y exactly as
+ * authored in the fixture data, with no hub/topology clustering layered on top. A deliberately
+ * plain baseline to compare against Idea 1's (`buildFarZoomTopologyLayout`) inferred clustering. */
+function buildRawGridLayout<T extends { id: string; x: number; y: number }>(entities: T[]): T[] {
+  return entities;
+}
+
 // Hidden for now per product decision (the create-Entity-Type toolbar row reads as an empty bar
 // with the design's new header above it) — `CreateEntityButton` and `handleCreateEntity` stay
 // fully wired below, just not rendered, so restoring this is a one-line flip back to `true`.
@@ -362,6 +369,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     entities,
     relations,
     tables,
+    layoutIdea,
     selection,
     select,
     openDetail,
@@ -436,8 +444,11 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     [entities, relationCountByEntity],
   );
   const layoutEntities = useMemo(
-    () => buildFarZoomTopologyLayout(entities, relations),
-    [entities, relations],
+    () =>
+      layoutIdea === "idea2"
+        ? buildRawGridLayout(entities)
+        : buildFarZoomTopologyLayout(entities, relations),
+    [entities, relations, layoutIdea],
   );
 
   // The Data Tables panel's own collapse toggle — independent of the Ontology canvas, which is
