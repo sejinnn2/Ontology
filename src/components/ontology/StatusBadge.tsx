@@ -32,6 +32,18 @@ export function statusBorderColor(status: ReviewStatus): string {
   return STATUS_STYLE[status].border;
 }
 
+/** The plain-English name for a review status — shared by this badge's own tooltip and any other
+ * spot (e.g. a bare status dot with no room for a full badge) that needs the same label. */
+export function reviewStatusLabel(status: ReviewStatus): string {
+  return status === "suggested"
+    ? "Suggested"
+    : status === "confirmed"
+      ? "Confirmed"
+      : status === "warning"
+        ? "Warning"
+        : "Error";
+}
+
 function SparkleIcon({ color, size }: { color: string; size: number }) {
   return (
     <svg
@@ -69,7 +81,10 @@ function CheckIcon({ color, size }: { color: string; size: number }) {
   );
 }
 
-function WarningIcon({ color, size }: { color: string; size: number }) {
+/** Exported so any other chrome that needs to signal "warning"/"error" (e.g. the Header's own
+ * Issues control) can reuse the exact same glyph canvas nodes use for these statuses, instead of a
+ * generic icon-library lookalike that reads as a different visual language. */
+export function WarningIcon({ color, size }: { color: string; size: number }) {
   return (
     <svg
       width={size}
@@ -86,7 +101,7 @@ function WarningIcon({ color, size }: { color: string; size: number }) {
   );
 }
 
-function ErrorIcon({ color, size }: { color: string; size: number }) {
+export function ErrorIcon({ color, size }: { color: string; size: number }) {
   return (
     <svg
       width={size}
@@ -135,14 +150,7 @@ export function StatusBadge({
 }) {
   const style = STATUS_STYLE[status];
   const Icon = STATUS_ICON[status];
-  const label =
-    status === "suggested"
-      ? "Suggested"
-      : status === "confirmed"
-        ? "Confirmed"
-        : status === "warning"
-          ? "Warning"
-          : "Error";
+  const label = reviewStatusLabel(status);
   // Only Warning/Error carry an explanation worth surfacing — Confirmed/Suggested are simply the
   // review state itself, so their tooltip is just the label with no extra reasoning line.
   const body =
@@ -157,7 +165,7 @@ export function StatusBadge({
         <span
           tabIndex={0}
           style={{ width: size, height: size, background: style.badgeBg }}
-          className="inline-flex shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-[#61B2FF]"
+          className="inline-flex shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-[#00DED8]"
           aria-label={label}
         >
           <Icon color={style.iconColor} size={Math.round(size * 0.5)} />

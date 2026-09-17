@@ -89,6 +89,16 @@ export function edgeAnchorsForRects(
   return { p1, p2, mid: { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 }, side1, side2 };
 }
 
+/** A Property<->Column mapping connector's anchors are NOT adaptive like `edgeAnchorsForRects`
+ * above — the semantic direction (a Property's own right edge is always where it "points from",
+ * a Column's own left edge is always where it "points to") stays fixed regardless of where either
+ * card has been dragged, so the connector never re-routes through top/bottom and never travels
+ * vertically through a card's interior. Always returns `a`'s right-edge anchor and `b`'s left-edge
+ * anchor, in that order. */
+export function rightToLeftAnchors(a: Rect, b: Rect, gap: number = NODE_GAP): { p1: Pt; p2: Pt } {
+  return { p1: rectSideAnchor(a, gap, "right"), p2: rectSideAnchor(b, gap, "left") };
+}
+
 /** Anchor points on each node's rectangular perimeter — on whichever side (left/right, or
  * top/bottom) faces the other node along the axis their centers differ most on — plus their
  * midpoint, used to place a relation's label. Axis-aligned anchors (rather than a direct-angle
@@ -138,6 +148,36 @@ export function nearestSide(from: { x: number; y: number }, toward: Pt): Side {
  * hit-box, replacing the old circular-radius check now that nodes aren't circles. */
 export function pointInNode(p: Pt, n: { x: number; y: number }): boolean {
   return p.x >= n.x && p.x <= n.x + NODE_W && p.y >= n.y && p.y <= n.y + NODE_H;
+}
+
+/** The any-size-rect form of `pointInNode` above — for hit-testing against a node whose footprint
+ * isn't the fixed NODE_W/NODE_H pill, e.g. Overview's own circular canvas node. */
+export function pointInRect(p: Pt, r: Rect): boolean {
+  return p.x >= r.x && p.x <= r.x + r.width && p.y >= r.y && p.y <= r.y + r.height;
+}
+
+/** Anchor point on a circle's own boundary, at the continuous angle actually facing `toward` —
+ * unlike `sideAnchor`/`rectSideAnchor` above, this never snaps to one of 4 cardinal sides, so a
+ * ring of edges radiating from one circular node fans out at each edge's own true angle instead
+ * of bunching onto a shared side. Used by Overview's graph-style connectors (see OverviewCanvas),
+ * which anchor to entities' circular nodes rather than the fixed-size pill rects above. */
+export function circleAnchor(center: Pt, radius: number, toward: Pt, gap: number = 0): Pt {
+  const dx = toward.x - center.x;
+  const dy = toward.y - center.y;
+  const dist = Math.hypot(dx, dy) || 1;
+  const r = radius + gap;
+  return { x: center.x + (dx / dist) * r, y: center.y + (dy / dist) * r };
+}
+
+/** Shortest distance from point `p` to the segment `a`-`b` — used to detect when a straight
+ * connector would cut through a third node's circle, so it can be bowed around it instead. */
+export function distanceToSegment(p: Pt, a: Pt, b: Pt): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq));
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
 }
 
 const CORNER_R = 50;

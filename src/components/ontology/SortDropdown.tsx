@@ -43,10 +43,14 @@ export function SortDropdown({
   sort,
   onChange,
   className,
+  showPrefix = true,
 }: {
   sort: SortState;
   onChange: (key: SortKey) => void;
   className?: string;
+  /** Whether the trigger reads "Sort: Name" (default, matching every other panel that uses this
+   * control) or just "Name" on its own — the Data Tables panel's own Figma spec omits the prefix. */
+  showPrefix?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -67,10 +71,11 @@ export function SortDropdown({
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-accent"
+        className="flex items-center rounded-[4px] px-1.5 py-0.5 text-xs font-normal text-muted-foreground transition-colors hover:bg-accent"
       >
-        Sort: {sort.key === "name" ? "Name" : "Confidence"}
-        <ArrowUpDown className={cn("size-2.5", sort.dir === "desc" && "-scale-y-100")} />
+        {showPrefix && "Sort: "}
+        {sort.key === "name" ? "Name" : "Confidence"}
+        <ArrowUpDown className={cn("size-3", sort.dir === "desc" && "-scale-y-100")} />
       </button>
       {open && (
         <div

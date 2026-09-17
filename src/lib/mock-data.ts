@@ -1,14 +1,52 @@
-/** "warning" and "error" are fully styled throughout the UI (see StatusBadge). The one thing the
- * app ever computes automatically is a Property's own Error: an Identifier property (see
- * `isIdentifierProperty`) with no active column mapping is always Error, via `propertyStatus`
- * below, and an Entity Type inherits that as its own Error via `entityStatus` — never derived from
- * confidence, and never any other Property-level Error case. Every other warning/error below is
- * hand-flipped on the seed item itself (with a `warningReason`/`errorReason` alongside) purely to
- * give the Detail contextual panel's warning/error layout something real to render. Most items are
- * still just "suggested" or "confirmed". */
+/** This single field carries two conceptually separate questions for an Entity/Property/Relation,
+ * which is why the app is careful never to conflate it with the OTHER two ways an object's state
+ * gets described elsewhere:
+ *   - Ontology lifecycle — "suggested" (an AI proposal, not yet applied) vs. "confirmed" (Applied
+ *     to the ontology). This is the axis `acceptSuggestions`/`confirmItems` (app-state.ts) mutate.
+ *   - Validation — "warning"/"error" flag a real issue with the item itself, independent of how
+ *     far along its lifecycle is; "warning" is fully styled throughout the UI (see StatusBadge)
+ *     but never blocks Accept, only "error" does (see `buildConfirmPlan`). The one Error the app
+ *     ever computes automatically is a Property's own: an Identifier property (see
+ *     `isIdentifierProperty`) with no active column mapping is always Error, via `propertyStatus`
+ *     below, and an Entity Type inherits that as its own Error via `entityStatus` — never derived
+ *     from confidence, and never any other Property-level Error case. Every other warning/error
+ *     below is hand-flipped on the seed item itself (with a `warningReason`/`errorReason`
+ *     alongside) purely to give the Detail contextual panel's warning/error layout something real
+ *     to render.
+ * Source-data completeness (Table/Column "mapped" vs "unmapped") and AI review workload
+ * ("Suggestions") are both DERIVED elsewhere from this field (and from `Property.mapping`) rather
+ * than stored as their own status — see `tableMappingStatus`/`tableMappingCompleteness` below and
+ * `AiReviewBar`'s own doc comment, respectively. Tables and Columns never get a `ReviewStatus` of
+ * their own at all — see `TableSchema`'s doc comment below.
+ *
+ * Parent/child invariant: a Property can never be "confirmed" while its own Entity is still
+ * "suggested" — "Child Applied → Parent must be Applied." `acceptSuggestions` (app-state.ts) is the
+ * only place that resolves an Accept action into the ids `confirmItems` writes, so it's the one
+ * place this is enforced: accepting a suggested Entity always applies its own current Properties
+ * right along with it, and a lone Property key is honored only once its Entity already is (or is
+ * becoming) Applied. The reverse combination (an Applied Entity with a still-Suggested Property)
+ * is perfectly valid — see that function's own doc comment — since a Property added after its
+ * Entity was already applied is an independent suggestion of its own. */
 export type ReviewStatus = "suggested" | "confirmed" | "warning" | "error";
 
-export type ColumnRef = { table: string; column: string };
+/** A Property↔Column connector's OWN lifecycle — completely independent of the owning Property's
+ * own `ReviewStatus` (see that type's own doc comment: Property "Confirmed" and mapping "Mapped"
+ * are two different facts, never inferred from each other). A connector existing at all (`mapping
+ * !== null`) does NOT mean it's "Mapped" — it may still be an AI-proposed `"suggested"` connection
+ * nobody has reviewed yet. `status` is optional so every pre-existing seed mapping (none of which
+ * predate this lifecycle) defaults to `"suggested"` via `mappingStatus()` below, rather than
+ * silently becoming "already confirmed" the moment this field was introduced — the prototype's own
+ * honest starting state is "AI proposed many mappings, none reviewed yet." */
+export type MappingStatus = "suggested" | "mapped";
+export type ColumnRef = { table: string; column: string; status?: MappingStatus };
+
+/** `mapping.status`, defaulted — see `ColumnRef`'s own doc comment for why a missing value reads
+ * as `"suggested"` rather than `"mapped"`. The one place this default is decided; every other
+ * function in this file that cares about a mapping's confirmation state calls this instead of
+ * reading `.status` directly. */
+export function mappingStatus(mapping: ColumnRef): MappingStatus {
+  return mapping.status ?? "suggested";
+}
 
 /** Independent of `confidence` — a low-confidence suggestion is never automatically a warning or
  * error, and a warning/error can carry any confidence at all. Only set when `status` is
@@ -25,6 +63,12 @@ export type Property = {
   status: ReviewStatus;
   /** null = unmapped */
   mapping: ColumnRef | null;
+  /** Explicit "this is the Identifier" flag — set only by the canvas-first Entity creation wizard
+   * (see app-state's own `createEntityWithProperties`), which lets a user name their Identifier
+   * property anything ("trackingNumber", not just "id"). Never set on seed data, which instead
+   * relies purely on the `isIdentifierProperty` naming convention below — see that function's own
+   * doc comment for why both checks coexist. */
+  isIdentifier?: boolean;
 } & ReviewFlags;
 
 export type Entity = {
@@ -54,59 +98,48 @@ export type TableColumn = {
   name: string;
   type: string;
   description: string;
-  /** Same mock schema-discovery confidence signal as `TableSchema.confidence` (see its comment)
-   * but per-column — separate from that table-level value, and from every mapping/entity/property
-   * confidence. Optional for the same reason: no real value renders as "no value", never a
-   * fabricated number. */
-  confidence?: number;
 };
+/** Deliberately no `confidence` field, on either this or `TableColumn` above — a Table/Column is
+ * raw source data, already known to exist; Confidence belongs to an AI-generated semantic
+ * suggestion (an Entity/Property/Relation, or a Property<->Column Mapping — see `Property.mapping`
+ * and `Property.confidence`, which together already express "the AI is N% confident this Property
+ * should map to this Column"), never to the source object being mapped into. If you need to know
+ * how "confident" or "complete" a table/column looks in the UI, that's `tableMappingStatus` /
+ * `tableMappingCompleteness` below — a fact about how much of it is currently mapped, derived from
+ * the Properties mapped into it, not a stored number on the table/column itself. */
 export type TableSchema = {
   name: string;
   description: string;
   columns: TableColumn[];
   rows: Record<string, string>[];
-  /** How confident the schema-discovery step is that this is a real, well-formed source table —
-   * the same 0-1 scale as Entity/Property/Relation confidence, but a genuinely separate signal
-   * from either of those (an entity's mapping confidence says nothing about the table it maps
-   * to) and separate from `tableMappingStatus`/`tableMappingCompleteness` below (which describe
-   * how much of the table is currently *mapped*, a fact about the ontology, not about the table
-   * itself). There's no real schema-discovery service wired up yet, so this is mock data — seeded
-   * by hand below — standing in for that signal; optional so a table without one (or one dropped
-   * in from a future real source) renders its confidence as "no value" rather than a fake number. */
-  confidence?: number;
 };
 
 export const tables: TableSchema[] = [
   {
     name: "customers",
     description: "One row per registered shopper, including their loyalty tier.",
-    confidence: 0.96,
     columns: [
       {
         name: "customer_id",
         type: "uuid",
         description: "Primary key for the customer record.",
-        confidence: 0.99,
       },
-      { name: "first_name", type: "text", description: "Customer's given name.", confidence: 0.97 },
-      { name: "last_name", type: "text", description: "Customer's family name.", confidence: 0.97 },
+      { name: "first_name", type: "text", description: "Customer's given name." },
+      { name: "last_name", type: "text", description: "Customer's family name." },
       {
         name: "email",
         type: "text",
         description: "Customer's contact email address.",
-        confidence: 0.98,
       },
       {
         name: "customer_tier",
         type: "text",
         description: "Loyalty tier: gold, silver, or bronze.",
-        confidence: 0.85,
       },
       {
         name: "created_at",
         type: "timestamptz",
         description: "When the customer account was created.",
-        confidence: 0.9,
       },
     ],
     rows: [
@@ -139,46 +172,36 @@ export const tables: TableSchema[] = [
   {
     name: "orders",
     description: "One row per checkout, from placement through fulfillment.",
-    confidence: 0.91,
     columns: [
       {
         name: "order_id",
         type: "uuid",
         description: "Primary key for the order.",
-        confidence: 0.99,
       },
       {
         name: "customer_id",
         type: "uuid",
         description: "Customer who placed the order.",
-        confidence: 0.97,
       },
       {
         name: "order_date",
         type: "date",
         description: "Date the order was placed.",
-        confidence: 0.95,
       },
       {
         name: "status",
         type: "text",
         description: "Fulfillment status: pending, fulfilled, or cancelled.",
-        confidence: 0.9,
       },
       {
         name: "total_amount",
         type: "numeric",
         description: "Total charged for the order.",
-        confidence: 0.88,
       },
       {
         name: "ship_carrier",
         type: "text",
         description: "Carrier used to ship the order, if any.",
-        // Deliberately 0, not omitted — this column is sparse in the sample rows, so
-        // schema-discovery flags it as a genuine 0% rather than leaving it unset. Confirms 0 is
-        // rendered as "0%", never confused with the "no value" (—) case.
-        confidence: 0,
       },
     ],
     rows: [
@@ -211,37 +234,31 @@ export const tables: TableSchema[] = [
   {
     name: "order_items",
     description: "One row per product line within an order.",
-    confidence: 0.89,
     columns: [
       {
         name: "order_item_id",
         type: "uuid",
         description: "Primary key for the order line item.",
-        confidence: 0.99,
       },
       {
         name: "order_id",
         type: "uuid",
         description: "Order this line item belongs to.",
-        confidence: 0.96,
       },
       {
         name: "product_id",
         type: "uuid",
         description: "Product being purchased on this line.",
-        confidence: 0.95,
       },
       {
         name: "qty",
         type: "int",
         description: "Quantity of the product ordered.",
-        confidence: 0.93,
       },
       {
         name: "unit_price",
         type: "numeric",
         description: "Price charged per unit at time of purchase.",
-        confidence: 0.9,
       },
     ],
     rows: [
@@ -271,31 +288,26 @@ export const tables: TableSchema[] = [
   {
     name: "products",
     description: "Catalog of sellable items, independent of size or color.",
-    confidence: 0.94,
     columns: [
       {
         name: "product_id",
         type: "uuid",
         description: "Primary key for the product.",
-        confidence: 0.99,
       },
       {
         name: "product_name",
         type: "text",
         description: "Display name of the product.",
-        confidence: 0.95,
       },
       {
         name: "category_id",
         type: "uuid",
         description: "Category the product is classified under.",
-        confidence: 0.9,
       },
       {
         name: "base_price",
         type: "numeric",
         description: "List price before any discounts.",
-        confidence: 0.85,
       },
     ],
     rows: [
@@ -321,8 +333,6 @@ export const tables: TableSchema[] = [
   },
   {
     name: "categories",
-    // No schema-discovery confidence yet for this one — left unset on purpose so the UI's
-    // "no value" fallback (an em dash, never a fabricated number) has a real example to render.
     description: "Groupings that products can be classified under.",
     columns: [
       { name: "category_id", type: "uuid", description: "Primary key for the category." },
@@ -337,32 +347,27 @@ export const tables: TableSchema[] = [
   {
     name: "payments",
     description: "One row per payment captured against an order.",
-    confidence: 0.93,
     columns: [
       {
         name: "payment_id",
         type: "uuid",
         description: "Primary key for the payment.",
-        confidence: 0.99,
       },
       {
         name: "order_id",
         type: "uuid",
         description: "Order this payment was captured against.",
-        confidence: 0.96,
       },
       {
         name: "method",
         type: "text",
         description: "Payment method used: card, paypal, etc.",
-        confidence: 0.92,
       },
-      { name: "amount", type: "numeric", description: "Amount captured.", confidence: 0.94 },
+      { name: "amount", type: "numeric", description: "Amount captured." },
       {
         name: "status",
         type: "text",
         description: "Payment status: captured, pending, or refunded.",
-        confidence: 0.88,
       },
     ],
     rows: [
@@ -397,122 +402,102 @@ export const tables: TableSchema[] = [
     name: "product_details",
     description:
       "Extended per-variant attributes for a product, imported from a legacy PIM export.",
-    confidence: 0.58,
     columns: [
-      { name: "sku", type: "text", description: "Stock keeping unit.", confidence: 0.97 },
+      { name: "sku", type: "text", description: "Stock keeping unit." },
       {
         name: "upc",
         type: "text",
         description: "Universal product code (barcode).",
-        confidence: 0.9,
       },
       {
         name: "weight_kg",
         type: "numeric",
         description: "Shipping weight in kilograms.",
-        confidence: 0.88,
       },
       {
         name: "length_cm",
         type: "numeric",
         description: "Packaged length in centimeters.",
-        confidence: 0.82,
       },
       {
         name: "width_cm",
         type: "numeric",
         description: "Packaged width in centimeters.",
-        confidence: 0.82,
       },
       {
         name: "height_cm",
         type: "numeric",
         description: "Packaged height in centimeters.",
-        confidence: 0.82,
       },
       {
         name: "material",
         type: "text",
         description: "Primary material this variant is made from.",
-        confidence: 0.75,
       },
       {
         name: "color",
         type: "text",
         description: "Display color name for this variant.",
-        confidence: 0.79,
       },
       {
         name: "brand",
         type: "text",
         description: "Brand this product is sold under.",
-        confidence: 0.91,
       },
       {
         name: "manufacturer",
         type: "text",
         description: "Company that manufactures this product.",
-        confidence: 0.7,
       },
       {
         name: "country_of_origin",
         type: "text",
         description: "Country where this product was manufactured.",
-        confidence: 0.68,
       },
       {
         name: "hs_code",
         type: "text",
         description: "Harmonized System code used for customs.",
-        confidence: 0.6,
       },
       {
         name: "warranty_months",
         type: "integer",
         description: "Manufacturer warranty length in months.",
-        confidence: 0.72,
       },
       {
         name: "seo_title",
         type: "text",
         description: "Title tag used on the product page.",
-        confidence: 0.55,
       },
       {
         name: "seo_slug",
         type: "text",
         description: "URL slug used on the product page.",
-        confidence: 0.58,
       },
       {
         name: "primary_image_url",
         type: "text",
         description: "URL of the main product photo.",
-        confidence: 0.8,
       },
       {
         name: "model_number",
         type: "text",
         description: "Manufacturer's model number.",
-        confidence: 0.66,
       },
       {
         name: "style_code",
         type: "text",
         description: "Internal style code used by merchandising.",
-        confidence: 0.5,
       },
       {
         name: "is_discontinued",
         type: "boolean",
         description: "Whether this variant has been discontinued.",
-        confidence: 0.85,
       },
       {
         name: "cost_price",
         type: "numeric",
         description: "What this product costs to acquire or produce.",
-        confidence: 0.77,
       },
     ],
     rows: [
@@ -1260,7 +1245,11 @@ export const initialEntities: Entity[] = [
         description: "Unique identifier for this fulfillment record.",
         type: "string",
         confidence: 0.99,
-        status: "confirmed",
+        // Must stay "suggested" while the owning Entity (`e_order_fulfillment` above) is itself
+        // still "suggested" — a Property can never be independently Applied under a Suggested
+        // parent (see `acceptSuggestions`' own doc comment in app-state.ts). Accepting this Entity
+        // applies this Property right along with it.
+        status: "suggested",
         mapping: { table: "orders", column: "order_id" },
       },
       {
@@ -1395,13 +1384,24 @@ export const initialRelations: Relation[] = [
   },
 ];
 
-/** The seed data names every entity's identifier property "id" — a reliable, non-invented signal
- * for which property gets the key-icon treatment, since no `isIdentifier` field exists. */
-export function isIdentifierProperty(name: string): boolean {
-  return name.trim().toLowerCase() === "id";
+/** Whether a Property gets the key-icon Identifier treatment — true for an explicit
+ * `isIdentifier: true` flag (set only by the Entity-creation wizard, which lets a user pick any
+ * name for their Identifier — see `Property`'s own doc comment) OR, for every existing seed
+ * Property (none of which carry that flag), the original naming convention: literally named "id".
+ * Both checks stay OR'd together rather than one replacing the other, so this never disagrees
+ * with the hundred or so seed Properties already named "id" with no flag set. */
+export function isIdentifierProperty(property: { name: string; isIdentifier?: boolean }): boolean {
+  return property.isIdentifier === true || property.name.trim().toLowerCase() === "id";
 }
 
 export const IDENTIFIER_UNMAPPED_ERROR_REASON = "Identifier must be mapped to a source column.";
+export const MISSING_IDENTIFIER_ERROR_REASON = "Entity Type requires an Identifier.";
+/** The Entity-level aggregation of `IDENTIFIER_UNMAPPED_ERROR_REASON` — same underlying issue,
+ * worded for the owning Entity Type rather than the Property itself. Exported (not just inlined
+ * in `entityErrorReason` below) so callers like the Issues popover can recognize this exact string
+ * to group it back with its Property-level counterpart, without duplicating the sentence. */
+export const ENTITY_UNMAPPED_IDENTIFIER_REASON =
+  "This Entity Type has an Identifier property that isn't mapped to a source column yet.";
 
 /** A Property's true review status for display and confirmation — the stored `status` field,
  * except for the one Error case this app ever computes automatically rather than hand-sets: an
@@ -1409,7 +1409,7 @@ export const IDENTIFIER_UNMAPPED_ERROR_REASON = "Identifier must be mapped to a 
  * alone is never an Error, and every other status (including "warning") is exactly whatever is
  * stored — this never invents a status or silently clears one that isn't the Identifier case. */
 export function propertyStatus(property: Property): ReviewStatus {
-  if (isIdentifierProperty(property.name) && property.mapping === null) return "error";
+  if (isIdentifierProperty(property) && property.mapping === null) return "error";
   return property.status;
 }
 
@@ -1417,31 +1417,100 @@ export function propertyStatus(property: Property): ReviewStatus {
  * sentence when that's why it's Error, otherwise whatever `errorReason` is stored on the property
  * itself (which only ever matters while `status` is independently "error" for some other reason). */
 export function propertyErrorReason(property: Property): string | undefined {
-  if (isIdentifierProperty(property.name) && property.mapping === null) {
+  if (isIdentifierProperty(property) && property.mapping === null) {
     return IDENTIFIER_UNMAPPED_ERROR_REASON;
   }
   return property.errorReason;
 }
 
-/** An Entity Type's true review status — "error" whenever at least one of its own Properties is
- * (per `propertyStatus`) currently blocked by the Identifier-mapping rule. This is purely
- * inherited/aggregated and never a status the entity itself is ever directly set to; otherwise
- * it's exactly whatever `status` is stored on the entity. Mapping that Identifier to a column (or
- * removing/renaming it away from being the Identifier) clears this the moment it's true, since
- * it's recomputed from live data on every call rather than cached. */
+/** An Entity Type's true review status — "error" whenever it has no Identifier Property at all
+ * (deleted, or renamed/un-flagged away from `isIdentifierProperty`), or whenever at least one of
+ * its own Properties is (per `propertyStatus`) currently blocked by the Identifier-mapping rule.
+ * Both are purely inherited/aggregated and never a status the entity itself is ever directly set
+ * to; otherwise it's exactly whatever `status` is stored on the entity. Editing the ontology into
+ * either invalid state is always allowed (see Editing Mode's own "allow the edit, then surface the
+ * Error" rule) — this just reflects the CURRENT state, live, every call, so gaining or losing an
+ * Identifier (or mapping one) clears or sets it the moment that becomes true, never cached. */
 export function entityStatus(entity: Entity): ReviewStatus {
+  if (!entity.properties.some(isIdentifierProperty)) return "error";
   if (entity.properties.some((p) => propertyStatus(p) === "error")) return "error";
   return entity.status;
 }
 
+/** The Entity Type's DISPLAYED status — a pure, read-only roll-up of the badge/icon shown wherever
+ * an Entity's status is rendered (Overview canvas node, Editing Mode card header, "Entity types"
+ * toolbox row): the highest-priority status found across the Entity itself and every one of its
+ * own Properties, in the order Error > Warning > Suggested > Confirmed (`entityStatus` above is
+ * already one of the candidates, so its own "no Identifier"/"unmapped Identifier" auto-Error rules
+ * still apply here too). This never rewrites any Property's own stored status — purely a display
+ * fact, recomputed live every call, exactly like `entityStatus` itself.
+ *
+ * Deliberately a SEPARATE function from `entityStatus`, not a replacement for it: several other
+ * call sites key off `entityStatus`'s narrower meaning — "is this Entity's OWN status (or its
+ * Identifier-mapping rule) Error" — and would silently change behavior if broadened to "is ANY
+ * Property anything other than Confirmed" (e.g. `EntitySelectionBar`'s Accept/Decline eligibility,
+ * `AiReviewBar`'s "how many Entities are themselves a pending AI suggestion" breakdown, and the
+ * Entity Inspector's own Warning explanation box, which must only appear for the Entity's own real
+ * Warning — never a stand-in for some other Property's unrelated one). Use this one only for an
+ * actual displayed badge; use `entityStatus` for anything that gates behavior or explains itself
+ * with the Entity's own `warningReason`/`errorReason` text. */
+export function entityDisplayStatus(entity: Entity): ReviewStatus {
+  const priority: ReviewStatus[] = ["error", "warning", "suggested", "confirmed"];
+  const statuses = [entityStatus(entity), ...entity.properties.map(propertyStatus)];
+  for (const level of priority) {
+    if (statuses.includes(level)) return level;
+  }
+  return entityStatus(entity);
+}
+
 /** The explanation shown alongside `entityStatus`'s aggregated Error — never the generic
  * `entity.errorReason` (that only applies while the entity's own stored `status` is independently
- * "error", which the Identifier-mapping rule never sets directly). */
+ * "error", which neither of these two automatic rules ever sets directly). Checked in the same
+ * order as `entityStatus` above: missing an Identifier entirely takes priority over merely having
+ * one that isn't mapped yet, since the latter can't even be evaluated without one. */
 export function entityErrorReason(entity: Entity): string | undefined {
+  if (!entity.properties.some(isIdentifierProperty)) {
+    return MISSING_IDENTIFIER_ERROR_REASON;
+  }
   if (entity.properties.some((p) => propertyStatus(p) === "error")) {
-    return "This Entity Type has an Identifier property that isn't mapped to a source column yet.";
+    return ENTITY_UNMAPPED_IDENTIFIER_REASON;
   }
   return entity.errorReason;
+}
+
+/** Whichever connected Entity Type is CURRENTLY blocking this Relation from being confirmed —
+ * `null` if neither side has an Error right now. Shared by `buildConfirmPlan` (which uses it to
+ * decide whether a Relation belongs in the Errors list at all) and the Issues popover / Editing
+ * Mode's own Relation Inspector (which need to show the SAME fact, just in a different place) —
+ * extracted here once so neither ever drifts from the other. Purely read-derived, same as
+ * `entityStatus` itself; never writes anything. */
+export function relationBlockingEntity(relation: Relation, entities: Entity[]): Entity | null {
+  const fromEntity = entities.find((e) => e.id === relation.from);
+  const toEntity = entities.find((e) => e.id === relation.to);
+  if (fromEntity && entityStatus(fromEntity) === "error") return fromEntity;
+  if (toEntity && entityStatus(toEntity) === "error") return toEntity;
+  return null;
+}
+
+/** A Relation's true review status — "error" whenever it's blocked by a connected Entity Type's
+ * own Error (see `relationBlockingEntity`), even though the Relation's own stored `status` might
+ * still be "suggested"/"confirmed"/"warning"; otherwise exactly whatever `status` is stored.
+ * Mirrors `entityStatus`'s own "purely inherited, recomputed live" shape. */
+export function relationStatus(relation: Relation, entities: Entity[]): ReviewStatus {
+  if (relation.status === "error") return "error";
+  return relationBlockingEntity(relation, entities) ? "error" : relation.status;
+}
+
+/** The explanation shown alongside `relationStatus`'s Error — the Relation's own stored
+ * `errorReason` when it's independently Error, otherwise the same "resolve the connected Entity
+ * Type's Error first" sentence `buildConfirmPlan` already builds for this exact case. */
+export function relationErrorReason(relation: Relation, entities: Entity[]): string | undefined {
+  if (relation.status === "error") return relation.errorReason;
+  const blockingEntity = relationBlockingEntity(relation, entities);
+  if (blockingEntity) {
+    return `Resolve errors in connected Entity Types before confirming this Relation. (${blockingEntity.name || "Untitled entity"} has an unresolved error.)`;
+  }
+  return relation.errorReason;
 }
 
 export const tableByName = (name: string) => tables.find((t) => t.name === name);
@@ -1463,10 +1532,17 @@ export function columnSampleValues(table: TableSchema, columnName: string): stri
   return values;
 }
 
-/** How many of an entity's own properties are mapped to a source column. */
+/** How many of an entity's own properties have a CONFIRMED ("mapped") source-column connection —
+ * never just "has a connector at all" (see `ColumnRef`'s own doc comment: a Suggested Mapping
+ * doesn't count until it's actually accepted). This is the Header's own "how mapped is my
+ * ontology?" ground truth for Entities/Properties, so it has to agree with `tableMappingCompleteness`
+ * below on what "mapped" means, or the same navbar row would tell two different stories about the
+ * exact same data. */
 export function entityMappingCompleteness(entity: Entity): { mapped: number; total: number } {
   return {
-    mapped: entity.properties.filter((p) => p.mapping !== null).length,
+    mapped: entity.properties.filter(
+      (p) => p.mapping !== null && mappingStatus(p.mapping) === "mapped",
+    ).length,
     total: entity.properties.length,
   };
 }
@@ -1474,7 +1550,16 @@ export function entityMappingCompleteness(entity: Entity): { mapped: number; tot
 export type ColumnUsage = {
   name: string;
   type: string;
-  mappedBy: { entityId: string; entityName: string; propertyId: string; propertyName: string }[];
+  mappedBy: {
+    entityId: string;
+    entityName: string;
+    propertyId: string;
+    propertyName: string;
+    /** This ONE mapper's own connector state — a column can have several mappers with a mix of
+     * `"suggested"`/`"mapped"` at once (see `ColGroupEntry`'s own doc comment in DetailView.tsx for
+     * how the canvas resolves that mix into one displayed state). */
+    status: MappingStatus;
+  }[];
 };
 
 /** Every column of a table, and which entity properties (if any) map to it — the reverse of an
@@ -1494,18 +1579,25 @@ export function tableColumnUsage(tableName: string, entities: Entity[]): ColumnU
           entityName: e.name,
           propertyId: p.id,
           propertyName: p.name,
+          status: mappingStatus(p.mapping!),
         })),
     ),
   }));
 }
 
-/** How many of a table's own columns are used by at least one entity property. */
+/** How many of a table's own columns have at least one CONFIRMED ("mapped") connection — a column
+ * whose only mappers are still Suggested Mappings does NOT count (see `ColumnRef`'s own doc
+ * comment). Mirrors `entityMappingCompleteness`'s own "confirmed only" rule so the Header's
+ * Entities/Properties/Tables/Columns pills all describe the same underlying fact consistently. */
 export function tableMappingCompleteness(
   tableName: string,
   entities: Entity[],
 ): { mapped: number; total: number } {
   const usage = tableColumnUsage(tableName, entities);
-  return { mapped: usage.filter((c) => c.mappedBy.length > 0).length, total: usage.length };
+  return {
+    mapped: usage.filter((c) => c.mappedBy.some((m) => m.status === "mapped")).length,
+    total: usage.length,
+  };
 }
 
 /** Whether a table's columns are entirely unmapped, entirely mapped, or somewhere in between —
@@ -1532,12 +1624,377 @@ export function tablesUsedByEntity(entity: Entity): string[] {
   );
 }
 
+// --- Confidence reasoning (per object-kind, grounded in live data) -----------------------------
+// The "Why this confidence score?" panel (see ContextPanel.tsx) needs a genuinely different
+// explanation depending on what's being scored — an Entity suggestion, a Property suggestion, a
+// Relation suggestion, and a Property<->Column Mapping are all different questions, so they get
+// different evidence shapes rather than one generic bucketed sentence (that's still `aiReasoning`
+// in ConfidenceChip.tsx, kept as the fallback for spots with no object context to reason from, e.g.
+// the Overview<->Detail morph transition). Entity/Property/Relation share one shape ("Reasoning"
+// prose + a "Top datasets" evidence table); Mapping gets a deeper shape of its own (a match summary
+// + the same prose + a per-column breakdown) since it's explaining a specific Column<->Property
+// pairing, not just "how much do I believe this suggestion."
+export type ReasoningEvidenceRow = { table: string; detail: string; score: number };
+export type ReasoningContent =
+  | { kind: "evidence"; reasoning: string; topDatasets: ReasoningEvidenceRow[] }
+  | {
+      kind: "mapping";
+      matchSummary: string;
+      reasoning: string;
+      column: { name: string; entityMatchPct: number; entityType: string; property: string };
+    };
+
+/** Entity suggestion reasoning: how much of the entity's own primary source table (`entity.table`)
+ * its mapped Properties strongly account for, plus which tables it actually draws support from.
+ * "Strongly match" reuses `aiReasoning`'s own 85%-confidence bar, so this never disagrees with what
+ * that same Property would say about itself. */
+export function entityReasoningContent(entity: Entity): ReasoningContent {
+  const byTable = new Map<string, { columns: string[]; maxConfidence: number }>();
+  entity.properties.forEach((p) => {
+    if (!p.mapping) return;
+    const row = byTable.get(p.mapping.table) ?? { columns: [], maxConfidence: 0 };
+    row.columns.push(p.mapping.column);
+    row.maxConfidence = Math.max(row.maxConfidence, p.confidence);
+    byTable.set(p.mapping.table, row);
+  });
+  const topDatasets = Array.from(byTable.entries())
+    .map(([table, row]) => ({
+      table,
+      detail: row.columns.join(", "),
+      score: Math.round(row.maxConfidence * 100),
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3);
+
+  const primaryTable = tableByName(entity.table);
+  const strongMatches = entity.properties.filter(
+    (p) => p.mapping?.table === entity.table && p.confidence >= 0.85,
+  ).length;
+  const reasoning = primaryTable
+    ? `${strongMatches} out of ${primaryTable.columns.length} columns in ${entity.table} strongly match this entity.`
+    : `${strongMatches} of this entity's own properties strongly match a source column.`;
+  return { kind: "evidence", reasoning, topDatasets };
+}
+
+/** Property suggestion reasoning: how consistently a property with this exact name recurs, mapped,
+ * across every Entity in the ontology — not just this one Property's own mapping. A property named
+ * "id" that maps into several different tables' own primary keys is real, load-bearing evidence
+ * that the concept itself is consistent, independent of whether any single mapping is strong. */
+export function propertyReasoningContent(property: Property, entities: Entity[]): ReasoningContent {
+  const name = property.name.trim().toLowerCase();
+  const matches: { table: string; column: string; score: number }[] = [];
+  if (name) {
+    entities.forEach((e) => {
+      e.properties.forEach((p) => {
+        if (!p.mapping || p.name.trim().toLowerCase() !== name) return;
+        matches.push({
+          table: p.mapping.table,
+          column: p.mapping.column,
+          score: Math.round(p.confidence * 100),
+        });
+      });
+    });
+  }
+  const distinctTables = new Set(matches.map((m) => m.table)).size;
+  const reasoning =
+    matches.length > 0
+      ? `This property appears consistently across ${distinctTables} table${distinctTables === 1 ? "" : "s"}, in ${matches.length} column${matches.length === 1 ? "" : "s"}.`
+      : "This property isn't mapped anywhere yet, so there's no cross-table pattern to compare it against.";
+  const topDatasets = matches
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3)
+    .map((m) => ({ table: m.table, detail: m.column, score: m.score }));
+  return { kind: "evidence", reasoning, topDatasets };
+}
+
+/** Relation suggestion reasoning: does either connected Entity's own Identifier column show up, by
+ * name, inside the OTHER entity's source table — the real foreign-key shape a Customer->Order
+ * relation would leave behind (e.g. `customers.customer_id` reappearing as `orders.customer_id`).
+ * Checked in both directions since either entity could be the one holding the foreign key. */
+export function relationReasoningContent(relation: Relation, entities: Entity[]): ReasoningContent {
+  const fromEntity = entities.find((e) => e.id === relation.from);
+  const toEntity = entities.find((e) => e.id === relation.to);
+  const scorePct = Math.round(relation.confidence * 100);
+  const evidence: { table: string; column: string }[] = [];
+
+  const checkForeignKey = (owner: Entity | undefined, other: Entity | undefined) => {
+    if (!owner || !other) return;
+    const identifier = owner.properties.find((p) => isIdentifierProperty(p) && p.mapping);
+    const fkColumn = identifier?.mapping?.column;
+    if (!fkColumn) return;
+    const otherTable = tableByName(other.table);
+    if (otherTable?.columns.some((c) => c.name === fkColumn)) {
+      evidence.push({ table: other.table, column: fkColumn });
+    }
+  };
+  checkForeignKey(fromEntity, toEntity);
+  checkForeignKey(toEntity, fromEntity);
+
+  const distinctTables = new Set(evidence.map((e) => e.table)).size;
+  const reasoning =
+    evidence.length > 0
+      ? `This relation appears consistently across ${distinctTables} table${distinctTables === 1 ? "" : "s"}, in ${evidence.length} column${evidence.length === 1 ? "" : "s"}.`
+      : "No foreign-key-shaped column was found linking these two Entity Types' own source tables.";
+  const topDatasets = evidence.map((e) => ({ table: e.table, detail: e.column, score: scorePct }));
+  return { kind: "evidence", reasoning, topDatasets };
+}
+
+/** Property<->Column mapping reasoning — the deepest of the four, since it's explaining one
+ * specific pairing rather than "how much do I believe this suggestion." `entity`/`property` must
+ * be the Property's own owner — every value here (Entity name, Property name, mapped Column,
+ * Mapping confidence = `property.confidence`) is read straight off that pairing, never a second,
+ * separately-authored example. Returns `null` for an unmapped Property, since there's no Mapping
+ * to explain yet. */
+export function mappingReasoningContent(
+  entity: Entity,
+  property: Property,
+): ReasoningContent | null {
+  if (!property.mapping) return null;
+  const pct = Math.round(property.confidence * 100);
+  const strength =
+    property.confidence >= 0.85
+      ? "a strong match"
+      : property.confidence >= 0.6
+        ? "a likely match"
+        : "a low-confidence match";
+  const matchSummary =
+    `Based on the column name, this appears to be ${strength} to ${entity.name} → ${property.name}. ` +
+    `${entity.name} → ${property.name} is the closest match to column ${property.mapping.column} with ${pct}% confidence.`;
+  return {
+    kind: "mapping",
+    matchSummary,
+    reasoning:
+      "We use embeddings of the semantic representation of the column based on the table name, column name, and sample values.",
+    column: {
+      name: property.mapping.column,
+      entityMatchPct: pct,
+      entityType: entity.name,
+      property: property.name,
+    },
+  };
+}
+
+// --- Confidence/Filter scope (shared review-relevance predicate) -------------------------------
+// One predicate for "is this Entity/Property/Relation/Mapping currently in review scope", reused
+// everywhere Confidence range + Filter (`statusFilter`) decide what to visually de-emphasize — an
+// item is in scope when it's already Confirmed (Confidence range only governs ACTIVE review; an
+// Accepted item is never re-hidden just because its old suggestion score falls outside the current
+// range) or its own confidence is within the range, AND its own status is one Filter still has
+// checked. Data Tables and Columns have no status/confidence of their own (see their own doc
+// comments above) — see `isColumnInScope`/`isTableInScope` below for how their relevance is derived
+// instead, from whichever Property↔Column Mapping(s) touch them. Out-of-scope never means "doesn't
+// exist" — every call site here only ever feeds a dim/mute visual treatment, never a removal from a
+// list or canvas, so users can still see how the ontology is structured even outside the active
+// review scope.
+export function isReviewItemInScope(
+  status: ReviewStatus,
+  confidence: number,
+  confidenceRange: { min: number; max: number },
+  statusFilter: Set<ReviewStatus>,
+): boolean {
+  const pct = Math.round(confidence * 100);
+  const inRange =
+    status === "confirmed" || (pct >= confidenceRange.min && pct <= confidenceRange.max);
+  return inRange && statusFilter.has(status);
+}
+
+/** A Column's own review-scope — derived from whichever Property↔Column Mapping(s) touch it, since
+ * Columns carry no Confidence or ReviewStatus of their own (see `TableSchema`'s own doc comment —
+ * a Column is raw source data; Confidence belongs to the Mapping, not the Column). An unmapped column has no
+ * mapping to derive a scope from, so it's always in scope — the same "no data renders as no
+ * opinion" rule Confidence filtering already follows everywhere else. A column mapped by more than
+ * one Property (structurally possible, if rare) is in scope if ANY ONE of its mappings is — being
+ * relevant to even one Property's active review is enough to keep the column at full emphasis, the
+ * same "any qualifying connection wins" rule `isTableInScope` below also follows. */
+export function isColumnInScope(
+  tableName: string,
+  columnName: string,
+  entities: Entity[],
+  confidenceRange: { min: number; max: number },
+  statusFilter: Set<ReviewStatus>,
+): boolean {
+  const mappingProperties: Property[] = [];
+  entities.forEach((e) => {
+    e.properties.forEach((p) => {
+      if (p.mapping?.table === tableName && p.mapping.column === columnName) {
+        mappingProperties.push(p);
+      }
+    });
+  });
+  if (mappingProperties.length === 0) return true;
+  return mappingProperties.some((p) =>
+    isReviewItemInScope(p.status, p.confidence, confidenceRange, statusFilter),
+  );
+}
+
+/** A Table's own review-scope — same derivation as `isColumnInScope`, aggregated across every
+ * column the table actually has: a table with nothing mapped into it yet has nothing to derive a
+ * scope from either, so it stays in scope (no opinion); once it has at least one mapped column, the
+ * table is in scope exactly when at least one of them is — a table with several mappings never dims
+ * just because ONE of them happens to be out of scope, but a table whose every mapping is out of
+ * scope does. */
+export function isTableInScope(
+  tableName: string,
+  entities: Entity[],
+  confidenceRange: { min: number; max: number },
+  statusFilter: Set<ReviewStatus>,
+): boolean {
+  const usage = tableColumnUsage(tableName, entities);
+  const mappedColumns = usage.filter((c) => c.mappedBy.length > 0);
+  if (mappedColumns.length === 0) return true;
+  return mappedColumns.some((c) =>
+    isColumnInScope(tableName, c.name, entities, confidenceRange, statusFilter),
+  );
+}
+
+/** NOT a Table's own Confidence — a Table doesn't have one (see `TableSchema`'s own doc comment).
+ * This is the highest Mapping Confidence among whatever Properties currently map into any of the
+ * table's columns (a Mapping's confidence IS a Property's `confidence` — see `Property.mapping`),
+ * used ONLY to sort the Data Tables list by "how relevant is this table to the active review right
+ * now" — never displayed as a labeled value. `undefined` (sorts as "no value") when nothing maps
+ * into the table yet, same as every other Confidence display in the app. */
+export function tableHighestMappingConfidence(
+  tableName: string,
+  entities: Entity[],
+): number | undefined {
+  let max: number | undefined;
+  entities.forEach((e) => {
+    e.properties.forEach((p) => {
+      if (p.mapping?.table === tableName && (max == null || p.confidence > max)) max = p.confidence;
+    });
+  });
+  return max;
+}
+
 /** Display-only fallback for a Relation with no name yet — e.g. one just auto-created as an
  * unresolved placeholder (see app-state's `createPlaceholderRelation`). Never written back to the
  * Relation itself, so an actually-empty `name` is still exactly what "hasn't been named yet"
  * checks (like `renameRelation`'s own Error-clearing rule) keep looking for. */
 export function relationLabel(relation: Relation): string {
   return relation.name.trim() || "Unnamed relation";
+}
+
+// --- Global Search ------------------------------------------------------------------------------
+// One search covering the whole Ontology + Data model (Entity Types, Properties, Relations, Data
+// Tables, Columns) rather than separate per-panel searches — see the Header's `GlobalSearchPalette`
+// and app-state's `searchFocus`/`selectSearchResult`, which together are what actually act on the
+// ref a search result resolves to.
+
+/** What a search result actually points at — enough to both look it up again and act on it (pan
+ * Overview's canvas to it, or navigate Editing to it via the same `openDetail` every other
+ * in-workspace navigation already uses). */
+export type SearchResultRef =
+  | { kind: "entity"; id: string }
+  | { kind: "property"; entityId: string; propertyId: string }
+  | { kind: "relation"; id: string }
+  | { kind: "table"; name: string }
+  | { kind: "column"; table: string; column: string };
+
+export type SearchResult = {
+  ref: SearchResultRef;
+  /** The matched object's own name. */
+  label: string;
+  /** Owning Entity Type / Data Table name, shown alongside `label` to disambiguate a duplicate
+   * name across different parents (e.g. two different Entities each with their own `id` Property) —
+   * omitted only for Entity/Relation/Table results, which have no parent of their own. */
+  parentLabel?: string;
+};
+
+export type SearchResults = {
+  entities: SearchResult[];
+  properties: SearchResult[];
+  relations: SearchResult[];
+  tables: SearchResult[];
+  columns: SearchResult[];
+};
+
+const SEARCH_RESULT_LIMIT_PER_GROUP = 8;
+
+/** The single search index behind Global Search — a plain case-insensitive substring match on
+ * each object's own name, grouped by kind. Deliberately simple (no fuzzy matching, no ranking
+ * beyond "Entities/Tables before their own children") since the point of this pass is giving the
+ * whole Ontology + Data model ONE search surface, not a sophisticated matcher. Returns every group
+ * empty for a blank query — this is a results list, not a browse-everything list. */
+export function searchOntologyAndData(
+  entities: Entity[],
+  relations: Relation[],
+  tables: TableSchema[],
+  query: string,
+): SearchResults {
+  const q = query.trim().toLowerCase();
+  const empty: SearchResults = {
+    entities: [],
+    properties: [],
+    relations: [],
+    tables: [],
+    columns: [],
+  };
+  if (!q) return empty;
+
+  const results: SearchResults = {
+    entities: [],
+    properties: [],
+    relations: [],
+    tables: [],
+    columns: [],
+  };
+
+  for (const e of entities) {
+    if (
+      results.entities.length < SEARCH_RESULT_LIMIT_PER_GROUP &&
+      e.name.toLowerCase().includes(q)
+    ) {
+      results.entities.push({
+        ref: { kind: "entity", id: e.id },
+        label: e.name || "Untitled entity",
+      });
+    }
+    for (const p of e.properties) {
+      if (results.properties.length >= SEARCH_RESULT_LIMIT_PER_GROUP) break;
+      if (p.name.toLowerCase().includes(q)) {
+        results.properties.push({
+          ref: { kind: "property", entityId: e.id, propertyId: p.id },
+          label: p.name || "Untitled property",
+          parentLabel: e.name || "Untitled entity",
+        });
+      }
+    }
+  }
+
+  for (const r of relations) {
+    if (results.relations.length >= SEARCH_RESULT_LIMIT_PER_GROUP) break;
+    if (relationLabel(r).toLowerCase().includes(q)) {
+      results.relations.push({ ref: { kind: "relation", id: r.id }, label: relationLabel(r) });
+    }
+  }
+
+  for (const t of tables) {
+    if (results.tables.length < SEARCH_RESULT_LIMIT_PER_GROUP && t.name.toLowerCase().includes(q)) {
+      results.tables.push({ ref: { kind: "table", name: t.name }, label: t.name });
+    }
+    for (const c of t.columns) {
+      if (results.columns.length >= SEARCH_RESULT_LIMIT_PER_GROUP) break;
+      if (c.name.toLowerCase().includes(q)) {
+        results.columns.push({
+          ref: { kind: "column", table: t.name, column: c.name },
+          label: c.name,
+          parentLabel: t.name,
+        });
+      }
+    }
+  }
+
+  return results;
+}
+
+export function searchResultCount(results: SearchResults): number {
+  return (
+    results.entities.length +
+    results.properties.length +
+    results.relations.length +
+    results.tables.length +
+    results.columns.length
+  );
 }
 
 /** One Entity/Property/Relation that needs attention before (or instead of) being confirmed —
@@ -1634,24 +2091,13 @@ export function buildConfirmPlan(entities: Entity[], relations: Relation[]): Con
 
   relations.forEach((r) => {
     if (r.status === "confirmed") return;
-    const fromEntity = entities.find((e) => e.id === r.from);
-    const toEntity = entities.find((e) => e.id === r.to);
-    const blockingEntity =
-      fromEntity && entityStatus(fromEntity) === "error"
-        ? fromEntity
-        : toEntity && entityStatus(toEntity) === "error"
-          ? toEntity
-          : null;
-    if (r.status === "error" || blockingEntity) {
+    if (r.status === "error" || relationBlockingEntity(r, entities)) {
       errors.push({
         kind: "error",
         itemKind: "relation",
         id: r.id,
         name: r.name || "Untitled relation",
-        reason:
-          r.status === "error"
-            ? (r.errorReason ?? "No error details available.")
-            : `Resolve errors in connected Entity Types before confirming this Relation. (${blockingEntity!.name || "Untitled entity"} has an unresolved error.)`,
+        reason: relationErrorReason(r, entities) ?? "No error details available.",
       });
       return;
     }

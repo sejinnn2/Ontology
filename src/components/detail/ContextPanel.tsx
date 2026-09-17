@@ -1,18 +1,40 @@
-import { ExternalLink, Repeat2, Trash2 } from "lucide-react";
+import { useCallback, useState } from "react";
+import { ExternalLink, LogOut, Repeat2, Unlink2 } from "lucide-react";
 import {
   entityStatus,
   entityErrorReason,
   propertyStatus,
   propertyErrorReason,
+  relationStatus,
+  relationErrorReason,
+  entityReasoningContent,
+  propertyReasoningContent,
+  relationReasoningContent,
+  mappingReasoningContent,
+  mappingStatus,
   type Entity,
   type Property,
   type Relation,
   type ReviewStatus,
   type TableColumn,
   type TableSchema,
+  type ReasoningContent,
 } from "@/lib/mock-data";
 import { StatusBadge } from "@/components/ontology/StatusBadge";
-import { ConfidenceChip, aiReasoning } from "@/components/ontology/ConfidenceChip";
+import { ConfidenceChip } from "@/components/ontology/ConfidenceChip";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  SelectionBarDeleteIcon,
+  SelectionBarDeclineIcon,
+  SelectionBarAcceptIcon,
+} from "@/components/nav/nav-icons";
 
 /**
  * What the bottom contextual panel is currently showing. Deliberately narrow: only what doesn't
@@ -43,31 +65,112 @@ export function contextItemKey(item: ContextItem): string {
 }
 
 /**
+ * The evidence half of "Why this confidence score?" — the one thing that actually differs between
+ * the four reasoning contexts (Entity/Property/Relation share this same "Reasoning prose + Top
+ * datasets table" shape; a Mapping gets its own deeper "match summary + reasoning + column
+ * analysis" shape instead, since it's explaining one specific Column<->Property pairing rather than
+ * "how much do I believe this suggestion"). See `ReasoningContent`'s own doc comment in
+ * mock-data.ts for how each shape gets computed.
+ */
+function ReasoningSections({ content }: { content: ReasoningContent }) {
+  if (content.kind === "mapping") {
+    return (
+      <div className="flex w-full flex-col gap-3">
+        <p className="text-[14px] font-normal leading-[1.3] text-[#909090]">
+          {content.matchSummary}
+        </p>
+        <hr className="w-full border-[rgba(28,28,24,0.08)]" />
+        <div>
+          <p className="text-[13px] font-medium leading-[1.2] text-[#171b22]">Reasoning</p>
+          <p className="mt-1 text-[14px] font-normal leading-[1.3] text-[#909090]">
+            {content.reasoning}
+          </p>
+        </div>
+        <hr className="w-full border-[rgba(28,28,24,0.08)]" />
+        <div>
+          <p className="text-[13px] font-medium leading-[1.2] text-[#171b22]">
+            Column analysis for {content.column.name}
+          </p>
+          <div className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-[13px]">
+            <span className="text-[#909090]">Entity match</span>
+            <span className="text-right font-medium text-[#171b22]">
+              {content.column.entityMatchPct}%
+            </span>
+            <span className="text-[#909090]">Entity type</span>
+            <span className="text-right font-medium text-[#171b22]">
+              {content.column.entityType}
+            </span>
+            <span className="text-[#909090]">Property</span>
+            <span className="text-right font-medium text-[#171b22]">{content.column.property}</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="flex w-full flex-col gap-3">
+      <div>
+        <p className="text-[13px] font-medium leading-[1.2] text-[#171b22]">Reasoning</p>
+        <p className="mt-1 text-[14px] font-normal leading-[1.3] text-[#909090]">
+          {content.reasoning}
+        </p>
+      </div>
+      {content.topDatasets.length > 0 && (
+        <div>
+          <p className="text-[13px] font-medium leading-[1.2] text-[#171b22]">Top datasets</p>
+          <div className="mt-1 flex flex-col gap-1">
+            {content.topDatasets.map((row) => (
+              <div
+                key={`${row.table}-${row.detail}`}
+                className="flex items-center justify-between gap-2 text-[13px]"
+              >
+                <span className="min-w-0 shrink-0 truncate font-medium text-[#171b22]">
+                  {row.table}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-right text-[#909090]">
+                  {row.detail}
+                </span>
+                <span className="shrink-0 tabular-nums text-[#171b22]">{row.score}%</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * The expanded body for Entity/Property/Relation — the three kinds that carry a `ReviewStatus`.
  * Status icon + name, then Description, then (warning/error only) a colored callout with the
- * item's own `warningReason`/`errorReason`, then an "AI Suggestion Reasoning" section. The
- * Confidence chip here is the exact same `ConfidenceChip` used elsewhere on the canvas — reusing
- * the component (rather than a lookalike) is what guarantees this panel and that chip's own hover
- * tooltip never disagree, since both read the same props from the same underlying item.
+ * item's own `warningReason`/`errorReason`, then "Why this confidence score?" — the Confidence
+ * chip here is the exact same `ConfidenceChip` used elsewhere on the canvas — reusing the component
+ * (rather than a lookalike) is what guarantees this panel and that chip's own hover tooltip never
+ * disagree, since both read the same `reasoning` computed by the same per-kind function (see
+ * `ReasoningContent` in mock-data.ts).
  */
 function ReviewedItemBody({
   status,
   name,
   description,
   confidence,
+  reasoning,
   warningReason,
   errorReason,
   relationActions,
   onRename,
   namePlaceholder,
   onEditDescription,
+  onRemoveFromWorkspace,
   onDelete,
-  deleteLabel,
+  onAccept,
+  onReject,
 }: {
   status: ReviewStatus;
   name: string;
   description: string;
   confidence: number;
+  reasoning: ReasoningContent;
   warningReason?: string | undefined;
   errorReason?: string | undefined;
   /** Only set for a Relation — Swap direction lives here rather than in a separate menu, since
@@ -86,12 +189,33 @@ function ReviewedItemBody({
   /** Same click-to-edit treatment as the name, for the Description — available for all three
    * reviewed kinds. */
   onEditDescription?: (description: string) => void;
-  /** Delete — available for all three reviewed kinds. This moves the item into Trash rather than
-   * destroying it (see app-state's `Trashed*` types and its own Trash entry point); it is never a
-   * permanent delete. */
-  onDelete?: () => void;
-  deleteLabel?: string;
+  /** "Remove from workspace" — Entity Type only (see `ContextPanelBody`'s own "table" branch for
+   * the Data Table equivalent, which has no `ReviewedItemBody` to share this with) — only ever
+   * changes whether the Entity's card is currently shown in THIS Editing workspace, never Current
+   * Ontology. Kept visually and semantically distinct from `onDelete` below — a workspace/view
+   * action, never an ontology mutation. Undefined (never rendered) when the item can't be removed
+   * from the workspace at all (the anchor, or a compact satellite shown only because a real
+   * Relation connects it, neither of which has anything to "remove"). */
+  onRemoveFromWorkspace?: (() => void) | undefined;
+  /** Single-selection = Inspect + Act: this item's own Delete/Accept/Reject now live here, right
+   * alongside its inspection content, rather than requiring the user to build a 1-item selection
+   * just to reach the contextual selection control (`SelectionControlBar`) — that control remains
+   * the only place these actions live for a 2+ item selection. Each is only ever passed when
+   * actually eligible for this item's current status (Delete: Applied/"confirmed"; Accept/Reject:
+   * not yet Applied) — never rendered as a disabled button otherwise. */
+  onDelete?: (() => void) | undefined;
+  onAccept?: (() => void) | undefined;
+  onReject?: (() => void) | undefined;
 }) {
+  const [acceptWarningOpen, setAcceptWarningOpen] = useState(false);
+  const handleAcceptClick = useCallback(() => {
+    if (status === "warning") setAcceptWarningOpen(true);
+    else onAccept?.();
+  }, [status, onAccept]);
+  const handleAcceptAnyway = useCallback(() => {
+    setAcceptWarningOpen(false);
+    onAccept?.();
+  }, [onAccept]);
   return (
     <div className="flex w-full flex-col gap-3">
       <div className="flex w-full items-center gap-2">
@@ -166,17 +290,21 @@ function ReviewedItemBody({
           </p>
         </div>
       )}
-      <div className="flex w-full flex-col gap-2 rounded-[8px] bg-[#f8f8f8] p-4">
-        <div className="flex items-center gap-2">
-          <p className="text-[14px] font-medium leading-[1.2] text-[#171b22]">
-            AI Suggestion Reasoning
-          </p>
-          <ConfidenceChip confidence={confidence} />
+      {/* Confidence is a fact about a pending AI suggestion, not persistent metadata — gone once
+          Applied ("confirmed"), same rule the canvas's own cards/rows follow. A Warning/Error is
+          still its own not-yet-Applied state and keeps showing it, same as a plain Suggested item
+          would. */}
+      {status !== "confirmed" && (
+        <div className="flex w-full flex-col gap-3 rounded-[8px] bg-[#f8f8f8] p-4">
+          <div className="flex items-center gap-2">
+            <p className="text-[14px] font-medium leading-[1.2] text-[#171b22]">
+              Why this confidence score?
+            </p>
+            <ConfidenceChip confidence={confidence} reasoning={reasoning} />
+          </div>
+          <ReasoningSections content={reasoning} />
         </div>
-        <p className="text-[14px] font-normal leading-[1.2] text-[#909090]">
-          {aiReasoning(confidence)}
-        </p>
-      </div>
+      )}
       {relationActions && (
         <div className="flex w-full items-center justify-between gap-2 rounded-[8px] border border-[rgba(28,28,24,0.08)] p-4">
           <p className="text-[14px] font-medium leading-[1.2] text-[#171b22]">Relation actions</p>
@@ -190,19 +318,90 @@ function ReviewedItemBody({
           </button>
         </div>
       )}
-      {onDelete && (
+      {/* Single-selection action area — Delete (Applied only) or Accept/Reject (still Suggested,
+          never both at once for one item) exactly mirror the contextual selection control's own
+          eligibility, just scoped to this one object. "Remove from workspace" stays its own,
+          visually distinct row below — a workspace/view action, never an ontology mutation. */}
+      {(onDelete || onAccept || onReject) && (
+        <div className="flex w-full items-center gap-2">
+          {onDelete && (
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete();
+              }}
+              className="flex h-8 flex-1 items-center justify-center gap-1 rounded-md border border-input px-3 text-[12px] font-medium text-destructive transition-colors hover:bg-accent"
+            >
+              <SelectionBarDeleteIcon size={14} /> Delete
+            </button>
+          )}
+          {onReject && (
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onReject();
+              }}
+              className="flex h-8 flex-1 items-center justify-center gap-1 rounded-md border border-input px-3 text-[12px] font-medium text-[#161919] transition-colors hover:bg-accent"
+            >
+              <SelectionBarDeclineIcon size={14} /> Reject
+            </button>
+          )}
+          {onAccept && (
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                handleAcceptClick();
+              }}
+              className="flex h-8 flex-1 items-center justify-center gap-1 rounded-md border border-input px-3 text-[12px] font-medium text-[#161919] transition-colors hover:bg-accent"
+            >
+              <SelectionBarAcceptIcon size={14} /> Accept
+            </button>
+          )}
+        </div>
+      )}
+      {onRemoveFromWorkspace && (
         <button
           type="button"
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
-            onDelete();
+            onRemoveFromWorkspace();
           }}
-          className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[#f15b15]/25 px-3 py-1.5 text-[12px] font-medium text-[#9c461e] transition-colors hover:bg-[#ffe6db]"
+          className="flex w-full items-center justify-center gap-1.5 rounded-md border border-input px-3 py-1.5 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
-          <Trash2 className="size-3.5" /> {deleteLabel ?? "Delete"}
+          <LogOut className="size-3.5" /> Remove from workspace
         </button>
       )}
+      <Dialog open={acceptWarningOpen} onOpenChange={setAcceptWarningOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Accept this suggestion</DialogTitle>
+            <DialogDescription>This suggestion has warnings.</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={() => setAcceptWarningOpen(false)}
+              className="shrink-0 rounded-md border border-input px-3 py-1.5 text-[13px] font-medium text-foreground transition-opacity hover:opacity-80"
+            >
+              Review warnings
+            </button>
+            <button
+              type="button"
+              onClick={handleAcceptAnyway}
+              className="shrink-0 rounded-md bg-[#00ded8] px-3 py-1.5 text-[13px] font-medium text-white transition-opacity hover:opacity-90"
+            >
+              Accept anyway
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -211,6 +410,7 @@ function ReviewedItemBody({
  * one consistent floating surface regardless of which canvas supplied it. */
 export function ContextPanelBody({
   item,
+  entities,
   onSwapRelation,
   onRenameRelation,
   onEditRelationDescription,
@@ -218,11 +418,21 @@ export function ContextPanelBody({
   onEditEntityDescription,
   onRenameProperty,
   onEditPropertyDescription,
-  onDeleteEntity,
-  onDeleteProperty,
-  onDeleteRelation,
+  onRemoveEntityFromWorkspace,
+  onRemoveTableFromWorkspace,
+  onDeleteContextItem,
+  onAcceptContextItem,
+  onRejectContextItem,
+  onAcceptMapping,
+  onRejectMapping,
+  onDisconnectMapping,
 }: {
   item: ContextItem;
+  /** The live ontology — needed to compute each kind's own "Why this confidence score?" evidence
+   * (see `ReasoningContent` in mock-data.ts): Property/Relation reasoning both search across every
+   * Entity's own Properties for corroborating tables/columns, and a mapped Column (the "column"
+   * case below) needs it to find which Property/Entity actually maps into it. */
+  entities: Entity[];
   onSwapRelation: (relationId: string) => void;
   onRenameRelation: (relationId: string, name: string) => void;
   onEditRelationDescription: (relationId: string, description: string) => void;
@@ -230,9 +440,32 @@ export function ContextPanelBody({
   onEditEntityDescription: (entityId: string, description: string) => void;
   onRenameProperty: (entityId: string, propertyId: string, name: string) => void;
   onEditPropertyDescription: (entityId: string, propertyId: string, description: string) => void;
-  onDeleteEntity: (entityId: string) => void;
-  onDeleteProperty: (entityId: string, propertyId: string) => void;
-  onDeleteRelation: (relationId: string) => void;
+  /** "Remove from workspace" for the currently-shown Entity — a workspace/view action, completely
+   * separate from Delete, which no longer lives in this panel at all (see `ReviewedItemBody`'s own
+   * "Remove from workspace" doc comment) — it only lives in the contextual selection control now.
+   * Undefined whenever this particular Entity can't be removed (the
+   * anchor, or a compact satellite only shown because of a real Relation) — the calling canvas
+   * (`EntityDetailCanvas`) is the one that knows which case applies. */
+  onRemoveEntityFromWorkspace?: (() => void) | undefined;
+  /** Same idea, for a Data Table — always defined when the current item is a table, since every
+   * table shown in this workspace can be removed from it (Data Tables have no Delete action at
+   * all, only this). */
+  onRemoveTableFromWorkspace?: (() => void) | undefined;
+  /** Single selected Entity/Property/Relation's own Delete/Accept/Reject — see `ReviewedItemBody`'s
+   * own doc comment. Already scoped to exactly this item and its current status by the caller
+   * (`DetailView`'s own `deletableKeys`/`rejectableKeys`/`acceptableKeys`, the same eligibility the
+   * contextual selection control uses) — undefined here means genuinely not eligible, never a
+   * disabled button. */
+  onDeleteContextItem?: (() => void) | undefined;
+  onAcceptContextItem?: (() => void) | undefined;
+  onRejectContextItem?: (() => void) | undefined;
+  /** A mapped Column's own Mapping actions — Disconnect (Applied) or Accept/Reject (still
+   * Suggested), per the module doc's lifecycle table. Unlike the three props above, these act on
+   * the owning Property found below (`owner`/`property`), not on `item` itself, since selecting a
+   * Column never joins the unified selection the way an Entity/Property/Relation does. */
+  onAcceptMapping?: ((entityId: string, propertyId: string) => void) | undefined;
+  onRejectMapping?: ((entityId: string, propertyId: string) => void) | undefined;
+  onDisconnectMapping?: ((entityId: string, propertyId: string) => void) | undefined;
 }) {
   switch (item.kind) {
     case "entity":
@@ -242,13 +475,16 @@ export function ContextPanelBody({
           name={item.entity.name}
           description={item.entity.description}
           confidence={item.entity.confidence}
+          reasoning={entityReasoningContent(item.entity)}
           warningReason={item.entity.warningReason}
           errorReason={entityErrorReason(item.entity)}
           onRename={(name) => onRenameEntity(item.entity.id, name)}
           namePlaceholder="Name this Entity Type..."
           onEditDescription={(description) => onEditEntityDescription(item.entity.id, description)}
-          onDelete={() => onDeleteEntity(item.entity.id)}
-          deleteLabel="Delete Entity Type"
+          onRemoveFromWorkspace={onRemoveEntityFromWorkspace}
+          onDelete={onDeleteContextItem}
+          onAccept={onAcceptContextItem}
+          onReject={onRejectContextItem}
         />
       );
     case "property":
@@ -258,6 +494,7 @@ export function ContextPanelBody({
           name={item.property.name}
           description={item.property.description}
           confidence={item.property.confidence}
+          reasoning={propertyReasoningContent(item.property, entities)}
           warningReason={item.property.warningReason}
           errorReason={propertyErrorReason(item.property)}
           onRename={(name) => onRenameProperty(item.entity.id, item.property.id, name)}
@@ -265,38 +502,118 @@ export function ContextPanelBody({
           onEditDescription={(description) =>
             onEditPropertyDescription(item.entity.id, item.property.id, description)
           }
-          onDelete={() => onDeleteProperty(item.entity.id, item.property.id)}
-          deleteLabel="Delete Property"
+          onDelete={onDeleteContextItem}
+          onAccept={onAcceptContextItem}
+          onReject={onRejectContextItem}
         />
       );
     case "relation":
       return (
         <ReviewedItemBody
-          status={item.relation.status}
+          status={relationStatus(item.relation, entities)}
           name={item.relation.name}
           description={item.relation.description}
           confidence={item.relation.confidence}
+          reasoning={relationReasoningContent(item.relation, entities)}
           warningReason={item.relation.warningReason}
-          errorReason={item.relation.errorReason}
+          errorReason={relationErrorReason(item.relation, entities)}
           relationActions={{ onSwap: () => onSwapRelation(item.relation.id) }}
           onRename={(name) => onRenameRelation(item.relation.id, name)}
           namePlaceholder="Name this relation..."
           onEditDescription={(description) =>
             onEditRelationDescription(item.relation.id, description)
           }
-          onDelete={() => onDeleteRelation(item.relation.id)}
-          deleteLabel="Delete Relation"
+          onDelete={onDeleteContextItem}
+          onAccept={onAcceptContextItem}
+          onReject={onRejectContextItem}
         />
       );
-    case "column":
+    case "column": {
+      // A mapped Column has a Property↔Column Mapping to explain; an unmapped one doesn't (see
+      // `mappingReasoningContent`'s own doc comment) — this is the only place that owner/property
+      // pair gets looked up, since `ContextItem`'s own "column" case only carries the raw
+      // table+column, not which Property (if any) maps into it.
+      const owner = entities.find((e) =>
+        e.properties.some(
+          (p) => p.mapping?.table === item.tableName && p.mapping.column === item.column.name,
+        ),
+      );
+      const property = owner?.properties.find(
+        (p) => p.mapping?.table === item.tableName && p.mapping.column === item.column.name,
+      );
+      const mapping = owner && property ? mappingReasoningContent(owner, property) : null;
       return (
         <>
           <p className="text-[16px] font-medium leading-[1.2] text-[#171b22]">{item.column.name}</p>
           <p className="text-[14px] font-normal leading-[1.2] text-[#909090]">
             {item.column.description}
           </p>
+          {/* Confidence reasoning is a pending-suggestion fact, same rule as the Entity/Property/
+              Relation action area below — gone once the mapping is Applied ("confirmed"). */}
+          {mapping && property && propertyStatus(property) !== "confirmed" && (
+            <div className="flex w-full flex-col gap-3 rounded-[8px] bg-[#f8f8f8] p-4">
+              <div className="flex items-center gap-2">
+                <p className="text-[14px] font-medium leading-[1.2] text-[#171b22]">
+                  Why this confidence score?
+                </p>
+                <ConfidenceChip confidence={property?.confidence} reasoning={mapping} />
+              </div>
+              <ReasoningSections content={mapping} />
+            </div>
+          )}
+          {/* Mapping lifecycle — Disconnect once Mapped, Accept/Reject while still a Suggested
+              mapping. This keys off the connector's own `MappingStatus` (independent of the
+              Property's ontology review status — see `mappingStatus`'s own doc comment), since a
+              Confirmed Property can still have a merely-Suggested mapping and vice versa. Mirrors
+              the Entity/Property/Relation action area above but acts on the owning Property (found
+              above), since a Column never joins the unified selection itself. */}
+          {owner && property && property.mapping && (
+            <div className="flex w-full items-center gap-2">
+              {mappingStatus(property.mapping) === "mapped" ? (
+                <button
+                  type="button"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDisconnectMapping?.(owner.id, property.id);
+                  }}
+                  className="flex h-8 flex-1 items-center justify-center gap-1 rounded-md border border-input px-3 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                >
+                  <Unlink2 className="size-3.5" /> Disconnect
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRejectMapping?.(owner.id, property.id);
+                    }}
+                    className="flex h-8 flex-1 items-center justify-center gap-1 rounded-md border border-input px-3 text-[12px] font-medium text-[#161919] transition-colors hover:bg-accent"
+                  >
+                    <SelectionBarDeclineIcon size={14} /> Reject
+                  </button>
+                  {propertyStatus(property) !== "error" && (
+                    <button
+                      type="button"
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onAcceptMapping?.(owner.id, property.id);
+                      }}
+                      className="flex h-8 flex-1 items-center justify-center gap-1 rounded-md border border-input px-3 text-[12px] font-medium text-[#161919] transition-colors hover:bg-accent"
+                    >
+                      <SelectionBarAcceptIcon size={14} /> Accept
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          )}
         </>
       );
+    }
     case "table":
       return (
         <>
@@ -311,6 +628,23 @@ export function ContextPanelBody({
           >
             <ExternalLink className="size-3.5" /> Open in Data360
           </button>
+          {/* Data Tables have no Delete action at all in this app (see this function's own prop
+              doc comment) — Remove from workspace is the only lifecycle action a table card
+              offers, and it never touches the source Data Table itself, only this workspace's own
+              view of it. */}
+          {onRemoveTableFromWorkspace && (
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onRemoveTableFromWorkspace();
+              }}
+              className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md border border-input px-3 py-1.5 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <LogOut className="size-3.5" /> Remove from workspace
+            </button>
+          )}
         </>
       );
   }
