@@ -167,7 +167,7 @@ function RootComponent() {
             resets or forks the entities/relations/trash state. */}
         <OntologyAppProvider>
           <div className="flex h-screen flex-col overflow-hidden">
-            {import.meta.env.DEV && <DevScenarioSwitcher />}
+            <DevScenarioSwitcher />
             <div className="min-h-0 flex-1">
               {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
               <OntologyRoutes />
