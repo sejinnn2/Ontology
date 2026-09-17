@@ -45,6 +45,7 @@ import { circledNumber } from "@/components/nav/HistoryPanel";
 
 const MIN_Z = 0.4;
 const MAX_Z = 2;
+const FAR_ZOOM_THRESHOLD = 0.7;
 const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
 
 // A second plain click on the same Entity node within this window resolves as a double-click
@@ -59,12 +60,13 @@ const DOUBLE_CLICK_MS = 400;
 // centered in a wider wrapper that also fits the name label below it), flush with its top (no
 // vertical offset). See `ONTOLOGY_NODE_WRAPPER_W`'s own comment for why this asymmetry exists.
 const NODE_CIRCLE_X_OFFSET = (ONTOLOGY_NODE_WRAPPER_W - ONTOLOGY_NODE_SIZE) / 2;
-const nodeRect = (n: { x: number; y: number }): Rect => ({
-  x: n.x + NODE_CIRCLE_X_OFFSET,
-  y: n.y,
-  width: ONTOLOGY_NODE_SIZE,
-  height: ONTOLOGY_NODE_SIZE,
-});
+const overviewNodeScaleForRelationCount = (count: number) =>
+  count >= 20 ? 1.38 : count >= 10 ? 1.18 : count >= 5 ? 1 : 0.86;
+const nodeRect = (n: { x: number; y: number }, scale = 1): Rect => {
+  const size = ONTOLOGY_NODE_SIZE * scale;
+  const center = ontologyNodeCenter(n);
+  return { x: center.x - size / 2, y: center.y - size / 2, width: size, height: size };
+};
 const ontologyNodeCenter = (n: { x: number; y: number }) => ({
   x: n.x + NODE_CIRCLE_X_OFFSET + ONTOLOGY_NODE_SIZE / 2,
   y: n.y + ONTOLOGY_NODE_SIZE / 2,
@@ -77,6 +79,120 @@ const wrapperOriginForCenter = (center: Pt) => ({
   x: center.x - NODE_CIRCLE_X_OFFSET - ONTOLOGY_NODE_SIZE / 2,
   y: center.y - ONTOLOGY_NODE_SIZE / 2,
 });
+
+/** A deterministic, topology-only Overview projection. The highest-degree Entities become hubs;
+ * a multi-source graph walk assigns every other Entity to its nearest hub, then each community is
+ * drawn as compact radial rings. Returned objects are visual copies: stored coordinates remain
+ * untouched while the same layout stays stable at every zoom level. */
+function buildFarZoomTopologyLayout<T extends { id: string; x: number; y: number }>(
+  entities: T[],
+  relations: { from: string; to: string }[],
+): T[] {
+  if (entities.length < 2) return entities;
+  const byId = new Map(entities.map((entity) => [entity.id, entity]));
+  const indexById = new Map(entities.map((entity, index) => [entity.id, index]));
+  const neighbors = new Map(entities.map((entity) => [entity.id, new Set<string>()]));
+  relations.forEach((relation) => {
+    if (!byId.has(relation.from) || !byId.has(relation.to)) return;
+    neighbors.get(relation.from)!.add(relation.to);
+    neighbors.get(relation.to)!.add(relation.from);
+  });
+
+  // Three primary communities make the far view read as a small set of strong hub systems rather
+  // than dozens of loose mini-groups, matching the dense radial reference direction.
+  const hubCount = Math.min(3, entities.length);
+  const hubs = [...entities]
+    .sort(
+      (a, b) =>
+        (neighbors.get(b.id)?.size ?? 0) - (neighbors.get(a.id)?.size ?? 0) ||
+        (indexById.get(a.id) ?? 0) - (indexById.get(b.id) ?? 0),
+    )
+    .slice(0, Math.min(hubCount, entities.length));
+
+  const owner = new Map<string, string>();
+  const queue = hubs.map((hub) => hub.id);
+  hubs.forEach((hub) => owner.set(hub.id, hub.id));
+  for (let cursor = 0; cursor < queue.length; cursor++) {
+    const current = queue[cursor]!;
+    const currentOwner = owner.get(current)!;
+    [...(neighbors.get(current) ?? [])]
+      .sort((a, b) => (indexById.get(a) ?? 0) - (indexById.get(b) ?? 0))
+      .forEach((neighbor) => {
+        if (owner.has(neighbor)) return;
+        owner.set(neighbor, currentOwner);
+        queue.push(neighbor);
+      });
+  }
+
+  // Disconnected islands join the spatially closest hub, keeping the projection total without
+  // inventing graph links.
+  entities.forEach((entity) => {
+    if (owner.has(entity.id)) return;
+    const center = ontologyNodeCenter(entity);
+    const nearestHub = hubs.reduce(
+      (best, hub) => {
+        const hubCenter = ontologyNodeCenter(hub);
+        const distance = Math.hypot(center.x - hubCenter.x, center.y - hubCenter.y);
+        return !best || distance < best.distance ? { id: hub.id, distance } : best;
+      },
+      null as { id: string; distance: number } | null,
+    );
+    if (nearestHub) owner.set(entity.id, nearestHub.id);
+  });
+
+  const originalCenters = entities.map(ontologyNodeCenter);
+  const minX = Math.min(...originalCenters.map((point) => point.x));
+  const maxX = Math.max(...originalCenters.map((point) => point.x));
+  const minY = Math.min(...originalCenters.map((point) => point.y));
+  const maxY = Math.max(...originalCenters.map((point) => point.y));
+  const graphCenter = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+  const orbitX = Math.max(520, Math.min(820, (maxX - minX) * 0.3));
+  const orbitY = Math.max(380, Math.min(620, (maxY - minY) * 0.3));
+  const projectedCenter = new Map<string, Pt>();
+
+  hubs.forEach((hub, hubIndex) => {
+    const hubAngle = -Math.PI / 2 + (hubIndex / hubs.length) * Math.PI * 2;
+    const hubCenter = {
+      x: graphCenter.x + Math.cos(hubAngle) * orbitX,
+      y: graphCenter.y + Math.sin(hubAngle) * orbitY,
+    };
+    projectedCenter.set(hub.id, hubCenter);
+
+    const members = entities
+      .filter((entity) => entity.id !== hub.id && owner.get(entity.id) === hub.id)
+      .sort((a, b) => {
+        const aCenter = ontologyNodeCenter(a);
+        const bCenter = ontologyNodeCenter(b);
+        const originalHubCenter = ontologyNodeCenter(hub);
+        return (
+          Math.atan2(aCenter.y - originalHubCenter.y, aCenter.x - originalHubCenter.x) -
+            Math.atan2(bCenter.y - originalHubCenter.y, bCenter.x - originalHubCenter.x) ||
+          (indexById.get(a.id) ?? 0) - (indexById.get(b.id) ?? 0)
+        );
+      });
+    let memberCursor = 0;
+    let ring = 0;
+    while (memberCursor < members.length) {
+      const capacity = 10 + ring * 6;
+      const ringMembers = members.slice(memberCursor, memberCursor + capacity);
+      const radius = 150 + ring * 105;
+      ringMembers.forEach((member, index) => {
+        const angle = -Math.PI / 2 + (index / ringMembers.length) * Math.PI * 2;
+        projectedCenter.set(member.id, {
+          x: hubCenter.x + Math.cos(angle) * radius,
+          y: hubCenter.y + Math.sin(angle) * radius,
+        });
+      });
+      memberCursor += ringMembers.length;
+      ring += 1;
+    }
+  });
+
+  return entities.map((entity) => {
+    const center = projectedCenter.get(entity.id);
+    return center ? { ...entity, ...wrapperOriginForCenter(center) } : entity;
+  });
+}
 
 // Hidden for now per product decision (the create-Entity-Type toolbar row reads as an empty bar
 // with the design's new header above it) — `CreateEntityButton` and `handleCreateEntity` stay
@@ -93,43 +209,17 @@ const RELATION_GAP = 6;
 // bow around — the node's own radius plus a visible margin, so the curve clears it by more than
 // just touching the edge.
 const OBSTACLE_CLEARANCE = ONTOLOGY_NODE_SIZE / 2 + 14;
-// Each end's Bezier handle length, as a fraction of the point-to-point distance — a workflow-
-// editor canvas (n8n and similar) always extends a connector's handle along its PORT's fixed exit
-// direction, never straight at the target — that mismatch between "the direction this side always
-// exits" and "where the target actually is" is what produces the curve at all; extending a handle
-// straight at the target (what this used to do) draws 4 collinear points, i.e. a straight line
-// with extra steps. See `graphEdgePath` below.
-const CURVE_STRENGTH = 0.55;
-const MIN_HANDLE = 28;
-const MAX_HANDLE = 130;
-// Same-(node, exit side) edges fan out by rotating their anchor angle apart, in radians per edge
-// — an ANGULAR spread (not a linear/tangential one) so every anchor point stays exactly on the
-// node's own circle no matter how many edges share that side, rather than sliding off it sideways
-// (which used to leave a visible gap between the line and the node it's supposedly attached to).
-const FAN_ANGLE_STEP = (14 * Math.PI) / 180;
-// Even a perfectly axis-aligned pair still gets a hint of curve, capped low enough to stay
-// invisible for two adjacent nodes but present on a long connector — a very long, perfectly
-// ruler-straight line reads as rigid/mechanical next to everything else's soft curves.
-const MIN_CURVE_HANDLE = 8;
-
-/** Which of a node's 4 anchor sides a Relation exits/enters through — like `sideBetween`, but
- * with a dominance threshold: only commits to a horizontal or vertical side when that axis
- * clearly leads (>= 1.5x the other), so a genuinely diagonal relationship doesn't flip
- * unpredictably between two nearly-tied sides as a node moves a few px. Inside that dead zone a
- * `Side` still has to resolve to something concrete (there's no "diagonal" member) — falls back to
- * `sideBetween`'s own plain larger-of-the-two rule there, since the alignment-scaled curvature in
- * `graphEdgePath` already gives a genuinely diagonal edge its own proportionally large, natural
- * bend regardless of exactly which of the two nearly-tied sides it lands in. */
-const SIDE_DOMINANCE = 1.5;
-const graphSide = (from: Pt, toward: Pt): Side => {
-  const dx = toward.x - from.x;
-  const dy = toward.y - from.y;
-  const adx = Math.abs(dx);
-  const ady = Math.abs(dy);
-  if (ady > adx * SIDE_DOMINANCE) return dy >= 0 ? "bottom" : "top";
-  if (adx > ady * SIDE_DOMINANCE) return dx >= 0 ? "right" : "left";
-  return sideBetween(from, toward);
-};
+// Nearby radial bearings share a narrow angular bucket and fan apart by at most five degrees.
+// This retains the center-to-center direction while separating connectors that would otherwise
+// leave a busy hub at effectively the same point.
+const RADIAL_FAN_BUCKET = (12 * Math.PI) / 180;
+const MAX_RADIAL_FAN_SPREAD = (5 * Math.PI) / 180;
+const MIN_HANDLE = 14;
+const MAX_HANDLE = 72;
+const MAX_CURVE_BOW = 22;
+// Temporary visual comparison switch: keep Relation edges and their interactions intact while
+// hiding the status/name pills that sit on top of them in the Overview graph.
+const SHOW_OVERVIEW_RELATION_NODES = false;
 
 /** A cubic Bezier's own point at parameter `t` — used both to sample the curve for obstacle
  * detection and to place the Relation pill exactly on the rendered path (never off of it). */
@@ -145,31 +235,24 @@ const cubicPointAt = (p0: Pt, p1: Pt, p2: Pt, p3: Pt, t: number): Pt => {
   };
 };
 
-// A side's own fixed outward angle (radians, standard atan2 convention) — the same left/right/
-// top/bottom vocabulary `sideBetween` already classifies node-to-node direction into.
-const SIDE_ANGLE: Record<Side, number> = {
-  right: 0,
-  bottom: Math.PI / 2,
-  left: Math.PI,
-  top: -Math.PI / 2,
-};
-
-/** One end of a graph edge, already resolved to its node's actual current side/position — see
+/** One end of a graph edge, already resolved to its node's radial direction — see
  * `EdgeEnd`'s own construction in `relationGeometry` for how `fanIndex`/`fanCount` get assigned. */
-type EdgeEnd = { center: Pt; side: Side; fanIndex: number; fanCount: number };
+type EdgeEnd = { center: Pt; angle: number; fanIndex: number; fanCount: number; radius: number };
 
 /** The anchor point ALWAYS sits exactly on the node's own circle (never slid off to one side) —
- * fanning same-side edges apart rotates each one's angle around that circle instead of offsetting
- * the point linearly, which used to leave a visible gap between the line and the node. Returns the
- * direction (the anchor's own outward radial direction, post-rotation) alongside the point, since
- * that's also each end's Bezier handle direction below — still generally different from "straight
- * at the other node" (this is what actually produces the curve), except in the columns where a
- * fan angle happens to land exactly on the target's own bearing. */
+ * fanning nearby edges apart rotates each one's direct bearing subtly around that circle instead
+ * of offsetting the point linearly. Returns the
+ * direction (the anchor's own outward radial direction, post-rotation) alongside the point so the
+ * path can choose a consistent shallow bend while preserving each endpoint's place in the fan. */
 const edgeEndAnchor = (end: EdgeEnd): { point: Pt; dir: Pt } => {
-  const spread = (end.fanIndex - (end.fanCount - 1) / 2) * FAN_ANGLE_STEP;
-  const angle = SIDE_ANGLE[end.side] + spread;
+  const midpoint = (end.fanCount - 1) / 2;
+  const spread =
+    end.fanCount > 1
+      ? ((end.fanIndex - midpoint) / Math.max(1, midpoint)) * MAX_RADIAL_FAN_SPREAD
+      : 0;
+  const angle = end.angle + spread;
   const dir: Pt = { x: Math.cos(angle), y: Math.sin(angle) };
-  const radius = ONTOLOGY_NODE_SIZE / 2;
+  const radius = end.radius;
   const point: Pt = {
     x: end.center.x + dir.x * (radius + RELATION_GAP),
     y: end.center.y + dir.y * (radius + RELATION_GAP),
@@ -177,49 +260,43 @@ const edgeEndAnchor = (end: EdgeEnd): { point: Pt; dir: Pt } => {
   return { point, dir };
 };
 
-/** A Relation's connector between two circular nodes — a graph edge, not a flowchart step. Always
- * a smooth cubic Bezier: each end anchors to a FIXED side of its node (left/right/top/bottom, via
- * `sideBetween` — the same adaptive-side classification Detail's own rectangular-card connectors
- * use), spread apart from any other edge sharing that same (node, side) so they leave together and
- * fan out, then each end's Bezier handle extends further along THAT side's own fixed outward
- * direction — never straight at the target, which is what actually produces the curve (the
- * mismatch between "the direction this side exits" and "where the target really is"). Bows
- * further, away from a third node, only when the plain curve would otherwise cut through its
- * circle. */
-// How much an end's fixed exit direction actually mismatches the straight bearing toward the
-// OTHER end — 0 when they point exactly the same way (nothing to curve away from, so that end's
-// own handle should collapse toward a straight line instead of bending "just because"), rising
-// smoothly toward 1 as the mismatch approaches 90°. Side is always chosen as whichever axis
-// dominates toward the target (see `sideBetween`), so in practice this mismatch never exceeds
-// ~45° — a small mismatch (a target only slightly off-axis from its side's cardinal direction, as
-// "almost directly below" is off-axis from "exactly below") now produces a proportionally small,
-// barely-there bend rather than the SAME fixed handle length every edge used to get regardless of
-// how well-aligned it already was.
-const exitAlignment = (dir: Pt, from: Pt, toward: Pt): number => {
-  const bearing = Math.atan2(toward.y - from.y, toward.x - from.x);
-  const dirAngle = Math.atan2(dir.y, dir.x);
-  let diff = bearing - dirAngle;
-  while (diff > Math.PI) diff -= Math.PI * 2;
-  while (diff < -Math.PI) diff += Math.PI * 2;
-  return Math.abs(Math.sin(diff));
-};
+/** A Relation's connector between two circular nodes — a single, shallow cubic arc. The anchors
+ * still rotate subtly around crowded hub nodes, but both control points follow the direct chord
+ * and share one small perpendicular offset. That produces one tensioned curve instead of the
+ * opposing fixed-side tangents that could form S-curves or dramatic swings. */
 
 function graphEdgePath(
   fromEnd: EdgeEnd,
   toEnd: EdgeEnd,
   others: { id: string; x: number; y: number }[],
   excludeIds: readonly [string, string],
+  nodeScaleById: ReadonlyMap<string, number>,
 ): { d: string; mid: Pt } {
   const { point: p1, dir: dir1 } = edgeEndAnchor(fromEnd);
   const { point: p2, dir: dir2 } = edgeEndAnchor(toEnd);
   const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
-  const baseHandle = Math.min(MAX_HANDLE, Math.max(MIN_HANDLE, dist * CURVE_STRENGTH));
-  const curveFloor = Math.min(MIN_CURVE_HANDLE, dist * 0.05);
-  const handle1 = Math.max(curveFloor, baseHandle * exitAlignment(dir1, p1, p2));
-  const handle2 = Math.max(curveFloor, baseHandle * exitAlignment(dir2, p2, p1));
+  const ux = (p2.x - p1.x) / dist;
+  const uy = (p2.y - p1.y) / dist;
+  const nx = -uy;
+  const ny = ux;
+  const handle = Math.min(MAX_HANDLE, Math.max(MIN_HANDLE, dist * 0.28));
+  const sourceTurn = ux * dir1.y - uy * dir1.x;
+  const targetTurn = -ux * dir2.y + uy * dir2.x;
+  const turn = sourceTurn + targetTurn;
+  const fallbackSign = (fromEnd.fanIndex + toEnd.fanIndex) % 2 === 0 ? 1 : -1;
+  const bendSign = Math.abs(turn) < 0.001 ? fallbackSign : Math.sign(turn);
+  const bendStrength = Math.min(1, 0.25 + Math.abs(turn) * 1.5);
+  const lengthScale = Math.min(1, dist / 180);
+  const bow = Math.min(MAX_CURVE_BOW, dist * 0.04) * lengthScale * bendStrength;
 
-  let c1: Pt = { x: p1.x + dir1.x * handle1, y: p1.y + dir1.y * handle1 };
-  let c2: Pt = { x: p2.x + dir2.x * handle2, y: p2.y + dir2.y * handle2 };
+  let c1: Pt = {
+    x: p1.x + ux * handle + nx * bow * bendSign,
+    y: p1.y + uy * handle + ny * bow * bendSign,
+  };
+  let c2: Pt = {
+    x: p2.x - ux * handle + nx * bow * bendSign,
+    y: p2.y - uy * handle + ny * bow * bendSign,
+  };
 
   // Obstacle check against the plain curve's own sampled shape (not just the straight p1-p2
   // segment) — a gentle curve can already clear a node the straight line would have cut through,
@@ -229,21 +306,24 @@ function graphEdgePath(
   for (let i = 0; i <= sampleCount; i++)
     samples.push(cubicPointAt(p1, c1, c2, p2, i / sampleCount));
 
-  let minDist = OBSTACLE_CLEARANCE;
+  let minDist = Infinity;
+  let minClearance = OBSTACLE_CLEARANCE;
   let obstacle: Pt | null = null;
   for (const o of others) {
     if (o.id === excludeIds[0] || o.id === excludeIds[1]) continue;
     const oc = ontologyNodeCenter(o);
+    const clearance = (ONTOLOGY_NODE_SIZE * (nodeScaleById.get(o.id) ?? 1)) / 2 + 14;
     for (let i = 0; i < samples.length - 1; i++) {
       const dist2 = distanceToSegment(oc, samples[i]!, samples[i + 1]!);
-      if (dist2 < minDist) {
+      if (dist2 - clearance < minDist - minClearance) {
         minDist = dist2;
+        minClearance = clearance;
         obstacle = oc;
       }
     }
   }
 
-  if (obstacle) {
+  if (obstacle && minDist < minClearance) {
     const mx = (p1.x + p2.x) / 2;
     const my = (p1.y + p2.y) / 2;
     let nx = -(p2.y - p1.y) / dist;
@@ -258,9 +338,9 @@ function graphEdgePath(
     // reads as "swings over near that other node" rather than "still clearly a connector between
     // its own two endpoints" (each end still anchors exactly on its own node's circle regardless —
     // only the curve's middle moves — but a large bow here used to make that hard to see).
-    const bow = Math.min(OBSTACLE_CLEARANCE - minDist + 10, dist * 0.15, 36);
-    c1 = { x: c1.x + nx * bow, y: c1.y + ny * bow };
-    c2 = { x: c2.x + nx * bow, y: c2.y + ny * bow };
+    const obstacleBow = Math.min(minClearance - minDist + 6, dist * 0.08, 20);
+    c1 = { x: c1.x + nx * obstacleBow, y: c1.y + ny * obstacleBow };
+    c2 = { x: c2.x + nx * obstacleBow, y: c2.y + ny * obstacleBow };
   }
 
   return {
@@ -333,6 +413,33 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     useState(false);
   useCanvasToolShortcuts(tool, setTool, undo, redo);
 
+  // Relation degree is a visual-density signal only. It never changes graph data or layout:
+  // peripheral nodes shrink while hubs grow in four bounded steps, and every stored center stays
+  // fixed so the hierarchy doesn't reflow the graph.
+  const relationCountByEntity = useMemo(() => {
+    const counts = new Map(entities.map((entity) => [entity.id, 0]));
+    relations.forEach((relation) => {
+      counts.set(relation.from, (counts.get(relation.from) ?? 0) + 1);
+      if (relation.to !== relation.from)
+        counts.set(relation.to, (counts.get(relation.to) ?? 0) + 1);
+    });
+    return counts;
+  }, [entities, relations]);
+  const nodeScaleById = useMemo(
+    () =>
+      new Map(
+        entities.map((entity) => [
+          entity.id,
+          overviewNodeScaleForRelationCount(relationCountByEntity.get(entity.id) ?? 0),
+        ]),
+      ),
+    [entities, relationCountByEntity],
+  );
+  const layoutEntities = useMemo(
+    () => buildFarZoomTopologyLayout(entities, relations),
+    [entities, relations],
+  );
+
   // The Data Tables panel's own collapse toggle — independent of the Ontology canvas, which is
   // always shown at full width alongside it. Collapsing only hides this panel's own content; it
   // never touches canvas content, selection, or the ontology itself.
@@ -368,14 +475,14 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
   // that swaps this component back in from scratch) rather than only on the very first load.
   const fitToContent = useCallback(() => {
     const el = ref.current;
-    if (!el || entities.length === 0) return;
+    if (!el || layoutEntities.length === 0) return;
     const rect = el.getBoundingClientRect();
-    const minX = Math.min(...entities.map((e) => e.x));
-    const minY = Math.min(...entities.map((e) => e.y));
+    const minX = Math.min(...layoutEntities.map((e) => e.x));
+    const minY = Math.min(...layoutEntities.map((e) => e.y));
     // +40 below the node's own footprint gives the name/subtitle label room in the fit, so it
     // never clips at the bottom edge of the canvas.
-    const maxX = Math.max(...entities.map((e) => e.x + ONTOLOGY_NODE_SIZE));
-    const maxY = Math.max(...entities.map((e) => e.y + ONTOLOGY_NODE_SIZE + 40));
+    const maxX = Math.max(...layoutEntities.map((e) => e.x + ONTOLOGY_NODE_SIZE));
+    const maxY = Math.max(...layoutEntities.map((e) => e.y + ONTOLOGY_NODE_SIZE + 40));
     const contentW = maxX - minX;
     const contentH = maxY - minY;
     const pad = 72;
@@ -387,7 +494,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       x: pad + (availW - contentW * z) / 2 - minX * z,
       y: pad + (availH - contentH * z) / 2 - minY * z,
     });
-  }, [entities, setView]);
+  }, [layoutEntities, setView]);
 
   useLayoutEffect(() => {
     fitToContent();
@@ -452,7 +559,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       let bestDist = Infinity;
       for (const en of entities) {
         if (en.id === excludeId) continue;
-        if (!pointInRect(p, nodeRect(en))) continue;
+        if (!pointInRect(p, nodeRect(en, nodeScaleById.get(en.id) ?? 1))) continue;
         const c = ontologyNodeCenter(en);
         const dist = Math.hypot(p.x - c.x, p.y - c.y);
         if (dist < bestDist) {
@@ -462,7 +569,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       }
       return best;
     },
-    [entities, toWorld],
+    [entities, nodeScaleById, toWorld],
   );
 
   const startConnectFromEntity = useCallback(
@@ -488,7 +595,9 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       // is explicitly allowed, so the final drop still needs its own check for "landed back on the
       // entity it started from," separate from that general hit-test.
       const sourceEntity = entities.find((en) => en.id === connectDrag.sourceId);
-      const droppedOnSource = sourceEntity && pointInRect(dropPoint, nodeRect(sourceEntity));
+      const droppedOnSource =
+        sourceEntity &&
+        pointInRect(dropPoint, nodeRect(sourceEntity, nodeScaleById.get(sourceEntity.id) ?? 1));
       if (hit) {
         setRelationDialogRequest({ sourceId: connectDrag.sourceId, targetId: hit.id });
       } else if (droppedOnSource) {
@@ -518,7 +627,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [connectDrag, toWorld, findEntityAt, startCreateConnectedEntity, entities]);
+  }, [connectDrag, toWorld, findEntityAt, startCreateConnectedEntity, entities, nodeScaleById]);
 
   // The "Define Relation" dialog's own request state — set the moment a connect-drag (see
   // `connectDrag` just above) is released ON an existing Entity, replacing the old behavior where
@@ -566,10 +675,9 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
   // `EntityMorphOrigin`). Never used for anything else (no re-render depends on this ref).
   const nodeElRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
-  // Direct-manipulation node move — dragging an entity's own body (not a connection handle)
-  // repositions it, persisted as its x/y in app-state so the layout survives a re-render. Below
-  // the same 6px threshold used elsewhere in the app, it resolves as a plain click (open Detail)
-  // instead, exactly like the toolbox's own click-vs-drag distinction.
+  // Entity pointer tracking owns single/shift/double-click resolution. The topology layout passes
+  // `locked: true`, retaining those interactions without letting a drag fight the automatic
+  // positions; the movement branch remains available if Overview later restores free placement.
   const nodeDragInfo = useRef<{
     id: string;
     startX: number;
@@ -577,10 +685,11 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     sx: number;
     sy: number;
     moved: boolean;
+    locked: boolean;
   } | null>(null);
 
   const startNodeMove = useCallback(
-    (id: string, clientX: number, clientY: number) => {
+    (id: string, clientX: number, clientY: number, locked = false) => {
       const entity = entities.find((e) => e.id === id);
       if (!entity) return;
       nodeDragInfo.current = {
@@ -590,6 +699,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
         sx: clientX,
         sy: clientY,
         moved: false,
+        locked,
       };
     },
     [entities],
@@ -626,6 +736,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     const onMove = (e: PointerEvent) => {
       const info = nodeDragInfo.current;
       if (!info) return;
+      if (info.locked) return;
       const dx = e.clientX - info.sx;
       const dy = e.clientY - info.sy;
       // `updateEntity` deliberately never pushes undo history itself (see its own comment in
@@ -730,6 +841,11 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
   // `selection` isn't a Relation.
   const selectedRelation =
     selection?.kind === "relation" ? (relations.find((r) => r.id === selection.id) ?? null) : null;
+  // Reuse the canvas's existing semantic-zoom value and thresholds. Relation names join the
+  // detailed Entity summary above 110%; below 70%, connectors retain the graph's topology while
+  // receding behind the nodes. Hover/selection always wins over either zoom treatment.
+  const showRelationLabels = view.z > 1.1;
+  const farRelationZoom = view.z < FAR_ZOOM_THRESHOLD;
   const selectRelationOnClick = useCallback(
     (relationId: string, shiftKey: boolean) => {
       const current = { kind: "relation", id: relationId } as const;
@@ -857,6 +973,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
   // click immediately opens Detail, replacing this whole canvas before the emphasis is even
   // visible; hovering is the only gesture that stays on this canvas long enough to see it.
   const [hoveredEntityId, setHoveredEntityId] = useState<string | null>(null);
+  const [hoveredRelationId, setHoveredRelationId] = useState<string | null>(null);
   const highlightId = hoveredEntityId ?? (selection?.kind === "entity" ? selection.id : null);
   const multiSelectedEntityIds = useMemo(() => {
     const ids = new Set<string>();
@@ -877,6 +994,22 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       ),
     [entities],
   );
+  const focusedRelationEntityIds = useMemo(() => {
+    const ids = new Set<string>();
+    const includeEndpoints = (relationId: string) => {
+      const relation = relations.find((candidate) => candidate.id === relationId);
+      if (!relation) return;
+      ids.add(relation.from);
+      ids.add(relation.to);
+    };
+    if (hoveredRelationId) includeEndpoints(hoveredRelationId);
+    if (selection?.kind === "relation") includeEndpoints(selection.id);
+    suggestionSelection.forEach((key) => {
+      const selected = parseSuggestionKey(key);
+      if (selected?.kind === "relation") includeEndpoints(selected.id);
+    });
+    return ids;
+  }, [hoveredRelationId, selection, suggestionSelection, relations]);
 
   // Same "in focus" emphasis, but from the Data Tables entry point instead of Entity types — the
   // basis for what's highlighted just becomes "which entities map to this table" (via
@@ -980,6 +1113,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     if (highlightId) return new Set([highlightId]);
     return null;
   }, [searchContext, hoveredTableName, highlightId, entities]);
+  const entityNeighborhoodActive = !!highlightId && !hoveredTableName && !searchContext;
 
   // The mirror image of `hoveredTableName`'s own entity-highlight above: which Data Table rows to
   // highlight (a gray background, never hiding the rest — see `selectedEntityTableNames` below for
@@ -1024,20 +1158,47 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     return set;
   }, [searchContext, highlightId, relations, hoveredTableName]);
 
+  // Far-zoom labels are intentionally deterministic rather than collision-driven: retain the
+  // graph's eight highest-degree hubs, then add every currently hovered/selected Entity and each
+  // one's direct neighbors. Entity order is the stable tie-breaker for equal-degree hubs.
+  const farZoomEntityLabelIds = useMemo(() => {
+    const degree = new Map(entities.map((entity) => [entity.id, 0]));
+    relations.forEach((relation) => {
+      degree.set(relation.from, (degree.get(relation.from) ?? 0) + 1);
+      if (relation.to !== relation.from)
+        degree.set(relation.to, (degree.get(relation.to) ?? 0) + 1);
+    });
+
+    const visible = new Set(
+      entities
+        .map((entity, index) => ({ id: entity.id, index, degree: degree.get(entity.id) ?? 0 }))
+        .sort((a, b) => b.degree - a.degree || a.index - b.index)
+        .slice(0, Math.min(8, entities.length))
+        .map(({ id }) => id),
+    );
+
+    const focused = new Set(multiSelectedEntityIds);
+    if (hoveredEntityId) focused.add(hoveredEntityId);
+    if (selection?.kind === "entity") focused.add(selection.id);
+    focused.forEach((id) => visible.add(id));
+    relations.forEach((relation) => {
+      if (focused.has(relation.from)) visible.add(relation.to);
+      if (focused.has(relation.to)) visible.add(relation.from);
+    });
+    return visible;
+  }, [entities, relations, hoveredEntityId, selection, multiSelectedEntityIds]);
+
   // Each Relation's connector geometry, computed once per render and shared by the SVG path, the
   // Relation pill's position, and focusRelation's camera-centering below — so the line, the pill
   // sitting on it, and "pan to here" all agree on exactly the same curve.
   const relationGeometry = useMemo(() => {
     const centerOf = new Map<string, Pt>();
-    entities.forEach((e) => centerOf.set(e.id, ontologyNodeCenter(e)));
+    layoutEntities.forEach((e) => centerOf.set(e.id, ontologyNodeCenter(e)));
 
-    // Every edge touches two node-sides (its `from` end and its `to` end) — group ALL of them by
-    // (nodeId, side) first, since two different Relations can easily share the same node exiting
-    // the same side (e.g. two edges both leaving a node's "right" side toward different targets),
-    // and those need to know their own position within that shared group to fan out instead of
-    // leaving from the exact same point. Ordered by each end's actual angle to its OTHER node, so
-    // the fan reads top-to-bottom/left-to-right sensibly rather than in an arbitrary order.
-    type PendingEnd = { key: string; nodeId: string; side: Side; angle: number };
+    // Each endpoint starts at the exact center-to-center bearing toward the other Entity. Only
+    // bearings within the same narrow angular bucket share a fan group; this prevents stacked
+    // connectors at hubs while retaining their original radial direction around the full circle.
+    type PendingEnd = { key: string; nodeId: string; angle: number; bucket: number };
     const endKey = (relationId: string, role: "from" | "to") => `${relationId}|${role}`;
     const pendingByKey = new Map<string, PendingEnd>();
     const groups = new Map<string, string[]>();
@@ -1045,24 +1206,25 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       const ca = centerOf.get(r.from);
       const cb = centerOf.get(r.to);
       if (!ca || !cb) return;
-      const ends: { role: "from" | "to"; nodeId: string; side: Side; angle: number }[] = [
+      const selfRelation = r.from === r.to;
+      const ends: { role: "from" | "to"; nodeId: string; angle: number }[] = [
         {
           role: "from",
           nodeId: r.from,
-          side: graphSide(ca, cb),
-          angle: Math.atan2(cb.y - ca.y, cb.x - ca.x),
+          angle: selfRelation ? -Math.PI * 0.65 : Math.atan2(cb.y - ca.y, cb.x - ca.x),
         },
         {
           role: "to",
           nodeId: r.to,
-          side: graphSide(cb, ca),
-          angle: Math.atan2(ca.y - cb.y, ca.x - cb.x),
+          angle: selfRelation ? -Math.PI * 0.35 : Math.atan2(ca.y - cb.y, ca.x - cb.x),
         },
       ];
-      ends.forEach(({ role, nodeId, side, angle }) => {
+      ends.forEach(({ role, nodeId, angle }) => {
         const key = endKey(r.id, role);
-        pendingByKey.set(key, { key, nodeId, side, angle });
-        const groupKey = `${nodeId}|${side}`;
+        const normalizedAngle = (angle + Math.PI * 2) % (Math.PI * 2) || 0;
+        const bucket = Math.floor(normalizedAngle / RADIAL_FAN_BUCKET);
+        pendingByKey.set(key, { key, nodeId, angle, bucket });
+        const groupKey = `${nodeId}|${bucket}`;
         groups.set(groupKey, [...(groups.get(groupKey) ?? []), key]);
       });
     });
@@ -1073,12 +1235,13 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     const resolveEnd = (relationId: string, role: "from" | "to"): EdgeEnd | null => {
       const pending = pendingByKey.get(endKey(relationId, role));
       if (!pending) return null;
-      const group = groups.get(`${pending.nodeId}|${pending.side}`)!;
+      const group = groups.get(`${pending.nodeId}|${pending.bucket}`)!;
       return {
         center: centerOf.get(pending.nodeId)!,
-        side: pending.side,
+        angle: pending.angle,
         fanIndex: group.indexOf(pending.key),
         fanCount: group.length,
+        radius: (ONTOLOGY_NODE_SIZE * (nodeScaleById.get(pending.nodeId) ?? 1)) / 2,
       };
     };
 
@@ -1087,10 +1250,10 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       const fromEnd = resolveEnd(r.id, "from");
       const toEnd = resolveEnd(r.id, "to");
       if (!fromEnd || !toEnd) return;
-      map.set(r.id, graphEdgePath(fromEnd, toEnd, entities, [r.from, r.to]));
+      map.set(r.id, graphEdgePath(fromEnd, toEnd, layoutEntities, [r.from, r.to], nodeScaleById));
     });
     return map;
-  }, [relations, entities]);
+  }, [relations, layoutEntities, nodeScaleById]);
 
   // Resolves any of the History/Search `ref` kinds this canvas can actually place to a world-space
   // point — shared by the numbered inspection markers and the post-restore highlight below. A
@@ -1101,9 +1264,9 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
   // and is silently skipped, never shown floating at (0,0).
   const centerOfMap = useMemo(() => {
     const map = new Map<string, Pt>();
-    entities.forEach((e) => map.set(e.id, ontologyNodeCenter(e)));
+    layoutEntities.forEach((e) => map.set(e.id, ontologyNodeCenter(e)));
     return map;
-  }, [entities]);
+  }, [layoutEntities]);
   const pointForRef = useCallback(
     (ref: SearchResultRef): Pt | undefined => {
       if (ref.kind === "entity") return centerOfMap.get(ref.id);
@@ -1193,12 +1356,12 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
   }, [historyInspection]);
 
   const displayEntities = useMemo(() => {
-    if (!historyValueOverrides || historyValueOverrides.size === 0) return entities;
-    return entities.map((e) => {
+    if (!historyValueOverrides || historyValueOverrides.size === 0) return layoutEntities;
+    return layoutEntities.map((e) => {
       const override = historyValueOverrides.get(e.id);
       return override ? { ...e, ...override } : e;
     });
-  }, [entities, historyValueOverrides]);
+  }, [layoutEntities, historyValueOverrides]);
 
   // Pans/centers on the first placeable change the moment a NEW History Inspection starts (never
   // re-fires on a later selection/hover change within the same inspection) — the same "camera
@@ -1229,6 +1392,14 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     if (historyInspectionEntityIds) {
       return historyInspectionEntityIds.has(entityId) ? ("active" as const) : ("muted" as const);
     }
+    if (focusedRelationEntityIds.has(entityId)) return "related" as const;
+    // Direct Entity hover/selection is a local emphasis layer, not a graph filter. Its subject and
+    // neighbors receive rings; every other Entity keeps its normal context and is never muted by
+    // this interaction alone.
+    if (entityNeighborhoodActive) {
+      if (activeEntityIds?.has(entityId)) return "active" as const;
+      if (neighborIds?.has(entityId)) return "related" as const;
+    }
     const entity = entities.find((e) => e.id === entityId);
     // Global Search's connected context is exempt from Confidence/Filter muting entirely — Search
     // "may temporarily reveal/focus relevant context even if that context is currently
@@ -1250,6 +1421,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     if (!activeEntityIds) return "normal" as const;
     if (activeEntityIds.has(entityId)) return "active" as const;
     if (neighborIds?.has(entityId)) return "related" as const;
+    if (entityNeighborhoodActive) return "normal" as const;
     return "muted" as const;
   };
 
@@ -1281,7 +1453,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
   // (see above), which is what actually renders the "visually highlight it" requirement.
   const focusEntity = useCallback(
     (entityId: string) => {
-      const entity = entities.find((e) => e.id === entityId);
+      const entity = layoutEntities.find((e) => e.id === entityId);
       const el = ref.current;
       if (entity && el) {
         const center = ontologyNodeCenter(entity);
@@ -1294,7 +1466,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       }
       select({ kind: "entity", id: entityId });
     },
-    [entities, setView, select],
+    [layoutEntities, setView, select],
   );
 
   // Where each Data Tables panel row actually sits in the DOM, keyed by table name — populated by
@@ -1501,6 +1673,8 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                 const isSelected =
                   (selection?.kind === "relation" && selection.id === r.id) ||
                   suggestionSelection.has(suggestionKey({ kind: "relation", id: r.id }));
+                const isHovered = hoveredRelationId === r.id;
+                const isZoomEmphasized = isSelected || isHovered;
                 // Only genuinely relevant while a search is active — both endpoints in the
                 // connected set, not just one, so a Relation search result highlights exactly
                 // that relation (and any other directly connecting two connected entities)
@@ -1536,7 +1710,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                   outOfScope ||
                   (propertySuggestionsHighlightActive
                     ? !propertySuggestionFocusEdge
-                    : activeEntityIds !== null && !isFocusEdge);
+                    : activeEntityIds !== null && !isFocusEdge && !entityNeighborhoodActive);
                 return (
                   <path
                     key={r.id}
@@ -1545,14 +1719,24 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                     strokeLinecap="round"
                     className={cn(
                       "transition-opacity",
-                      isSelected
+                      isZoomEmphasized
                         ? "stroke-[#3b82f6]"
                         : isFocusEdge && !propertySuggestionsHighlightActive
                           ? "stroke-[#3b82f6]"
                           : "stroke-zinc-400",
-                      isMuted && "opacity-20",
                     )}
-                    strokeWidth={isSelected ? 2.4 : isFocusEdge ? 1.9 : 1.5}
+                    opacity={
+                      isZoomEmphasized || isFocusEdge
+                        ? 1
+                        : isMuted
+                          ? 0.2
+                          : farRelationZoom
+                            ? 0.14
+                            : 0.55
+                    }
+                    strokeWidth={
+                      isZoomEmphasized ? 2.6 : isFocusEdge ? 2 : farRelationZoom ? 1 : 1.25
+                    }
                     markerEnd="url(#relation-arrow)"
                   />
                 );
@@ -1572,96 +1756,112 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
               )}
             </svg>
 
-            {relations.map((r) => {
-              const a = entities.find((e) => e.id === r.from);
-              const b = entities.find((e) => e.id === r.to);
-              const geo = relationGeometry.get(r.id);
-              if (!a || !b || !geo) return null;
-              const { mid } = geo;
-              const isSelected = selection?.kind === "relation" && selection.id === r.id;
-              const isMultiSelected = suggestionSelection.has(
-                suggestionKey({ kind: "relation", id: r.id }),
-              );
-              // Same dimming the connector line itself already computes above (confidence/status
-              // Filter scope, plus the entity-hover focus dim) — kept identical so the badge and
-              // the line it sits on always read as one visually-consistent object, never one dimmed
-              // without the other.
-              const bothSearchConnected = searchContext
-                ? searchContext.connectedEntityIds.has(r.from) &&
-                  searchContext.connectedEntityIds.has(r.to)
-                : false;
-              const propertySuggestionFocusEdge =
-                propertySuggestionsHighlightActive &&
-                (suggestedPropertyEntityIds.has(r.from) || suggestedPropertyEntityIds.has(r.to));
-              // Same table-hover guard as the connector line above — relations only ever light up
-              // for an actual Entity hover/search focus, never for Table hover's own entity set.
-              const isFocusEdge = propertySuggestionsHighlightActive
-                ? propertySuggestionFocusEdge
-                : suggestionSelection.size > 0
-                  ? false
-                  : searchContext
-                    ? bothSearchConnected
-                    : activeEntityIds && !hoveredTableName
-                      ? activeEntityIds.has(r.from) || activeEntityIds.has(r.to)
-                      : false;
-              const outOfScope =
-                !bothSearchConnected &&
-                !isReviewItemInScope(r.status, r.confidence, confidenceRange, statusFilter);
-              const isMuted =
-                outOfScope ||
-                (propertySuggestionsHighlightActive
-                  ? !propertySuggestionFocusEdge
-                  : activeEntityIds !== null && !isFocusEdge);
-              return (
-                <div
-                  key={r.id}
-                  title={relationLabel(r)}
-                  style={{ left: mid.x, top: mid.y }}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    // History Mode is strictly inspection-only — normal canvas selection (plain or
-                    // shift multi-select alike) is switched off for its whole duration, not just
-                    // once a specific event is open (see this file's own `historyPanelOpen` gates
-                    // elsewhere, e.g. the Entity node click handler right above).
-                    if (historyPanelOpen) return;
-                    selectRelationOnClick(r.id, e.shiftKey);
-                  }}
-                  className={cn(
-                    "group/relpill absolute z-10 -translate-x-1/2 -translate-y-1/2 transition-opacity",
-                    historyPanelOpen ? "cursor-default" : "cursor-pointer",
-                    (isSelected || isMultiSelected) && "rounded-full ring-2 ring-[#3b82f6]",
-                    isMuted && "opacity-20",
-                  )}
-                >
-                  {/* Icon-only by default; hovering reveals the name as a labeled pill (Figma:
+            {SHOW_OVERVIEW_RELATION_NODES &&
+              relations.map((r) => {
+                const a = entities.find((e) => e.id === r.from);
+                const b = entities.find((e) => e.id === r.to);
+                const geo = relationGeometry.get(r.id);
+                if (!a || !b || !geo) return null;
+                const { mid } = geo;
+                const isSelected = selection?.kind === "relation" && selection.id === r.id;
+                const isMultiSelected = suggestionSelection.has(
+                  suggestionKey({ kind: "relation", id: r.id }),
+                );
+                const isHovered = hoveredRelationId === r.id;
+                const isZoomEmphasized = isSelected || isMultiSelected || isHovered;
+                const revealLabel = showRelationLabels || isZoomEmphasized;
+                // Same dimming the connector line itself already computes above (confidence/status
+                // Filter scope, plus the entity-hover focus dim) — kept identical so the badge and
+                // the line it sits on always read as one visually-consistent object, never one dimmed
+                // without the other.
+                const bothSearchConnected = searchContext
+                  ? searchContext.connectedEntityIds.has(r.from) &&
+                    searchContext.connectedEntityIds.has(r.to)
+                  : false;
+                const propertySuggestionFocusEdge =
+                  propertySuggestionsHighlightActive &&
+                  (suggestedPropertyEntityIds.has(r.from) || suggestedPropertyEntityIds.has(r.to));
+                // Same table-hover guard as the connector line above — relations only ever light up
+                // for an actual Entity hover/search focus, never for Table hover's own entity set.
+                const isFocusEdge = propertySuggestionsHighlightActive
+                  ? propertySuggestionFocusEdge
+                  : suggestionSelection.size > 0
+                    ? false
+                    : searchContext
+                      ? bothSearchConnected
+                      : activeEntityIds && !hoveredTableName
+                        ? activeEntityIds.has(r.from) || activeEntityIds.has(r.to)
+                        : false;
+                const outOfScope =
+                  !bothSearchConnected &&
+                  !isReviewItemInScope(r.status, r.confidence, confidenceRange, statusFilter);
+                const isMuted =
+                  outOfScope ||
+                  (propertySuggestionsHighlightActive
+                    ? !propertySuggestionFocusEdge
+                    : activeEntityIds !== null && !isFocusEdge && !entityNeighborhoodActive);
+                return (
+                  <div
+                    key={r.id}
+                    title={relationLabel(r)}
+                    style={{
+                      left: mid.x,
+                      top: mid.y,
+                      opacity: isZoomEmphasized ? 1 : isMuted ? 0.2 : farRelationZoom ? 0.22 : 1,
+                    }}
+                    onMouseEnter={() => setHoveredRelationId(r.id)}
+                    onMouseLeave={() => setHoveredRelationId(null)}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      // History Mode is strictly inspection-only — normal canvas selection (plain or
+                      // shift multi-select alike) is switched off for its whole duration, not just
+                      // once a specific event is open (see this file's own `historyPanelOpen` gates
+                      // elsewhere, e.g. the Entity node click handler right above).
+                      if (historyPanelOpen) return;
+                      selectRelationOnClick(r.id, e.shiftKey);
+                    }}
+                    className={cn(
+                      "group/relpill absolute z-10 -translate-x-1/2 -translate-y-1/2 transition-opacity",
+                      historyPanelOpen ? "cursor-default" : "cursor-pointer",
+                      (isSelected || isMultiSelected) && "rounded-full ring-2 ring-[#3b82f6]",
+                    )}
+                  >
+                    {/* Icon-only by default; hovering reveals the name as a labeled pill (Figma:
                       "Relation / Default / *" vs "Relation / Hover / *"). No inline delete on this
                       badge any more — Delete now lives on the contextual selection bar (single- or
                       multi-select alike, see the bottom-center stack below), matching how Entity
                       Types already work. */}
-                  <div
-                    style={{
-                      borderColor:
-                        isSelected || isMultiSelected ? "#3b82f6" : statusBorderColor(r.status),
-                    }}
-                    className="inline-flex items-center justify-center gap-0 rounded-full border-[1.5px] bg-white p-1 shadow-[0_2.281px_1.14px_0_rgba(0,0,0,0.1)] transition-[gap,padding] group-hover/relpill:gap-1 group-hover/relpill:pr-2"
-                  >
-                    <span className="flex size-[18px] shrink-0 items-center justify-center rounded-full">
-                      <StatusBadge
-                        status={r.status}
-                        size={18}
-                        confidence={r.confidence}
-                        warningReason={r.warningReason}
-                        errorReason={r.errorReason}
-                      />
-                    </span>
-                    <span className="block max-w-0 overflow-hidden whitespace-nowrap text-[10.5px] font-medium leading-[15.75px] text-[#171B22] opacity-0 transition-[max-width,opacity] group-hover/relpill:max-w-[160px] group-hover/relpill:opacity-100">
-                      {relationLabel(r)}
-                    </span>
+                    <div
+                      style={{
+                        borderColor: isZoomEmphasized ? "#3b82f6" : statusBorderColor(r.status),
+                      }}
+                      className={cn(
+                        "inline-flex items-center justify-center rounded-full border-[1.5px] bg-white p-1 shadow-[0_2.281px_1.14px_0_rgba(0,0,0,0.1)] transition-[gap,padding] group-hover/relpill:gap-1 group-hover/relpill:pr-2",
+                        revealLabel ? "gap-1 pr-2" : "gap-0",
+                      )}
+                    >
+                      <span className="flex size-[18px] shrink-0 items-center justify-center rounded-full">
+                        <StatusBadge
+                          status={r.status}
+                          size={18}
+                          confidence={r.confidence}
+                          warningReason={r.warningReason}
+                          errorReason={r.errorReason}
+                        />
+                      </span>
+                      <span
+                        className={cn(
+                          "block overflow-hidden whitespace-nowrap text-[10.5px] font-medium leading-[15.75px] text-[#171B22] transition-[max-width,opacity] group-hover/relpill:max-w-[160px] group-hover/relpill:opacity-100",
+                          revealLabel ? "max-w-[160px] opacity-100" : "max-w-0 opacity-0",
+                        )}
+                      >
+                        {relationLabel(r)}
+                      </span>
+                    </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })}
 
             {displayEntities.map((entity) => (
               <div
@@ -1678,6 +1878,8 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                 <OntologyNode
                   entity={entity}
                   detailed={view.z > 1}
+                  nodeScale={nodeScaleById.get(entity.id) ?? 1}
+                  showLabel={view.z >= FAR_ZOOM_THRESHOLD || farZoomEntityLabelIds.has(entity.id)}
                   showPropertySummary={view.z > 1.1}
                   emphasizeSuggestedProperties={
                     propertySuggestionsHighlightActive && suggestedPropertyEntityIds.has(entity.id)
@@ -1691,11 +1893,13 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                   // interactive (to select/deselect a change) once one is, and the panel's own
                   // Back/close/Restore are the only ways out.
                   onClick={historyPanelOpen ? undefined : () => openDetail("entity", entity.id)}
-                  onStartMove={
-                    historyPanelOpen
-                      ? undefined
-                      : (clientX, clientY) => startNodeMove(entity.id, clientX, clientY)
+                  // This Overview is auto-laid out by graph topology at every zoom level. Manual
+                  // node movement would fight that deterministic projection, so selection remains
+                  // available while position dragging is intentionally disabled here.
+                  onStartMove={(clientX, clientY) =>
+                    startNodeMove(entity.id, clientX, clientY, true)
                   }
+                  movementLocked
                   onStartConnect={
                     historyPanelOpen
                       ? undefined

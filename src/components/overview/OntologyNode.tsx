@@ -226,11 +226,14 @@ const SIDE_POSITION: Record<Side, string> = {
 export function OntologyNode({
   entity,
   detailed,
+  nodeScale = 1,
+  showLabel = true,
   showPropertySummary = false,
   emphasizeSuggestedProperties = false,
   emphasis = "normal",
   onClick,
   onStartMove,
+  movementLocked = false,
   onStartConnect,
   connectSourceSide = null,
   connectTargetSide = null,
@@ -238,6 +241,8 @@ export function OntologyNode({
   propertyStatusRing = true,
 }: {
   entity: Entity;
+  /** Overview hub emphasis. A transform keeps the node centered without moving its label/layout. */
+  nodeScale?: number;
   /** On by default wherever this node shows an Entity's own status at all — Overview's own
    * canvas nodes and Detail's related-entity satellites alike, so the ring/hover treatment reads
    * the same across the whole app. */
@@ -245,6 +250,9 @@ export function OntologyNode({
   /** Show confidence + props/table count below the name — Overview passes `view.z > 1` (zoomed
    * past 100%), matching Figma's own zoomed-in variant. */
   detailed: boolean;
+  /** Overview semantic zoom may temporarily de-emphasize the visible name while preserving the
+   * node's footprint and hit target. Defaults on so compact nodes outside Overview are unchanged. */
+  showLabel?: boolean;
   /** Overview-only semantic zoom layer. Kept separate from `detailed` so the existing confidence
    * threshold and Detail View satellites remain unchanged. */
   showPropertySummary?: boolean;
@@ -257,6 +265,8 @@ export function OntologyNode({
    * Ontology underneath it. */
   onClick?: ((e: React.MouseEvent) => void) | undefined;
   onStartMove?: ((clientX: number, clientY: number) => void) | undefined;
+  /** Keeps pointer-based selection active while suppressing the draggable cursor in auto-layout. */
+  movementLocked?: boolean;
   /** Starts a connector drag from one of this node's 4 boundary handles — the SAME drag now
    * resolves to one of two outcomes purely by where it's dropped (see the handle-rendering block
    * below and `OverviewCanvas`'s own `connectDrag` pointer-up handler): dropped on an existing
@@ -331,13 +341,16 @@ export function OntologyNode({
         }}
         className={cn(
           "relative flex select-none flex-col items-center gap-1 bg-transparent text-center",
-          onStartMove && "cursor-grab active:cursor-grabbing",
+          onStartMove && !movementLocked && "cursor-grab active:cursor-grabbing",
         )}
       >
         <span
-          style={{ borderColor: propertyStatusRing ? "transparent" : statusBorderColor(status) }}
+          style={{
+            borderColor: propertyStatusRing ? "transparent" : statusBorderColor(status),
+            transform: `scale(${nodeScale})`,
+          }}
           className={cn(
-            "relative flex size-11 shrink-0 items-center justify-center rounded-full bg-white shadow-[0px_1px_1.5px_rgba(0,0,0,0.1),0px_1px_1px_rgba(0,0,0,0.1)] transition-[opacity,box-shadow]",
+            "relative flex size-11 shrink-0 items-center justify-center rounded-full bg-white shadow-[0px_1px_1.5px_rgba(0,0,0,0.1),0px_1px_1px_rgba(0,0,0,0.1)] transition-[opacity,box-shadow,transform]",
             // A real (if transparent) border here — even at 0 color — still eats into the padding
             // box that `PropertyStatusRing`'s `inset-0` SVG anchors to, while `StatusBadge` below
             // stays centered by flexbox instead — the two would end up centered on two DIFFERENT
@@ -345,6 +358,7 @@ export function OntologyNode({
             // No border at all when the ring is doing that job instead keeps both concentric.
             propertyStatusRing ? "border-0" : "border-[1.5px]",
             emphasis === "active" && "ring-[3px] ring-[#3b82f6]",
+            emphasis === "related" && "ring-2 ring-[#3b82f6]/60",
             moveTarget && "ring-[4px] ring-primary",
           )}
         >
@@ -411,7 +425,10 @@ export function OntologyNode({
           <span className="flex max-w-[100px] items-center gap-1">
             <span
               data-morph-label
-              className="truncate bg-[#fafafa] px-0.5 text-sm font-medium leading-4 text-foreground"
+              className={cn(
+                "truncate bg-[#fafafa] px-0.5 text-sm font-medium leading-4 text-foreground transition-opacity",
+                showLabel ? "opacity-100" : "opacity-0",
+              )}
             >
               {entity.name}
             </span>
