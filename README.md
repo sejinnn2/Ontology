@@ -35,62 +35,126 @@ The product is intentionally canvas-first. Entity Types, Properties, Relations, 
 
 ## Interaction guide
 
-### Canvas navigation
+### Overview
 
-- Use the pointer tool to select and edit objects, or the hand tool to pan the canvas.
-- Press `V` for the pointer tool and `H` for the hand tool. Hold `Space` to pan temporarily.
-- Zoom with the canvas controls, choose a zoom preset, or fit the graph to the viewport.
-- Undo with `Cmd/Ctrl+Z` and redo with `Cmd/Ctrl+Shift+Z`; the toolbar provides the same actions.
-- Search for Entity Types, Properties, Relations, Data Tables, and Columns, then jump to the result in context.
+1. **Navigate the ontology canvas**
+   - Choose the pointer tool to select objects or the hand tool to pan.
+   - Press `V` for the pointer, `H` for the hand, or hold `Space` to pan temporarily.
+   - Use the zoom menu for a preset level or to fit the complete graph in the viewport.
 
-### Selection
+2. **Select ontology objects**
+   - Click an Entity Type or Relation to make it the single selection.
+   - `Shift+click` additional objects to add or remove them from a multi-selection.
+   - Click empty canvas space or use **Clear selection** to clear the selection.
 
-- Click an item to make it the single selection.
-- `Shift+click` adds or removes items from a multi-selection. This rule is shared across selectable object types.
-- Click empty canvas space or use **Clear selection** to clear the current selection.
-- Multi-selected items use the contextual control bar for the actions valid for that selection, including Merge, Split, Delete, Accept, and Reject.
+3. **Open Editing Mode**
+   - Double-click an Entity Type, or select it and choose **Go to Editing Mode**.
+   - Click a Data Table in the right panel to open its table-focused Editing Mode.
 
-### Overview graph
+4. **Inspect status and mapping coverage**
+   - Hover a compact Entity Type node to see its own status and Property-status distribution.
+   - Read the outer ring independently from the Entity Type's center status.
+   - Use the header counts to review mapped coverage for Entities, Properties, Relations, Tables, and Columns.
 
-- Select an Entity Type or Relation to inspect it while preserving the surrounding ontology as context.
-- Follow Relation connectors between Entity Types; hover and selection expose the relevant endpoints and status details.
-- Entity status and the Property-status ring remain separate. Hover a compact Entity node to see the Entity status and its Property-status distribution.
-- Double-click an Entity Type, or select it and use **Go to Editing Mode**, to open its focused workspace. Click a connected Data Table to open its table-focused Editing Mode.
-- Use the top mapping-status counts to understand mapped coverage across Entities, Properties, Relations, Tables, and Columns.
+5. **Review AI suggestions**
+   - Drag the confidence-range handles to control which suggestions are in review scope.
+   - Open the suggestion breakdown to see counts for Entities, Properties, Relations, Tables, and Columns.
+   - Choose **Select all in range** to select eligible ontology and mapping suggestions in the range.
+   - Accept or Reject the selection. Warnings require confirmation; errors cannot be accepted.
+
+6. **Create an Entity Type**
+   - Start from an Entity Type's `+` affordance to create a connected Entity Type.
+   - Enter the Entity name, add Properties and their data types, and choose an Identifier.
+   - Name the Relation and choose its direction before creating the connected Entity Type.
+
+7. **Create a Relation between existing Entity Types**
+   - Drag an Entity Type's connector handle onto another Entity Type.
+   - Enter the Relation name and confirm or swap its direction.
+   - Self-relations and multiple separately named Relations between the same Entity Types are supported.
+
+8. **Search and jump to an object**
+   - Search across Entity Types, Properties, Relations, Data Tables, and Columns.
+   - Choose a result to focus it on the canvas or open it in the relevant context.
+
+9. **Use History, Undo, Redo, and Trash**
+   - Use `Cmd/Ctrl+Z` to undo and `Cmd/Ctrl+Shift+Z` to redo; the canvas toolbar provides the same actions.
+   - Open History to inspect recorded changes on the canvas and restore a selected change.
+   - Open Trash to inspect deleted objects and restore them.
+
+10. **Switch the demo state**
+    - Use **Demo Scenario** to switch between the deterministic **Fresh** and **In Progress** states.
 
 ### Editing Mode
 
-- Explore the focused Entity Type or Data Table together with connected ontology and source-data objects.
-- Expand or collapse Entity and Table cards and their Mapped/Unmapped groups. Connected rows stay coordinated where the two sides represent the same mapping context.
-- Use **Only Identifier** to focus the corresponding Entity and Table views on identifier fields.
-- Sort Properties and Columns by name or confidence where the control is available.
-- Click an Entity, Property, Relation, Table, Column, or mapping connector to open its contextual details.
-- Inspect descriptions, AI reasoning, confidence, validation information, schema, and sample values without showing all source data by default.
+1. **Navigate the focused workspace**
+   - Use the same pointer, hand, pan, zoom, Undo, and Redo controls as Overview.
+   - Click an Entity Type in the left toolbox to navigate to it as the new focus.
+   - Click a Data Table in the right toolbox to navigate to its table-focused workspace.
 
-### Mapping and ontology editing
+2. **Place an Entity Type beside the focused Entity Type**
+   - Drag an Entity Type from the toolbox into the compact related-entity placement area beside the focused card.
+   - This placement means “related to this Entity Type.” If no Relation exists, the prototype creates an unnamed Error-state placeholder Relation for review.
+   - Reorder compact related Entity Types by dragging them within that area.
 
-- Drag a Property or Column connection handle to its counterpart to create a mapping.
-- Select a suggested mapping connector to review and Accept or Reject the proposed connection.
-- Drag Properties between Entity Types. When a destination has a conflict, resolve it in the provided conflict flow.
-- Multi-select Properties from one Entity Type and use **Split** to create a separate Entity Type.
-- Multi-select Entity Types and use **Merge** to combine them and choose the resulting name.
-- Create and edit Entity Types, Properties, and Relations directly from the canvas affordances.
-- Delete applied objects or reject pending suggestions through the contextual selection controls.
+3. **Place an Entity Type as a full card below**
+   - Drag an Entity Type from the toolbox into the full-card column below the focused Entity Type.
+   - This adds the Entity Type to the current workspace without creating a Relation; vertical order is only layout.
+   - Drag an existing compact related Entity Type into this column to promote it to a full card while preserving its existing Relation.
 
-### Suggestions and review state
+4. **Create an Entity Type in a placement area**
+   - Hover an empty placement slot and choose **Add Entity Type**.
+   - Creating beside an Entity Type opens the name → Properties and Identifier → Relation flow and creates a connected Entity Type.
+   - Creating in the full-card slot below opens the name → Properties and Identifier flow and creates a standalone Entity Type without a Relation.
 
-- Adjust the confidence range to choose which AI suggestions are currently in review scope.
-- Use the suggestion breakdown for Entities, Properties, Relations, Tables, and Columns; Table and Column counts are derived from pending mapping suggestions.
-- **Select all in range** includes eligible ontology suggestions and mapping suggestions in the current confidence range.
-- Accept or Reject a single suggestion or a multi-selection. Accepting warnings requires an explicit confirmation; errors remain blocked.
-- Mapping acceptance changes the mapping lifecycle independently from the ontology object's own review status.
+5. **Create and edit Properties**
+   - Choose **Add property** on an expanded Entity card, type a name, and press `Enter`; press `Escape` to cancel.
+   - Select a Property to inspect or edit its details in the contextual panel.
+   - Use the Identifier control when creating an Entity Type to designate its identifying Property.
 
-### History, Trash, and scenarios
+6. **Move Properties between Entity Types**
+   - Drag a Property row from one Entity card onto another Entity card.
+   - If the destination has a conflicting Property, complete the conflict-resolution flow before the move is applied.
+   - Multi-selected Properties can be moved together when they belong to the same source Entity Type.
 
-- Open History to inspect recorded changes on the canvas and restore a selected earlier change.
-- Use Undo and Redo from either Overview or Editing Mode.
-- Open Trash to inspect deleted objects and restore them.
-- Use **Demo Scenario** to switch between the deterministic Fresh and In Progress review states.
+7. **Split an Entity Type**
+   - `Shift+click` two or more Properties from the same Entity Type.
+   - Choose **Split** in the contextual selection bar and name the resulting Entity Type.
+   - Split is unavailable when it would remove every Property from the source Entity Type.
+
+8. **Merge Entity Types**
+   - Click one Entity Type, then `Shift+click` one or more additional Entity Types.
+   - Choose **Merge** and select or enter the resulting Entity Type name.
+   - Properties from the selected Entity Types are combined into the resulting Entity Type.
+
+9. **Create or edit Relations**
+   - Drag a connector handle from one Entity Type onto another, then name the Relation and confirm its direction.
+   - Select an existing Relation to inspect it, rename it, swap its direction, or review its status.
+   - Creating a Relation does not require moving either Entity Type or changing the workspace layout.
+
+10. **Create and review Property-to-Column mappings**
+    - Drag a Property connection handle onto a Column, or a Column handle onto a Property.
+    - Select a suggested mapping connector to inspect its reasoning and Accept or Reject it.
+    - Mapping status changes independently from the Property's ontology review status.
+
+11. **Arrange Data Tables in the workspace**
+    - Drag a Data Table from the right toolbox into the Columns area to place it at the hovered position.
+    - Reorder placed Table cards by dragging them within the Columns area.
+    - Selecting a Table or Column reveals schema and sample-value context without showing all source data by default.
+
+12. **Filter, sort, expand, and collapse cards**
+    - Use **Only Identifier** to focus corresponding Entity and Table views on identifier fields.
+    - Sort Properties and Columns by name or confidence where the control is available.
+    - Expand or collapse Entity and Table cards and their Mapped/Unmapped groups.
+    - Connected Property and Column groups remain coordinated where they represent the same mapping context.
+
+13. **Select and apply bulk actions**
+    - Click one object, then `Shift+click` to add Entities, Properties, Relations, or mappings to the selection.
+    - Use the contextual bar for the actions valid for that selection: **Merge**, **Split**, **Delete**, **Accept**, or **Reject**.
+    - Click empty canvas space or choose **Clear selection** to finish the multi-selection.
+
+14. **Inspect object details**
+    - Click an Entity Type, Property, Relation, Data Table, Column, or mapping connector.
+    - Use the contextual panel to review descriptions, AI reasoning, confidence, validation issues, schema, and sample values.
 
 ## Status model
 
