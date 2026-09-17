@@ -37,8 +37,8 @@ import { HistoryPanel } from "./HistoryPanel";
  * Confidence: renaming/confirming/declining a suggestion never moves these numbers, and neither
  * does dragging the Confidence slider in the AI Review bar — only an actual mapping change
  * (connect/disconnect a Property, which cascades to its owning Entity and that Entity's
- * Relations) does. Icon + label are muted by default; the count switches to the app's existing
- * `--ok` success color once the category is fully mapped. */
+ * Relations) does. Icon + label stay muted regardless of completeness — a full 100% doesn't get
+ * an `--ok` success-color callout here. */
 function CountPill({
   icon,
   label,
@@ -50,7 +50,6 @@ function CountPill({
   mapped: number;
   total: number;
 }) {
-  const done = total > 0 && mapped === total;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -58,15 +57,9 @@ function CountPill({
           tabIndex={0}
           className="flex shrink-0 items-center gap-1.5 rounded-[10px] border border-transparent outline-none focus-visible:ring-2 focus-visible:ring-[#00DED8]"
         >
-          <span className={cn("size-[18px] shrink-0", done ? "text-ok" : "text-muted-foreground")}>
-            {icon}
-          </span>
-          <span
-            className={cn("whitespace-nowrap text-sm", done ? "text-ok" : "text-muted-foreground")}
-          >
-            {label}
-          </span>
-          <span className={cn("whitespace-nowrap text-sm", done ? "text-ok" : "text-[#161919]")}>
+          <span className="size-[18px] shrink-0 text-muted-foreground">{icon}</span>
+          <span className="whitespace-nowrap text-sm text-muted-foreground">{label}</span>
+          <span className="whitespace-nowrap text-sm text-[#161919]">
             {mapped}/{total}
           </span>
         </div>
