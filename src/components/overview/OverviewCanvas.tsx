@@ -251,12 +251,12 @@ function buildForceDirectedLayout<T extends { id: string; x: number; y: number }
   );
   const ids = entities.map((entity) => entity.id);
 
-  const REPULSION = 42000;
-  const SPRING_LENGTH = 220;
-  const SPRING_STRENGTH = 0.02;
-  const CENTER_PULL = 0.006;
+  const REPULSION = 140000;
+  const SPRING_LENGTH = 180;
+  const SPRING_STRENGTH = 0.03;
+  const CENTER_PULL = 0.0015;
   const DAMPING = 0.85;
-  const ITERATIONS = 400;
+  const ITERATIONS = 500;
 
   for (let iter = 0; iter < ITERATIONS; iter++) {
     const forces = new Map<string, Pt>(ids.map((id) => [id, { x: 0, y: 0 }]));
