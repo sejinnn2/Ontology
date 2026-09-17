@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Check,
   GitMerge,
   Plus,
   Table2,
@@ -745,7 +746,10 @@ function DetailShell({
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
-    onCanvasPointerDown?.();
+    // Only the canvas itself is "empty space". Let clicks that bubble from cards, rows, relation
+    // badges, and other canvas objects preserve the current selection so a second plain click can
+    // extend it into a multi-selection.
+    if (e.target === e.currentTarget) onCanvasPointerDown?.();
     if (tool !== "pan") return;
     drag.current = { sx: e.clientX, sy: e.clientY, ox: pan.x, oy: pan.y };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -1902,15 +1906,19 @@ function EntityDetailCanvas({
   // The Column row's own dot — the mapping's OWN lifecycle ("Suggested Mapping" vs "Mapped"),
   // never the mapping Property's ontology ReviewStatus (a Column has no review status of its own
   // to borrow — see mock-data's own module-level mapping-state doc). A column with 2+ mappers (see
-  // `ColGroupEntry`'s own doc comment) reads as "mapped" the moment ANY one of them is — the same
-  // "any confirmed one counts" rule `tableMappingCompleteness` uses — otherwise "suggested" as
-  // long as at least one mapper exists, or `null` when genuinely unmapped (no mapper at all) — the
-  // call site still renders a dot for `null`, just the neutral "no suggestion" color, since (per
-  // this same Unmapped/Mapped rework) every row shows a dot now, not just mapped/suggested ones.
+  // `ColGroupEntry`'s own doc comment) prioritizes "suggested" while ANY pending mapping still
+  // needs review, even when another mapping into the same Column is already confirmed. Grouping
+  // remains based on whether at least one confirmed mapping exists (see `columnHasMapped` below),
+  // so this purple dot is a pending-work signal without moving an already-mapped Column back into
+  // the Unmapped section.
   const columnMappingState = useCallback((entry: ColGroupEntry): MappingStatus | null => {
     if (entry.mappedBy.length === 0) return null;
-    return entry.mappedBy.some((m) => m.status === "mapped") ? "mapped" : "suggested";
+    return entry.mappedBy.some((m) => m.status === "suggested") ? "suggested" : "mapped";
   }, []);
+  const columnHasMapped = useCallback(
+    (entry: ColGroupEntry) => entry.mappedBy.some((mapping) => mapping.status === "mapped"),
+    [],
+  );
 
   // Which side of the Property<->Column mapping the entry point put in charge — set once, from
   // `visibleTableNames` (itself never revisited after mount, see its own comment above), so this
@@ -1929,6 +1937,7 @@ function EntityDetailCanvas({
   // ahead of the Properties sort state so a Table entry's `columnRankForProperties` (below) can
   // read this table's own explicit sort before `visibleProperties` needs it.
   const [columnSortByTable, setColumnSortByTable] = useState<Record<string, SortState>>({});
+  const [onlyIdentifierByTable, setOnlyIdentifierByTable] = useState<Record<string, boolean>>({});
   const columnSortFor = useCallback(
     (table: string) => columnSortByTable[table] ?? DEFAULT_SORT,
     [columnSortByTable],
@@ -1939,6 +1948,15 @@ function EntityDetailCanvas({
       [table]: nextSortState(prev[table] ?? DEFAULT_SORT, key),
     }));
   }, []);
+  const columnIsIdentifier = useCallback(
+    (entry: ColGroupEntry) =>
+      entry.mappedBy.some(({ ownerEntityId, propertyId }) => {
+        const owner = mainEntities.find((entity) => entity.id === ownerEntityId);
+        const property = owner?.properties.find((candidate) => candidate.id === propertyId);
+        return !!property && isIdentifierProperty(property);
+      }),
+    [mainEntities],
+  );
   // Has THIS SPECIFIC table/entity's own sort ever been explicitly changed by the user (clicked
   // Name or Confidence in its `SortBar`)? Distinct from `columnSortFor`/`propertySortFor` above,
   // which always return a value (defaulting to `DEFAULT_SORT`) for the sort control's own display
@@ -1971,9 +1989,39 @@ function EntityDetailCanvas({
     (entityId: string) => entityId in propertySortByEntity,
     [propertySortByEntity],
   );
-  const toggleOnlyIdentifier = useCallback((entityId: string) => {
-    setOnlyIdentifierByEntity((prev) => ({ ...prev, [entityId]: !prev[entityId] }));
-  }, []);
+  const toggleOnlyIdentifier = useCallback(
+    (entityId: string) => {
+      const next = !onlyIdentifierByEntity[entityId];
+      const owner = mainEntities.find((entity) => entity.id === entityId);
+      const connectedTables = owner ? tablesUsedByEntity(owner) : [];
+      setOnlyIdentifierByEntity((previous) => ({ ...previous, [entityId]: next }));
+      setOnlyIdentifierByTable((previous) => {
+        const updated = { ...previous };
+        connectedTables.forEach((table) => {
+          updated[table] = next;
+        });
+        return updated;
+      });
+    },
+    [onlyIdentifierByEntity, mainEntities],
+  );
+  const toggleOnlyIdentifierTable = useCallback(
+    (table: string) => {
+      const next = !onlyIdentifierByTable[table];
+      const connectedEntityIds = mainEntities
+        .filter((entity) => entity.properties.some((property) => property.mapping?.table === table))
+        .map((entity) => entity.id);
+      setOnlyIdentifierByTable((previous) => ({ ...previous, [table]: next }));
+      setOnlyIdentifierByEntity((previous) => {
+        const updated = { ...previous };
+        connectedEntityIds.forEach((entityId) => {
+          updated[entityId] = next;
+        });
+        return updated;
+      });
+    },
+    [onlyIdentifierByTable, mainEntities],
+  );
   // Each main entity's Properties area splits into two independently collapsible groups — Mapped
   // (has at least one "mapped"/confirmed Property<->Column mapping) and Unmapped (no confirmed
   // mapping — includes both a still-Suggested mapping and no mapping at all; see `mappingStatus`'s
@@ -1981,7 +2029,7 @@ function EntityDetailCanvas({
   // a property can be Mapped+Suggested(review), Mapped+Confirmed(review), Unmapped+Suggested
   // (review), or Unmapped+Confirmed(review) independently (see `propertyStatus` for the one place
   // Error/Warning/Suggested/Confirmed review status is actually decided — completely separate from
-  // mapping status). Mapped starts open, Unmapped starts collapsed, matching Figma; each entity's
+  // mapping status). Both groups start open; each entity's
   // own open/closed state persists independently as this Record fills in, same per-entity-Record
   // pattern as sort/collapse above.
   const [propertyGroupOpenByEntity, setPropertyGroupOpenByEntity] = useState<
@@ -1992,22 +2040,9 @@ function EntityDetailCanvas({
     [propertyGroupOpenByEntity],
   );
   const isUnmappedGroupOpen = useCallback(
-    (entityId: string) => propertyGroupOpenByEntity[entityId]?.unmapped ?? false,
+    (entityId: string) => propertyGroupOpenByEntity[entityId]?.unmapped ?? true,
     [propertyGroupOpenByEntity],
   );
-  const toggleMappedGroupOpen = useCallback((entityId: string) => {
-    setPropertyGroupOpenByEntity((prev) => ({
-      ...prev,
-      [entityId]: { ...prev[entityId], mapped: !(prev[entityId]?.mapped ?? true) },
-    }));
-  }, []);
-  const toggleUnmappedGroupOpen = useCallback((entityId: string) => {
-    setPropertyGroupOpenByEntity((prev) => ({
-      ...prev,
-      [entityId]: { ...prev[entityId], unmapped: !(prev[entityId]?.unmapped ?? false) },
-    }));
-  }, []);
-
   // --- Property<->Column alignment ordering -------------------------------------------------
   // The entry point names ONE side "the anchor" (`anchorKind` above) — that side's own Name /
   // Confidence / Only-Identifier sort, above, is never touched by any of this. The OTHER side's
@@ -2033,8 +2068,9 @@ function EntityDetailCanvas({
     const rank = new Map<string, number>();
     let i = 0;
     allColumnGroups.forEach((entries, table) => {
+      const filtered = onlyIdentifierByTable[table] ? entries.filter(columnIsIdentifier) : entries;
       const ordered = sortByState(
-        entries,
+        filtered,
         columnSortFor(table),
         (c) => c.column,
         (c) => c.mappingConfidenceRank,
@@ -2042,7 +2078,7 @@ function EntityDetailCanvas({
       ordered.forEach((c) => rank.set(`${table}.${c.column}`, i++));
     });
     return rank;
-  }, [anchorKind, allColumnGroups, columnSortFor]);
+  }, [anchorKind, allColumnGroups, columnSortFor, onlyIdentifierByTable, columnIsIdentifier]);
 
   const visibleProperties = useCallback(
     (entityId: string, properties: Property[]) => {
@@ -2097,22 +2133,14 @@ function EntityDetailCanvas({
   }, [anchorKind, mainEntities, visibleProperties]);
 
   const visibleColumns = useCallback(
-    <
-      C extends {
-        column: string;
-        mappingConfidenceRank?: number | undefined;
-        mappedBy?: { propertyId: string }[];
-      },
-    >(
-      table: string,
-      cols: C[],
-    ) => {
+    (table: string, cols: ColGroupEntry[]) => {
+      const filtered = onlyIdentifierByTable[table] ? cols.filter(columnIsIdentifier) : cols;
       if (propertyRankForColumns && !hasExplicitColumnSort(table)) {
         // A column aligns to the earliest-ranked Property mapped into it (usually just one; see
         // `ColGroupEntry.mappedBy`'s own note on the rare 2+ case) — anything unmapped has no
         // anchor position, so it falls to the end, alphabetically among itself (and typically
         // lands in the separate Unmapped group at render time regardless).
-        return [...cols].sort((a, b) => {
+        return [...filtered].sort((a, b) => {
           const rankA = (a.mappedBy ?? []).reduce(
             (min, m) => Math.min(min, propertyRankForColumns.get(m.propertyId) ?? Infinity),
             Number.POSITIVE_INFINITY,
@@ -2126,13 +2154,19 @@ function EntityDetailCanvas({
         });
       }
       return sortByState(
-        cols,
+        filtered,
         columnSortFor(table),
         (c) => c.column,
         (c) => c.mappingConfidenceRank,
       );
     },
-    [propertyRankForColumns, hasExplicitColumnSort, columnSortFor],
+    [
+      propertyRankForColumns,
+      hasExplicitColumnSort,
+      columnSortFor,
+      onlyIdentifierByTable,
+      columnIsIdentifier,
+    ],
   );
 
   // --- Unmapped-section ordering ------------------------------------------------------------
@@ -2230,7 +2264,7 @@ function EntityDetailCanvas({
   // Mapped/Unmapped Columns grouping, inside a Table card's own Columns area — the exact same
   // mapping-completeness split as `propertyGroupOpenByEntity` above, just keyed per TABLE name
   // instead of per entity, since a Table card (not an Entity one) is what carries these groups.
-  // Mapped starts open, Unmapped starts collapsed, same as Properties.
+  // Both groups start open, same as Properties.
   const [columnGroupOpenByTable, setColumnGroupOpenByTable] = useState<
     Record<string, { mapped?: boolean; unmapped?: boolean }>
   >({});
@@ -2239,21 +2273,120 @@ function EntityDetailCanvas({
     [columnGroupOpenByTable],
   );
   const isUnmappedColumnGroupOpen = useCallback(
-    (table: string) => columnGroupOpenByTable[table]?.unmapped ?? false,
+    (table: string) => columnGroupOpenByTable[table]?.unmapped ?? true,
     [columnGroupOpenByTable],
   );
-  const toggleMappedColumnGroupOpen = useCallback((table: string) => {
-    setColumnGroupOpenByTable((prev) => ({
-      ...prev,
-      [table]: { ...prev[table], mapped: !(prev[table]?.mapped ?? true) },
-    }));
+
+  // A group toggle is shared only across Entity/Table contexts that actually have a mapping
+  // between them. Collapsing one Entity hides its rows from the paired Table, but leaves that
+  // Table group open when another visible Entity still needs it (and vice versa). Expanding either
+  // side reopens every directly paired counterpart. This keeps the behavior bidirectional without
+  // turning these per-Entity/per-Table records into one global collapse switch.
+  type MappingGroup = "mapped" | "unmapped";
+  const propertyBelongsToGroup = useCallback((property: Property, group: MappingGroup) => {
+    if (!property.mapping) return false;
+    return group === "mapped"
+      ? mappingStatus(property.mapping) === "mapped"
+      : mappingStatus(property.mapping) === "suggested";
   }, []);
-  const toggleUnmappedColumnGroupOpen = useCallback((table: string) => {
-    setColumnGroupOpenByTable((prev) => ({
-      ...prev,
-      [table]: { ...prev[table], unmapped: !(prev[table]?.unmapped ?? false) },
-    }));
-  }, []);
+  const connectedTablesForEntity = useCallback(
+    (entityId: string, group: MappingGroup) => {
+      const owner = mainEntities.find((candidate) => candidate.id === entityId);
+      return new Set(
+        owner?.properties
+          .filter((property) => propertyBelongsToGroup(property, group))
+          .map((property) => property.mapping!.table) ?? [],
+      );
+    },
+    [mainEntities, propertyBelongsToGroup],
+  );
+  const connectedEntitiesForTable = useCallback(
+    (table: string, group: MappingGroup) =>
+      new Set(
+        mainEntities
+          .filter((owner) =>
+            owner.properties.some(
+              (property) =>
+                property.mapping?.table === table && propertyBelongsToGroup(property, group),
+            ),
+          )
+          .map((owner) => owner.id),
+      ),
+    [mainEntities, propertyBelongsToGroup],
+  );
+  const propertyGroupIsOpen = useCallback(
+    (entityId: string, group: MappingGroup) => propertyGroupOpenByEntity[entityId]?.[group] ?? true,
+    [propertyGroupOpenByEntity],
+  );
+  const columnGroupIsOpen = useCallback(
+    (table: string, group: MappingGroup) => columnGroupOpenByTable[table]?.[group] ?? true,
+    [columnGroupOpenByTable],
+  );
+  const toggleEntityMappingGroup = useCallback(
+    (entityId: string, group: MappingGroup) => {
+      const nextOpen = !propertyGroupIsOpen(entityId, group);
+      const tables = connectedTablesForEntity(entityId, group);
+      setPropertyGroupOpenByEntity((prev) => ({
+        ...prev,
+        [entityId]: { ...prev[entityId], [group]: nextOpen },
+      }));
+      if (tables.size === 0) return;
+      setColumnGroupOpenByTable((prev) => {
+        const next = { ...prev };
+        tables.forEach((table) => {
+          const otherOpenContext = [...connectedEntitiesForTable(table, group)].some(
+            (otherEntityId) =>
+              otherEntityId !== entityId && propertyGroupIsOpen(otherEntityId, group),
+          );
+          if (nextOpen || !otherOpenContext) {
+            next[table] = { ...next[table], [group]: nextOpen };
+          }
+        });
+        return next;
+      });
+    },
+    [connectedEntitiesForTable, connectedTablesForEntity, propertyGroupIsOpen],
+  );
+  const toggleTableMappingGroup = useCallback(
+    (table: string, group: MappingGroup) => {
+      const nextOpen = !columnGroupIsOpen(table, group);
+      const entityIds = connectedEntitiesForTable(table, group);
+      setColumnGroupOpenByTable((prev) => ({
+        ...prev,
+        [table]: { ...prev[table], [group]: nextOpen },
+      }));
+      if (entityIds.size === 0) return;
+      setPropertyGroupOpenByEntity((prev) => {
+        const next = { ...prev };
+        entityIds.forEach((entityId) => {
+          const otherOpenContext = [...connectedTablesForEntity(entityId, group)].some(
+            (otherTable) => otherTable !== table && columnGroupIsOpen(otherTable, group),
+          );
+          if (nextOpen || !otherOpenContext) {
+            next[entityId] = { ...next[entityId], [group]: nextOpen };
+          }
+        });
+        return next;
+      });
+    },
+    [columnGroupIsOpen, connectedEntitiesForTable, connectedTablesForEntity],
+  );
+  const toggleMappedGroupOpen = useCallback(
+    (entityId: string) => toggleEntityMappingGroup(entityId, "mapped"),
+    [toggleEntityMappingGroup],
+  );
+  const toggleUnmappedGroupOpen = useCallback(
+    (entityId: string) => toggleEntityMappingGroup(entityId, "unmapped"),
+    [toggleEntityMappingGroup],
+  );
+  const toggleMappedColumnGroupOpen = useCallback(
+    (table: string) => toggleTableMappingGroup(table, "mapped"),
+    [toggleTableMappingGroup],
+  );
+  const toggleUnmappedColumnGroupOpen = useCallback(
+    (table: string) => toggleTableMappingGroup(table, "unmapped"),
+    [toggleTableMappingGroup],
+  );
 
   // A Column's own review-scope, for the same dim-not-remove treatment Entities/Properties get —
   // Columns have no Confidence/ReviewStatus of their own, so this is derived from whichever
@@ -2650,6 +2783,64 @@ function EntityDetailCanvas({
     if (table && column) return { kind: "column", tableName: table.name, column };
     return null;
   });
+  // Table-side Suggested Mapping rows participate in the same contextual bulk-action surface as
+  // ontology objects, but keep their own selection because accepting a Mapping must only change
+  // `mapping.status` — never the owning Property's independent review status.
+  const [mappingSelection, setMappingSelection] = useState<Set<string>>(new Set());
+  const mappingSelectionKey = useCallback(
+    (entityId: string, propertyId: string) => `${entityId}\u0001${propertyId}`,
+    [],
+  );
+  const selectedMappingRefs = useMemo(
+    () =>
+      Array.from(mappingSelection).flatMap((key) => {
+        const [entityId, propertyId] = key.split("\u0001");
+        if (!entityId || !propertyId) return [];
+        const owner = entities.find((candidate) => candidate.id === entityId);
+        const property = owner?.properties.find((candidate) => candidate.id === propertyId);
+        return property?.mapping && mappingStatus(property.mapping) === "suggested"
+          ? [{ entityId, propertyId }]
+          : [];
+      }),
+    [mappingSelection, entities],
+  );
+  const toggleColumnMappingSelection = useCallback(
+    (
+      mappedBy: { propertyId: string; ownerEntityId: string; status: MappingStatus }[],
+      shiftKey: boolean,
+    ) => {
+      const keys = mappedBy
+        .filter(({ status }) => status === "suggested")
+        .map(({ ownerEntityId, propertyId }) => mappingSelectionKey(ownerEntityId, propertyId));
+      if (keys.length === 0) return false;
+      if (!shiftKey) {
+        clearSuggestionSelection();
+        setMappingSelection(new Set(keys));
+        setContextItem(null);
+        return true;
+      }
+      setMappingSelection((previous) => {
+        const next = new Set(previous);
+        const remove = keys.every((key) => next.has(key));
+        keys.forEach((key) => (remove ? next.delete(key) : next.add(key)));
+        return next;
+      });
+      setContextItem(null);
+      return true;
+    },
+    [mappingSelectionKey, clearSuggestionSelection],
+  );
+  // A Split creates its Entity in app state and adds the card to this workspace in the same
+  // interaction. Remember that fresh id until the next render can resolve the actual Entity, then
+  // open its Inspector immediately so the blank name receives focus and Description is ready.
+  const [pendingSplitEntityId, setPendingSplitEntityId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!pendingSplitEntityId) return;
+    const splitEntity = entities.find((candidate) => candidate.id === pendingSplitEntityId);
+    if (!splitEntity) return;
+    setContextItem({ kind: "entity", entity: splitEntity });
+    setPendingSplitEntityId(null);
+  }, [entities, pendingSplitEntityId]);
   // Hover always wins while it's active (it's the more immediate, transient signal); once the
   // pointer moves off, a clicked-and-still-selected Property or Column (`contextItem`, the same
   // state the bottom Name+Description panel reads) keeps its own mapping's connector highlighted
@@ -2669,12 +2860,9 @@ function EntityDetailCanvas({
   // --- Unified selection: Entities/Properties/Relations all share the one `suggestionSelection`
   // Set (see app-state's own doc comment) — the single-vs-multi rule this whole canvas follows is
   // "single selection = inspect, multi-selection = act" (see the contextual selection control
-  // rendered near the bottom of this component): a plain click normally replaces the selection
-  // with just the clicked item (opening its inspector below, same as `contextItem` always has),
-  // but once 2+ items are already selected, every further click — plain or modified — keeps
-  // adding/removing from that same set instead of jumping back to inspecting one thing, so the
-  // control never gets yanked out from under a user mid-multi-select. Shift/Cmd/Ctrl-click always
-  // toggles membership regardless of how many are currently selected. `contextItem` is kept in
+  // rendered near the bottom of this component): a plain click replaces the current selection,
+  // while Shift+Click adds/removes an object from the shared multi-selection. Clicking empty canvas
+  // clears everything. `contextItem` is kept in
   // sync here (not derived) so Table/Column selection — which never joins this Set, since Tables/
   // Columns aren't Suggested/Applied ontology objects with anything to Accept/Reject/Merge/Split —
   // can keep setting it directly, unaffected by any of this.
@@ -2688,6 +2876,7 @@ function EntityDetailCanvas({
         const r = relations.find((x) => x.id === ref.id);
         return r ? { kind: "relation", relation: r } : null;
       }
+      if (ref.kind !== "property") return null;
       const owner = entities.find((x) => x.id === ref.entityId);
       const p = owner?.properties.find((x) => x.id === ref.propertyId);
       return owner && p ? { kind: "property", entity: owner, property: p } : null;
@@ -2695,18 +2884,18 @@ function EntityDetailCanvas({
     [entities, relations],
   );
   const selectOnClick = useCallback(
-    (ref: SuggestionRef, mods: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) => {
-      const modified = mods.shiftKey || mods.metaKey || mods.ctrlKey;
-      if (!modified && suggestionSelection.size < 2) {
-        selectSuggestionKeys([suggestionKey(ref)]);
+    (ref: SuggestionRef, mods?: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) => {
+      const key = suggestionKey(ref);
+      if (!mods?.shiftKey) {
+        selectSuggestionKeys([key]);
+        setMappingSelection(new Set());
         setContextItem(refToContextItem(ref));
         return;
       }
-      const key = suggestionKey(ref);
       const next = new Set(suggestionSelection);
       if (next.has(key)) next.delete(key);
       else next.add(key);
-      selectSuggestionKeys(Array.from(next));
+      toggleSuggestionSelected(ref);
       if (next.size === 1) {
         const onlyRef = parseSuggestionKey(Array.from(next)[0]!);
         setContextItem(onlyRef ? refToContextItem(onlyRef) : null);
@@ -2717,7 +2906,7 @@ function EntityDetailCanvas({
       // control is what's actually rendered, and it'll be re-synced the moment this drops back to
       // exactly 1 (see above) rather than needing its own separate reconciliation pass.
     },
-    [suggestionSelection, selectSuggestionKeys, refToContextItem],
+    [suggestionSelection, toggleSuggestionSelected, selectSuggestionKeys, refToContextItem],
   );
   // The other half of `issueInspection` (see app-state's own doc comment, and this file's own
   // `contextItem` mount initializer above, which seeds FROM it): once seeded, also ring it in the
@@ -2921,6 +3110,35 @@ function EntityDetailCanvas({
   const handleAcceptSelection = useCallback(
     () => acceptSuggestions(acceptableKeys),
     [acceptSuggestions, acceptableKeys],
+  );
+  const handleAcceptCombinedSelection = useCallback(() => {
+    if (acceptableKeys.length > 0) acceptSuggestions(acceptableKeys);
+    selectedMappingRefs.forEach(({ entityId, propertyId }) => confirmMapping(entityId, propertyId));
+    setMappingSelection(new Set());
+  }, [acceptableKeys, acceptSuggestions, selectedMappingRefs, confirmMapping]);
+  const handleRejectCombinedSelection = useCallback(() => {
+    if (rejectableKeys.length > 0) declineSuggestions(rejectableKeys);
+    selectedMappingRefs.forEach(({ entityId, propertyId }) =>
+      updateMapping(entityId, propertyId, null),
+    );
+    setMappingSelection(new Set());
+  }, [rejectableKeys, declineSuggestions, selectedMappingRefs, updateMapping]);
+  const handleSelectSuggestionsInRange = useCallback(
+    (keys: string[]) => {
+      const ontologyKeys: string[] = [];
+      const mappingKeys = new Set<string>();
+      keys.forEach((key) => {
+        const ref = parseSuggestionKey(key);
+        if (ref?.kind === "mapping") {
+          mappingKeys.add(mappingSelectionKey(ref.entityId, ref.propertyId));
+        } else {
+          ontologyKeys.push(key);
+        }
+      });
+      selectSuggestionKeys(ontologyKeys);
+      setMappingSelection(mappingKeys);
+    },
+    [mappingSelectionKey, selectSuggestionKeys],
   );
   // Split only when every selected Property belongs to the SAME Entity and doing so wouldn't
   // empty that Entity out entirely (the same rule `splitEntity` itself enforces) — mixed-entity
@@ -3403,6 +3621,7 @@ function EntityDetailCanvas({
     const newId = splitEntity(entityId, Array.from(selectedPropertyIdsFor(entityId)));
     clearPropertySelection(entityId);
     if (!newId) return;
+    setPendingSplitEntityId(newId);
     if (entityId === entity.id) {
       setExtraMainEntityIds((ids) => [newId, ...ids]);
     } else {
@@ -3771,6 +3990,18 @@ function EntityDetailCanvas({
     });
     return ids;
   }, [suggestionSelection]);
+  const singleSelectedEntityId =
+    suggestionSelection.size === 1 && selectedEntities.length === 1
+      ? selectedEntities[0]!.id
+      : null;
+  const relationIsHighlighted = useCallback(
+    (relation: Relation | null | undefined) =>
+      !!relation &&
+      (selectedRelationIds.has(relation.id) ||
+        (!!singleSelectedEntityId &&
+          (relation.from === singleSelectedEntityId || relation.to === singleSelectedEntityId))),
+    [selectedRelationIds, singleSelectedEntityId],
+  );
   const handleMerge = () => {
     if (!mergeName.trim()) return;
     const ids = mergeCandidates.map((e) => e.id);
@@ -4087,24 +4318,113 @@ function EntityDetailCanvas({
         // used to show. `null` here (not this element) is what tells `DetailShell` to fall back to
         // `aiReviewBar`/the inspection panel instead — see its own render.
         selectionBar={
-          suggestionSelection.size >= 2 ? (
-            <SelectionControlBar
-              entities={selectedEntities}
-              properties={selectedProperties}
-              relations={selectedRelations}
-              onClear={() => {
-                clearSuggestionSelection();
-                setContextItem(null);
-              }}
-              onMerge={selectedEntities.length >= 2 ? () => setMergePanelOpen(true) : undefined}
-              onSplit={splitEligibleEntityId ? () => handleSplit(splitEligibleEntityId) : undefined}
-              onDelete={deletableKeys.length > 0 ? handleDeleteSelection : undefined}
-              deleteCount={deletableKeys.length}
-              onAccept={acceptableKeys.length > 0 ? handleAcceptSelection : undefined}
-              acceptCount={acceptableKeys.length}
-              onReject={rejectableKeys.length > 0 ? handleRejectSelection : undefined}
-              rejectCount={rejectableKeys.length}
-            />
+          suggestionSelection.size + selectedMappingRefs.length >= 2 ? (
+            <>
+              {mergePanelOpen && (
+                <div
+                  onPointerDown={(e) => e.stopPropagation()}
+                  className="flex w-[320px] flex-col gap-2.5 rounded-lg border border-node-border bg-node p-3 shadow-[var(--shadow-node-lift)]"
+                >
+                  <div className="flex items-center gap-1.5 text-[12px] font-medium">
+                    <GitMerge className="size-3.5 text-primary" />
+                    Merge {mergeCandidates.length} entities into one
+                  </div>
+                  <p className="text-[10.5px] text-muted-foreground">
+                    All properties from{" "}
+                    {mergeCandidates.map((e) => e.name || "Untitled").join(", ")} will be combined.
+                    Name the resulting entity:
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {mergeEntitiesList.map((e) => (
+                      <button
+                        key={e.id}
+                        onPointerDown={(ev) => ev.stopPropagation()}
+                        onClick={() => setMergeName(e.name)}
+                        className={cn(
+                          "rounded-full border px-2 py-1 text-[10.5px] transition-colors",
+                          mergeName === e.name
+                            ? "border-primary bg-primary/10 text-primary"
+                            : "border-border text-muted-foreground hover:bg-accent",
+                        )}
+                      >
+                        {e.name || "Untitled"}
+                      </button>
+                    ))}
+                    {mergeAiSuggestions.map((name) => (
+                      <button
+                        key={name}
+                        onPointerDown={(ev) => ev.stopPropagation()}
+                        onClick={() => setMergeName(name)}
+                        className={cn(
+                          "flex items-center gap-1 rounded-full border px-2 py-1 text-[10.5px] transition-colors",
+                          mergeName === name
+                            ? "border-primary bg-primary/10 text-primary"
+                            : "border-data/40 bg-data-soft text-data hover:bg-data-soft/70",
+                        )}
+                      >
+                        {name}
+                        <span className="text-[8.5px] uppercase tracking-wide opacity-70">AI</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      autoFocus
+                      value={mergeName}
+                      onChange={(e) => setMergeName(e.target.value)}
+                      placeholder="Custom name"
+                      className="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1 text-[11.5px] outline-none focus:border-primary"
+                    />
+                    <button
+                      onClick={handleMerge}
+                      disabled={!mergeName.trim()}
+                      className="shrink-0 rounded-md bg-primary px-2.5 py-1 text-[11.5px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
+                    >
+                      Merge
+                    </button>
+                    <button
+                      onClick={() => {
+                        setMergePanelOpen(false);
+                        setMergeName("");
+                      }}
+                      className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-accent"
+                      aria-label="Cancel merge"
+                    >
+                      <X className="size-3.5" />
+                    </button>
+                  </div>
+                </div>
+              )}
+              <SelectionControlBar
+                entities={selectedEntities}
+                properties={selectedProperties}
+                relations={selectedRelations}
+                mappingCount={selectedMappingRefs.length}
+                onClear={() => {
+                  clearSuggestionSelection();
+                  setMappingSelection(new Set());
+                  setContextItem(null);
+                }}
+                onMerge={selectedEntities.length >= 2 ? () => setMergePanelOpen(true) : undefined}
+                onSplit={
+                  splitEligibleEntityId ? () => handleSplit(splitEligibleEntityId) : undefined
+                }
+                onDelete={deletableKeys.length > 0 ? handleDeleteSelection : undefined}
+                deleteCount={deletableKeys.length}
+                onAccept={
+                  acceptableKeys.length + selectedMappingRefs.length > 0
+                    ? handleAcceptCombinedSelection
+                    : undefined
+                }
+                acceptCount={acceptableKeys.length + selectedMappingRefs.length}
+                onReject={
+                  rejectableKeys.length + selectedMappingRefs.length > 0
+                    ? handleRejectCombinedSelection
+                    : undefined
+                }
+                rejectCount={rejectableKeys.length + selectedMappingRefs.length}
+              />
+            </>
           ) : null
         }
         aiReviewBar={
@@ -4114,7 +4434,7 @@ function EntityDetailCanvas({
             tables={scopedTables}
             confidenceRange={confidenceRange}
             onConfidenceRangeChange={setConfidenceRange}
-            onSelectSuggestionsInRange={selectSuggestionKeys}
+            onSelectSuggestionsInRange={handleSelectSuggestionsInRange}
           />
         }
         onDragMove={onToolboxDragMove}
@@ -4134,11 +4454,18 @@ function EntityDetailCanvas({
         }}
         onCanvasPointerDown={() => {
           clearSuggestionSelection();
+          setMappingSelection(new Set());
           setContextItem(null);
         }}
       >
         <div
           ref={containerRef}
+          onPointerDown={(e) => {
+            if (e.target !== e.currentTarget) return;
+            clearSuggestionSelection();
+            setMappingSelection(new Set());
+            setContextItem(null);
+          }}
           className="relative flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-10 whitespace-nowrap"
         >
           {/* PHASE 2 of the morph transition: every connector line here (Relation lines to related
@@ -4175,6 +4502,25 @@ function EntityDetailCanvas({
                   strokeLinejoin="round"
                 />
               </marker>
+              <marker
+                id="relation-arrow-selected"
+                viewBox="0 0 10 10"
+                refX="8.5"
+                refY="5"
+                markerWidth={7}
+                markerHeight={7}
+                markerUnits="userSpaceOnUse"
+                orient="auto"
+              >
+                <path
+                  d="M2,1.5 L8.5,5 L2,8.5"
+                  fill="none"
+                  className="stroke-[#3b82f6]"
+                  strokeWidth={1.8}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </marker>
             </defs>
             {relatedLines.map((l) => {
               const otherId = l.id.slice(4);
@@ -4191,16 +4537,23 @@ function EntityDetailCanvas({
                     statusFilter,
                   )
                 : false;
+              const isHighlighted = relationIsHighlighted(relation);
               return (
                 <path
                   key={l.id}
                   d={curve(l)}
                   fill="none"
                   strokeLinecap="round"
-                  className="stroke-zinc-400"
-                  strokeWidth={1.6}
+                  className={isHighlighted ? "stroke-[#3b82f6]" : "stroke-zinc-400"}
+                  strokeWidth={isHighlighted ? 2 : 1.6}
                   opacity={dimmed ? 0.25 : 0.7}
-                  markerEnd={relation ? "url(#relation-arrow)" : undefined}
+                  markerEnd={
+                    relation
+                      ? isHighlighted
+                        ? "url(#relation-arrow-selected)"
+                        : "url(#relation-arrow)"
+                      : undefined
+                  }
                 />
               );
             })}
@@ -4275,6 +4628,26 @@ function EntityDetailCanvas({
                         cur?.type === "property" && cur.propertyId === l.propertyId ? null : cur,
                       );
                     }}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (!l.columnKey || !l.ownerEntityId || !l.propertyId) return;
+                      const separator = l.columnKey.indexOf(".");
+                      const tableName = l.columnKey.slice(0, separator);
+                      const columnName = l.columnKey.slice(separator + 1);
+                      const column = tableByName(tableName)?.columns.find(
+                        (candidate) => candidate.name === columnName,
+                      );
+                      if (!column) return;
+                      clearSuggestionSelection();
+                      setMappingSelection(new Set());
+                      setContextItem({
+                        kind: "column",
+                        tableName,
+                        column,
+                        mappingEntityId: l.ownerEntityId,
+                        mappingPropertyId: l.propertyId,
+                      });
+                    }}
                   />
                 </g>
               );
@@ -4289,16 +4662,23 @@ function EntityDetailCanvas({
                     statusFilter,
                   )
                 : false;
+              const isHighlighted = relationIsHighlighted(relation);
               return (
                 <path
                   key={l.id}
                   d={curve(l)}
                   fill="none"
                   strokeLinecap="round"
-                  className="stroke-zinc-400"
-                  strokeWidth={1.6}
+                  className={isHighlighted ? "stroke-[#3b82f6]" : "stroke-zinc-400"}
+                  strokeWidth={isHighlighted ? 2 : 1.6}
                   opacity={dimmed ? 0.25 : 0.7}
-                  markerEnd={l.relationId ? "url(#relation-arrow)" : undefined}
+                  markerEnd={
+                    l.relationId
+                      ? isHighlighted
+                        ? "url(#relation-arrow-selected)"
+                        : "url(#relation-arrow)"
+                      : undefined
+                  }
                 />
               );
             })}
@@ -4312,16 +4692,19 @@ function EntityDetailCanvas({
                     statusFilter,
                   )
                 : false;
+              const isHighlighted = relationIsHighlighted(relation);
               return (
                 <path
                   key={l.id}
                   d={curve(l)}
                   fill="none"
                   strokeLinecap="round"
-                  className="stroke-zinc-400"
-                  strokeWidth={1.6}
+                  className={isHighlighted ? "stroke-[#3b82f6]" : "stroke-zinc-400"}
+                  strokeWidth={isHighlighted ? 2 : 1.6}
                   opacity={dimmed ? 0.25 : 0.7}
-                  markerEnd="url(#relation-arrow)"
+                  markerEnd={
+                    isHighlighted ? "url(#relation-arrow-selected)" : "url(#relation-arrow)"
+                  }
                 />
               );
             })}
@@ -4347,14 +4730,57 @@ function EntityDetailCanvas({
             )}
           </svg>
 
-          {/* Hover-revealed disconnect for a Property<->Column mapping line — never deletes the
-            Property or the Column, only clears that one mapping (the existing reconnect gesture,
-            dragging a new connector onto either end, is untouched). */}
+          {/* Hover controls act on this exact Property↔Column edge. Suggested edges get independent
+            Accept/Reject actions; confirmed edges keep the existing Disconnect action. */}
           {lines.map((l) => {
             if (hoveredMappingLineId !== l.id || !l.propertyId || !l.ownerEntityId) return null;
             const mid = { x: (l.x1 + l.x2) / 2, y: (l.y1 + l.y2) / 2 };
             const propertyId = l.propertyId;
             const ownerEntityId = l.ownerEntityId;
+            const property = entities
+              .find((candidate) => candidate.id === ownerEntityId)
+              ?.properties.find((candidate) => candidate.id === propertyId);
+            const isSuggested =
+              !!property?.mapping && mappingStatus(property.mapping) === "suggested";
+            if (isSuggested) {
+              return (
+                <div
+                  key={l.id}
+                  style={{ left: mid.x, top: mid.y }}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onMouseEnter={() => setHoveredMappingLineId(l.id)}
+                  onMouseLeave={() => setHoveredMappingLineId(null)}
+                  className="absolute z-20 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded-full border border-[#d8d0ff] bg-white p-0.5 shadow-sm"
+                >
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      confirmMapping(ownerEntityId, propertyId);
+                      setHoveredMappingLineId(null);
+                    }}
+                    aria-label="Accept this suggested mapping"
+                    title="Accept suggested mapping"
+                    className="flex size-4 items-center justify-center rounded-full text-[#008f89] hover:bg-[#e2f8f6]"
+                  >
+                    <Check className="size-3" strokeWidth={2.5} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      updateMapping(ownerEntityId, propertyId, null);
+                      setHoveredMappingLineId(null);
+                    }}
+                    aria-label="Reject this suggested mapping"
+                    title="Reject suggested mapping"
+                    className="flex size-4 items-center justify-center rounded-full text-[#dc2626] hover:bg-[#fee2e2]"
+                  >
+                    <X className="size-3" />
+                  </button>
+                </div>
+              );
+            }
             return (
               <button
                 key={l.id}
@@ -4393,7 +4819,9 @@ function EntityDetailCanvas({
               >
                 <button
                   type="button"
-                  style={{ borderColor: statusBorderColor(relation.status) }}
+                  style={{
+                    borderColor: isRelSelected ? "#3b82f6" : statusBorderColor(relation.status),
+                  }}
                   onPointerDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -4455,7 +4883,9 @@ function EntityDetailCanvas({
               >
                 <button
                   type="button"
-                  style={{ borderColor: statusBorderColor(relation.status) }}
+                  style={{
+                    borderColor: isRelSelected ? "#3b82f6" : statusBorderColor(relation.status),
+                  }}
                   onPointerDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -4515,7 +4945,9 @@ function EntityDetailCanvas({
               >
                 <button
                   type="button"
-                  style={{ borderColor: statusBorderColor(relation.status) }}
+                  style={{
+                    borderColor: isRelSelected ? "#3b82f6" : statusBorderColor(relation.status),
+                  }}
                   onPointerDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -4612,8 +5044,8 @@ function EntityDetailCanvas({
                     // while the CURRENT Detail anchor stays exactly where it is. Only clicking this
                     // same Entity Type in the Entity Types PANEL navigates (see DetailShell's own
                     // `onFocusEntity`).
-                    nodeClickActionsRef.current[other.id] = () =>
-                      setContextItem({ kind: "entity", entity: other });
+                    nodeClickActionsRef.current[other.id] = (mods) =>
+                      selectOnClick({ kind: "entity", id: other.id }, mods);
                     return (
                       <div key={other.id} className="contents">
                         {relatedInsertIndex === i && <DropInsertionPlaceholder variant="pill" />}
@@ -4637,8 +5069,9 @@ function EntityDetailCanvas({
                           <OntologyNode
                             entity={other}
                             detailed={zoom > 1}
+                            emphasis={selectedMergeIds.has(other.id) ? "active" : "normal"}
                             moveTarget={moveTargetId === other.id}
-                            onClick={() => setContextItem({ kind: "entity", entity: other })}
+                            onClick={(e) => selectOnClick({ kind: "entity", id: other.id }, e)}
                             onStartMove={(clientX, clientY) =>
                               startNodeDrag(other.id, clientX, clientY)
                             }
@@ -4977,7 +5410,7 @@ function EntityDetailCanvas({
                             {mapped.length > 0 && (
                               <div className="flex flex-col gap-1 rounded-[10px] bg-[#eff6ff] p-1">
                                 <PropertyGroupHeader
-                                  label="Mapped Properties"
+                                  label="Mapped"
                                   count={mapped.length}
                                   open={mappedOpen}
                                   onToggle={() => toggleMappedGroupOpen(entity.id)}
@@ -4993,7 +5426,7 @@ function EntityDetailCanvas({
                             {unmapped.length > 0 && (
                               <div className="flex flex-col gap-1 rounded-[10px] bg-[#f4f4f4] p-1">
                                 <PropertyGroupHeader
-                                  label="Unmapped Properties"
+                                  label="Unmapped"
                                   count={unmapped.length}
                                   open={unmappedOpen}
                                   onToggle={() => toggleUnmappedGroupOpen(entity.id)}
@@ -5152,23 +5585,38 @@ function EntityDetailCanvas({
                               Entity-entry view's Columns lists here have no sort control of their
                               own; they just follow whichever Property maps into them. */}
                           {!collapsedTables.has(table) && anchorKind === "table" && (
-                            <div className="flex w-full items-center justify-end">
-                              <SortBar
-                                sort={columnSortFor(table)}
-                                onChange={(k) => setColumnSortForTable(table, k)}
-                              />
+                            <div className="flex w-full items-center justify-between gap-1">
+                              <button
+                                type="button"
+                                onPointerDown={(e) => e.stopPropagation()}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleOnlyIdentifierTable(table);
+                                }}
+                                aria-pressed={!!onlyIdentifierByTable[table]}
+                                className={cn(
+                                  "rounded-md px-1.5 py-0.5 text-[10px] font-medium transition-colors",
+                                  onlyIdentifierByTable[table]
+                                    ? "bg-black/[0.08] text-foreground"
+                                    : "text-muted-foreground hover:bg-accent",
+                                )}
+                              >
+                                Only Identifier
+                              </button>
+                              {anchorKind === "table" && (
+                                <SortBar
+                                  sort={columnSortFor(table)}
+                                  onChange={(k) => setColumnSortForTable(table, k)}
+                                />
+                              )}
                             </div>
                           )}
                           {!collapsedTables.has(table) &&
                             (() => {
                               const visible = visibleColumns(table, cols);
-                              const mappedCols = visible.filter(
-                                (c) => columnMappingState(c) === "mapped",
-                              );
+                              const mappedCols = visible.filter(columnHasMapped);
                               // Unmapped = no CONFIRMED mapping — includes a still-Suggested one.
-                              const unmappedCols = visible.filter(
-                                (c) => columnMappingState(c) !== "mapped",
-                              );
+                              const unmappedCols = visible.filter((c) => !columnHasMapped(c));
                               // Identifier first, then Suggested (aligned to reduce crossings),
                               // then no suggestion at all — see `orderUnmappedColumns`'s own doc
                               // comment. Backs off once the user has explicitly sorted this table.
@@ -5187,6 +5635,13 @@ function EntityDetailCanvas({
                                   contextItem?.kind === "column" &&
                                   contextItem.tableName === table &&
                                   contextItem.column.name === c.column;
+                                const isMappingSelected = c.mappedBy.some(
+                                  ({ ownerEntityId, propertyId, status }) =>
+                                    status === "suggested" &&
+                                    mappingSelection.has(
+                                      mappingSelectionKey(ownerEntityId, propertyId),
+                                    ),
+                                );
                                 const schema = tableByName(table);
                                 const colInScope = isColEntryInScope(c);
                                 const columnMapState = columnMappingState(c);
@@ -5200,6 +5655,13 @@ function EntityDetailCanvas({
                                     onPointerDown={(e) => e.stopPropagation()}
                                     onClick={(e) => {
                                       e.stopPropagation();
+                                      if (
+                                        e.shiftKey &&
+                                        toggleColumnMappingSelection(c.mappedBy, true)
+                                      )
+                                        return;
+                                      clearSuggestionSelection();
+                                      setMappingSelection(new Set());
                                       const col = schema?.columns.find(
                                         (tc) => tc.name === c.column,
                                       );
@@ -5229,6 +5691,7 @@ function EntityDetailCanvas({
                                         : "bg-white font-normal text-[#555]",
                                       isDropTarget && "shadow-[0_0_0_2px_#00ded8]",
                                       isContextSelected && "shadow-[0_0_0_2px_#3b82f6]",
+                                      isMappingSelected && "shadow-[0_0_0_2px_#3b82f6]",
                                       !colInScope && "opacity-40",
                                       highlightedColumnKeys?.has(key) &&
                                         "shadow-[0_0_0_2px_#3b82f6]",
@@ -5439,8 +5902,8 @@ function EntityDetailCanvas({
                       )}
                       {!isCollapsed &&
                         satellites.map((sat) => {
-                          nodeClickActionsRef.current[sat.id] = () =>
-                            setContextItem({ kind: "entity", entity: sat });
+                          nodeClickActionsRef.current[sat.id] = (mods) =>
+                            selectOnClick({ kind: "entity", id: sat.id }, mods);
                           return (
                             <div
                               key={sat.id}
@@ -5463,10 +5926,11 @@ function EntityDetailCanvas({
                               <OntologyNode
                                 entity={sat}
                                 detailed={zoom > 1}
+                                emphasis={selectedMergeIds.has(sat.id) ? "active" : "normal"}
                                 onStartMove={(clientX, clientY) =>
                                   startNodeDrag(sat.id, clientX, clientY)
                                 }
-                                onClick={() => setContextItem({ kind: "entity", entity: sat })}
+                                onClick={(e) => selectOnClick({ kind: "entity", id: sat.id }, e)}
                               />
                             </div>
                           );
@@ -5723,7 +6187,7 @@ function EntityDetailCanvas({
                                 {mapped.length > 0 && (
                                   <div className="flex flex-col gap-1 rounded-[10px] bg-[#eff6ff] p-1">
                                     <PropertyGroupHeader
-                                      label="Mapped Properties"
+                                      label="Mapped"
                                       count={mapped.length}
                                       open={mappedOpen}
                                       onToggle={() => toggleMappedGroupOpen(other.id)}
@@ -5740,7 +6204,7 @@ function EntityDetailCanvas({
                                 {unmapped.length > 0 && (
                                   <div className="flex flex-col gap-1 rounded-[10px] bg-[#f4f4f4] p-1">
                                     <PropertyGroupHeader
-                                      label="Unmapped Properties"
+                                      label="Unmapped"
                                       count={unmapped.length}
                                       open={unmappedOpen}
                                       onToggle={() => toggleUnmappedGroupOpen(other.id)}
@@ -5856,22 +6320,37 @@ function EntityDetailCanvas({
                                 </p>
                               )}
                               {!collapsedTables.has(table) && anchorKind === "table" && (
-                                <div className="flex w-full items-center justify-end">
-                                  <SortBar
-                                    sort={columnSortFor(table)}
-                                    onChange={(k) => setColumnSortForTable(table, k)}
-                                  />
+                                <div className="flex w-full items-center justify-between gap-1">
+                                  <button
+                                    type="button"
+                                    onPointerDown={(e) => e.stopPropagation()}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      toggleOnlyIdentifierTable(table);
+                                    }}
+                                    aria-pressed={!!onlyIdentifierByTable[table]}
+                                    className={cn(
+                                      "rounded-md px-1.5 py-0.5 text-[10px] font-medium transition-colors",
+                                      onlyIdentifierByTable[table]
+                                        ? "bg-black/[0.08] text-foreground"
+                                        : "text-muted-foreground hover:bg-accent",
+                                    )}
+                                  >
+                                    Only Identifier
+                                  </button>
+                                  {anchorKind === "table" && (
+                                    <SortBar
+                                      sort={columnSortFor(table)}
+                                      onChange={(k) => setColumnSortForTable(table, k)}
+                                    />
+                                  )}
                                 </div>
                               )}
                               {!collapsedTables.has(table) &&
                                 (() => {
                                   const visible = visibleColumns(table, cols);
-                                  const mappedCols = visible.filter(
-                                    (c) => columnMappingState(c) === "mapped",
-                                  );
-                                  const unmappedCols = visible.filter(
-                                    (c) => columnMappingState(c) !== "mapped",
-                                  );
+                                  const mappedCols = visible.filter(columnHasMapped);
+                                  const unmappedCols = visible.filter((c) => !columnHasMapped(c));
                                   // Identifier first, then Suggested (aligned to reduce
                                   // crossings), then no suggestion at all — see
                                   // `orderUnmappedColumns`'s own doc comment. Backs off once the
@@ -5890,6 +6369,13 @@ function EntityDetailCanvas({
                                     const schema = tableByName(table);
                                     const colInScope = isColEntryInScope(c);
                                     const columnMapState = columnMappingState(c);
+                                    const isMappingSelected = c.mappedBy.some(
+                                      ({ ownerEntityId, propertyId, status }) =>
+                                        status === "suggested" &&
+                                        mappingSelection.has(
+                                          mappingSelectionKey(ownerEntityId, propertyId),
+                                        ),
+                                    );
                                     return (
                                       <div
                                         key={c.column}
@@ -5900,6 +6386,14 @@ function EntityDetailCanvas({
                                         onPointerDown={(e) => e.stopPropagation()}
                                         onClick={(e) => {
                                           e.stopPropagation();
+                                          if (
+                                            e.shiftKey &&
+                                            toggleColumnMappingSelection(c.mappedBy, true)
+                                          ) {
+                                            return;
+                                          }
+                                          clearSuggestionSelection();
+                                          setMappingSelection(new Set());
                                           const col = schema?.columns.find(
                                             (tc) => tc.name === c.column,
                                           );
@@ -5931,6 +6425,7 @@ function EntityDetailCanvas({
                                             ? "bg-white font-medium text-foreground"
                                             : "bg-white font-normal text-[#555]",
                                           isDropTarget && "shadow-[0_0_0_2px_#00ded8]",
+                                          isMappingSelected && "shadow-[0_0_0_2px_#3b82f6]",
                                           !colInScope && "opacity-40",
                                           highlightedColumnKeys?.has(key) &&
                                             "shadow-[0_0_0_2px_#3b82f6]",
@@ -6105,85 +6600,6 @@ function EntityDetailCanvas({
               </div>
             )}
           </div>
-
-          {/* Merge/Delete/Accept/Reject all now live in the one contextual selection control
-              (see `selectionBar` below, and `SelectionControlBar`) — this canvas no longer has
-              its own separate floating action surfaces per selection kind. Merge still opens
-              this same naming panel just below, though — only its trigger moved. */}
-          {mergePanelOpen && (
-            <div
-              onPointerDown={(e) => e.stopPropagation()}
-              className="absolute left-1/2 top-10 z-30 flex w-[320px] -translate-x-1/2 flex-col gap-2.5 rounded-lg border border-node-border bg-node p-3 shadow-[var(--shadow-node-lift)]"
-            >
-              <div className="flex items-center gap-1.5 text-[12px] font-medium">
-                <GitMerge className="size-3.5 text-primary" />
-                Merge {mergeCandidates.length} entities into one
-              </div>
-              <p className="text-[10.5px] text-muted-foreground">
-                All properties from {mergeCandidates.map((e) => e.name || "Untitled").join(", ")}{" "}
-                will be combined. Name the resulting entity:
-              </p>
-              <div className="flex flex-wrap gap-1.5">
-                {mergeEntitiesList.map((e) => (
-                  <button
-                    key={e.id}
-                    onPointerDown={(ev) => ev.stopPropagation()}
-                    onClick={() => setMergeName(e.name)}
-                    className={cn(
-                      "rounded-full border px-2 py-1 text-[10.5px] transition-colors",
-                      mergeName === e.name
-                        ? "border-primary bg-primary/10 text-primary"
-                        : "border-border text-muted-foreground hover:bg-accent",
-                    )}
-                  >
-                    {e.name || "Untitled"}
-                  </button>
-                ))}
-                {mergeAiSuggestions.map((name) => (
-                  <button
-                    key={name}
-                    onPointerDown={(ev) => ev.stopPropagation()}
-                    onClick={() => setMergeName(name)}
-                    className={cn(
-                      "flex items-center gap-1 rounded-full border px-2 py-1 text-[10.5px] transition-colors",
-                      mergeName === name
-                        ? "border-primary bg-primary/10 text-primary"
-                        : "border-data/40 bg-data-soft text-data hover:bg-data-soft/70",
-                    )}
-                  >
-                    {name}
-                    <span className="text-[8.5px] uppercase tracking-wide opacity-70">AI</span>
-                  </button>
-                ))}
-              </div>
-              <div className="flex items-center gap-2">
-                <input
-                  autoFocus
-                  value={mergeName}
-                  onChange={(e) => setMergeName(e.target.value)}
-                  placeholder="Custom name"
-                  className="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1 text-[11.5px] outline-none focus:border-primary"
-                />
-                <button
-                  onClick={handleMerge}
-                  disabled={!mergeName.trim()}
-                  className="shrink-0 rounded-md bg-primary px-2.5 py-1 text-[11.5px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
-                >
-                  Merge
-                </button>
-                <button
-                  onClick={() => {
-                    setMergePanelOpen(false);
-                    setMergeName("");
-                  }}
-                  className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-accent"
-                  aria-label="Cancel merge"
-                >
-                  <X className="size-3.5" />
-                </button>
-              </div>
-            </div>
-          )}
         </div>
       </DetailShell>
 

@@ -13,7 +13,37 @@ import { Agentation } from "agentation";
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { OntologyAppProvider } from "@/lib/ontology-context";
+import { OntologyAppProvider, useOntologyAppContext } from "@/lib/ontology-context";
+
+function DevScenarioSwitcher() {
+  const app = useOntologyAppContext();
+  return (
+    <div className="flex h-10 shrink-0 items-center justify-center gap-1 border-b border-white/10 bg-[#1c1c18] px-3">
+      <span className="px-2 text-[10px] font-semibold uppercase tracking-wider text-white/55">
+        Demo fixture
+      </span>
+      {(["fresh", "in-progress"] as const).map((scenario, index) => (
+        <button
+          key={scenario}
+          type="button"
+          onClick={() => app.resetDemoScenario(scenario)}
+          className={`rounded-full px-3 py-1 text-[11px] font-medium transition-colors ${
+            app.demoScenario === scenario
+              ? "bg-white text-[#1c1c18]"
+              : "text-white/70 hover:bg-white/10 hover:text-white"
+          }`}
+        >
+          {index === 0 ? "01 · Fresh" : "02 · In Progress"}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function OntologyRoutes() {
+  const { demoScenario } = useOntologyAppContext();
+  return <Outlet key={demoScenario} />;
+}
 
 function NotFoundComponent() {
   return (
@@ -136,8 +166,13 @@ function RootComponent() {
             at `/trash`) — mounted here, above the Outlet, so navigating between them never
             resets or forks the entities/relations/trash state. */}
         <OntologyAppProvider>
-          {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
-          <Outlet />
+          <div className="flex h-screen flex-col overflow-hidden">
+            {import.meta.env.DEV && <DevScenarioSwitcher />}
+            <div className="min-h-0 flex-1">
+              {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
+              <OntologyRoutes />
+            </div>
+          </div>
         </OntologyAppProvider>
       </TooltipProvider>
     </QueryClientProvider>

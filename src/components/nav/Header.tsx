@@ -486,15 +486,13 @@ export function Header({
     let columnsTotal = 0;
     let columnsMapped = 0;
     tables.forEach((t) => {
-      columnsTotal += tableMappingCompleteness(t.name, entities).total;
       const usage = tableColumnUsage(t.name, entities);
-      t.columns.forEach((c) => {
+      columnsTotal += usage.length;
+      usage.forEach((column) => {
         // A column with only Suggested-mapping mappers doesn't count — same "confirmed only"
         // rule as `tableMappingCompleteness` above, so Tables/Columns/Entities/Properties all
         // describe one consistent fact (see this block's own doc comment).
-        const isMapped = !!usage
-          .find((u) => u.name === c.name)
-          ?.mappedBy.some((m) => m.status === "mapped");
+        const isMapped = column.mappedBy.some((mapping) => mapping.status === "mapped");
         if (isMapped) columnsMapped += 1;
       });
     });

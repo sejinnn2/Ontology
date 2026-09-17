@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { ReviewStatus } from "@/lib/mock-data";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
@@ -141,12 +142,15 @@ export function StatusBadge({
   confidence,
   warningReason,
   errorReason,
+  tooltipContent,
 }: {
   status: ReviewStatus;
   size?: number;
   confidence: number;
   warningReason?: string | undefined;
   errorReason?: string | undefined;
+  /** Optional richer tooltip body for a specific badge context. */
+  tooltipContent?: ReactNode;
 }) {
   const style = STATUS_STYLE[status];
   const Icon = STATUS_ICON[status];
@@ -171,9 +175,13 @@ export function StatusBadge({
           <Icon color={style.iconColor} size={Math.round(size * 0.5)} />
         </span>
       </TooltipTrigger>
-      <TooltipContent className={body ? "space-y-1" : undefined}>
-        <p className="font-medium text-white">{label}</p>
-        {body && <p className="text-[#B7BCC4]">{body}</p>}
+      <TooltipContent className={tooltipContent || body ? "space-y-1" : undefined}>
+        {tooltipContent ?? (
+          <>
+            <p className="font-medium text-white">{label}</p>
+            {body && <p className="text-[#B7BCC4]">{body}</p>}
+          </>
+        )}
       </TooltipContent>
     </Tooltip>
   );
