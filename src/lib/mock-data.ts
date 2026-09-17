@@ -26690,7 +26690,7 @@ export const initialEntities: Entity[] = [
       {
         id: "p_actor_000",
         name: "identifier",
-        description: "identifier.",
+        description: "identifier",
         type: "string",
         confidence: 0.98,
         status: "confirmed",
@@ -26772,7 +26772,7 @@ export const initialEntities: Entity[] = [
   },
   {
     id: "e_audit_event",
-    name: "Audit Event",
+    name: "AuditEvent",
     description: "a recorded occurrence of a significant action or change in a system",
     confidence: 0.9,
     status: "confirmed",
@@ -26830,7 +26830,7 @@ export const initialEntities: Entity[] = [
   },
   {
     id: "e_billing_account",
-    name: "Billing Account",
+    name: "BillingAccount",
     description: "a financial record of transactions and payments for a customer or organization",
     confidence: 0.9,
     status: "confirmed",
@@ -27113,7 +27113,7 @@ export const initialEntities: Entity[] = [
   },
   {
     id: "e_billing_policy_term",
-    name: "Billing Policy Term",
+    name: "BillingPolicyTerm",
     description:
       "a specific term or condition within a billing policy that outlines the rules and guidelines for payment",
     confidence: 0.9,
@@ -27626,7 +27626,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "claims", column: "num_claimants" },
+        mapping: { table: "claims", column: "claim_number" },
       },
       {
         id: "p_claim_011",
@@ -27743,7 +27743,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "claims", column: "claim_type" },
+        mapping: { table: "claims", column: "loss_type" },
       },
       {
         id: "p_claim_024",
@@ -27758,7 +27758,7 @@ export const initialEntities: Entity[] = [
   },
   {
     id: "e_claim_contact",
-    name: "Claim Contact",
+    name: "ClaimContact",
     description:
       "a person or organization involved in a claim, serving as a point of communication or reference",
     confidence: 0.9,
@@ -27865,7 +27865,7 @@ export const initialEntities: Entity[] = [
         type: "decimal",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "vehicle_disc_surcharges", column: "vds_vanishing_deductible_amount" },
+        mapping: { table: "vehicle_disc_surcharges", column: "vds_diminishing_deductible_amount" },
       },
       {
         id: "p_claim_contact_011",
@@ -27876,7 +27876,7 @@ export const initialEntities: Entity[] = [
         status: "confirmed",
         mapping: {
           table: "vehicle_disc_surcharges",
-          column: "vds_vanishing_deductible_effective_date",
+          column: "vds_diminishing_deductible_effective_date",
         },
       },
       {
@@ -28177,7 +28177,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "claim_contacts", column: "hospital_name" },
+        mapping: { table: "claim_contacts", column: "last_name" },
       },
       {
         id: "p_claim_contact_045",
@@ -28186,7 +28186,7 @@ export const initialEntities: Entity[] = [
         type: "date",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "claim_contacts", column: "ccont_medical_paid_as_of_date" },
+        mapping: { table: "claim_contacts", column: "ccont_indemnity_paid_as_of_date" },
       },
       {
         id: "p_claim_contact_046",
@@ -28285,7 +28285,7 @@ export const initialEntities: Entity[] = [
         type: "date",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "claim_contacts", column: "ccont_recovery_as_of_date" },
+        mapping: { table: "claim_contacts", column: "ccont_settlement_as_of_date" },
       },
       {
         id: "p_claim_contact_057",
@@ -28405,7 +28405,7 @@ export const initialEntities: Entity[] = [
         type: "date",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "claim_contacts", column: "ccont_recovery_as_of_date" },
+        mapping: { table: "claim_contacts", column: "ccont_settlement_as_of_date" },
       },
       {
         id: "p_claim_contact_070",
@@ -28843,7 +28843,7 @@ export const initialEntities: Entity[] = [
   },
   {
     id: "e_claim_contact_role",
-    name: "Claim Contact Role",
+    name: "ClaimContactRole",
     description:
       "a specific role or capacity in which a person or organization is involved in a claim",
     confidence: 0.9,
@@ -28969,7 +28969,7 @@ export const initialEntities: Entity[] = [
         type: "decimal",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "vehicle_disc_surcharges", column: "vds_vanishing_deductible_amount" },
+        mapping: { table: "vehicle_disc_surcharges", column: "vds_diminishing_deductible_amount" },
       },
       {
         id: "p_claim_contact_role_013",
@@ -29273,7 +29273,7 @@ export const initialEntities: Entity[] = [
   },
   {
     id: "e_claim_event",
-    name: "Claim Event",
+    name: "ClaimEvent",
     description:
       "a significant occurrence or happening related to a claim, such as a settlement or a reopening",
     confidence: 0.9,
@@ -29344,7 +29344,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "claims", column: "claim_type" },
+        mapping: { table: "claims", column: "loss_type" },
       },
       {
         id: "p_claim_event_007",
@@ -29359,9 +29359,8 @@ export const initialEntities: Entity[] = [
   },
   {
     id: "e_clm_evt_idempotency",
-    name: "Clm Evt Idempotency",
-    description:
-      "A Clm Evt Idempotency record, auto-derived from a repeated identifier pattern in the source data.",
+    name: "ClmEvtIdempotency",
+    description: "Auto-created entity 'Clm Evt Idempotency'",
     confidence: 0.55,
     status: "suggested",
     table: "claims",
@@ -29382,9 +29381,8 @@ export const initialEntities: Entity[] = [
   },
   {
     id: "e_companion_policy",
-    name: "Companion Policy",
-    description:
-      "A Companion Policy record, auto-derived from a repeated identifier pattern in the source data.",
+    name: "CompanionPolicy",
+    description: "Auto-created entity 'Companion Policy'",
     confidence: 0.9,
     status: "confirmed",
     table: "policies",
@@ -29466,7 +29464,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "risk_scores", column: "risk_severity_model_version" },
+        mapping: { table: "risk_scores", column: "risk_territory_model_version" },
       },
       {
         id: "p_contact_006",
@@ -30834,7 +30832,7 @@ export const initialEntities: Entity[] = [
         type: "decimal",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "contacts", column: "contact_score_nps_date" },
+        mapping: { table: "contacts", column: "contact_score_nps_value" },
       },
       {
         id: "p_contact_158",
@@ -31302,7 +31300,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "contacts", column: "contact_garaging_street" },
+        mapping: { table: "contacts", column: "contact_mailing_street" },
       },
       {
         id: "p_contact_210",
@@ -33019,7 +33017,7 @@ export const initialEntities: Entity[] = [
       {
         id: "p_employer_000",
         name: "identifier",
-        description: "identifier.",
+        description: "identifier",
         type: "string",
         confidence: 0.98,
         status: "confirmed",
@@ -33033,13 +33031,13 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "contacts", column: "business_name" },
+        mapping: { table: "contacts", column: "last_name" },
       },
     ],
   },
   {
     id: "e_finance_company",
-    name: "Finance Company",
+    name: "FinanceCompany",
     description:
       "a company that provides financial services, such as premium financing for insurance policies",
     confidence: 0.9,
@@ -33051,7 +33049,7 @@ export const initialEntities: Entity[] = [
       {
         id: "p_finance_company_000",
         name: "identifier",
-        description: "identifier.",
+        description: "identifier",
         type: "string",
         confidence: 0.98,
         status: "confirmed",
@@ -33065,13 +33063,13 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "contacts", column: "last_name" },
+        mapping: { table: "contacts", column: "dba_name" },
       },
     ],
   },
   {
     id: "e_garaging_location",
-    name: "Garaging Location",
+    name: "GaragingLocation",
     description: "a place where a vehicle is parked or stored",
     confidence: 0.9,
     status: "confirmed",
@@ -33082,7 +33080,7 @@ export const initialEntities: Entity[] = [
       {
         id: "p_garaging_location_000",
         name: "identifier",
-        description: "identifier.",
+        description: "identifier",
         type: "string",
         confidence: 0.98,
         status: "confirmed",
@@ -33123,7 +33121,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "contacts", column: "contact_mailing_street" },
+        mapping: { table: "contacts", column: "contact_billing_street" },
       },
       {
         id: "p_garaging_location_005",
@@ -33138,7 +33136,7 @@ export const initialEntities: Entity[] = [
   },
   {
     id: "e_legacy_policy",
-    name: "Legacy Policy",
+    name: "LegacyPolicy",
     description:
       "an older policy that has been replaced or updated, but still maintained for historical or reference purposes",
     confidence: 0.9,
@@ -33161,7 +33159,7 @@ export const initialEntities: Entity[] = [
   },
   {
     id: "e_legacy_rate_quote",
-    name: "Legacy Rate Quote",
+    name: "LegacyRateQuote",
     description:
       "an outdated or obsolete quote that is still referenced for historical or comparison purposes",
     confidence: 0.9,
@@ -33193,7 +33191,7 @@ export const initialEntities: Entity[] = [
   },
   {
     id: "e_legacy_risk",
-    name: "Legacy Risk",
+    name: "LegacyRisk",
     description: "an outdated or obsolete system, process, or technology that is still in use",
     confidence: 0.9,
     status: "confirmed",
@@ -33215,7 +33213,7 @@ export const initialEntities: Entity[] = [
   },
   {
     id: "e_legacy_vehicle",
-    name: "Legacy Vehicle",
+    name: "LegacyVehicle",
     description: "a vehicle from a previous system or record",
     confidence: 0.9,
     status: "confirmed",
@@ -33262,13 +33260,13 @@ export const initialEntities: Entity[] = [
         confidence: 0.98,
         status: "confirmed",
         isIdentifier: true,
-        mapping: { table: "drivers", column: "license_number" },
+        mapping: { table: "drivers", column: "driver_number" },
       },
     ],
   },
   {
     id: "e_medical_provider",
-    name: "Medical Provider",
+    name: "MedicalProvider",
     description: "a licensed party that delivers a covered medical service in a claim",
     confidence: 0.9,
     status: "confirmed",
@@ -33279,7 +33277,7 @@ export const initialEntities: Entity[] = [
       {
         id: "p_medical_provider_000",
         name: "identifier",
-        description: "identifier.",
+        description: "identifier",
         type: "string",
         confidence: 0.98,
         status: "confirmed",
@@ -33293,13 +33291,13 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "claims", column: "adjuster_name" },
+        mapping: { table: "claims", column: "attorney_name" },
       },
     ],
   },
   {
     id: "e_named_insured",
-    name: "Named Insured",
+    name: "NamedInsured",
     description: "an individual who is insured or has a financial interest in a sales transaction",
     confidence: 0.9,
     status: "confirmed",
@@ -33432,7 +33430,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "contacts", column: "contact_garaging_street" },
+        mapping: { table: "contacts", column: "contact_mailing_street" },
       },
       {
         id: "p_named_insured_014",
@@ -33458,7 +33456,7 @@ export const initialEntities: Entity[] = [
       {
         id: "p_organization_000",
         name: "identifier",
-        description: "identifier.",
+        description: "identifier",
         type: "string",
         confidence: 0.98,
         status: "confirmed",
@@ -33472,15 +33470,14 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "contacts", column: "business_name" },
+        mapping: { table: "contacts", column: "last_name" },
       },
     ],
   },
   {
     id: "e_pol_evt_idempotency",
-    name: "Pol Evt Idempotency",
-    description:
-      "A Pol Evt Idempotency record, auto-derived from a repeated identifier pattern in the source data.",
+    name: "PolEvtIdempotency",
+    description: "Auto-created entity 'Pol Evt Idempotency'",
     confidence: 0.55,
     status: "suggested",
     table: "policies",
@@ -34418,7 +34415,7 @@ export const initialEntities: Entity[] = [
         type: "date",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "policies", column: "policy_rating_tier_effective_date" },
+        mapping: { table: "policies", column: "policy_rating_experience_effective_date" },
       },
       {
         id: "p_policy_101",
@@ -34823,7 +34820,7 @@ export const initialEntities: Entity[] = [
   },
   {
     id: "e_policy_event",
-    name: "Policy Event",
+    name: "PolicyEvent",
     description: "a significant occurrence or happening related to an insurance policy",
     confidence: 0.9,
     status: "confirmed",
@@ -34942,13 +34939,13 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "contacts", column: "last_name" },
+        mapping: { table: "contacts", column: "dba_name" },
       },
     ],
   },
   {
     id: "e_rate_quote",
-    name: "Rate Quote",
+    name: "RateQuote",
     description: "a formal offer to provide a product or service at a specified price",
     confidence: 0.9,
     status: "confirmed",
@@ -35135,7 +35132,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "sales_quotes", column: "expiration_date" },
+        mapping: { table: "sales_quotes", column: "bind_date" },
       },
       {
         id: "p_rate_quote_020",
@@ -35144,7 +35141,7 @@ export const initialEntities: Entity[] = [
         type: "decimal",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "vehicle_disc_surcharges", column: "vds_vanishing_deductible_amount" },
+        mapping: { table: "vehicle_disc_surcharges", column: "vds_diminishing_deductible_amount" },
       },
       {
         id: "p_rate_quote_021",
@@ -35180,7 +35177,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "risk_coverages", column: "development_factor" },
+        mapping: { table: "risk_coverages", column: "trend_factor" },
       },
       {
         id: "p_rate_quote_025",
@@ -35333,7 +35330,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "sales_quotes", column: "num_drivers" },
+        mapping: { table: "sales_quotes", column: "quote_number" },
       },
       {
         id: "p_rate_quote_042",
@@ -36053,7 +36050,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "risk_scores", column: "risk_review_day" },
+        mapping: { table: "risk_scores", column: "risk_expiration_day" },
       },
       {
         id: "p_risk_037",
@@ -36341,7 +36338,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "vehicles", column: "vehicle_inspection_day" },
+        mapping: { table: "vehicles", column: "vehicle_inspection_month" },
       },
       {
         id: "p_risk_069",
@@ -36530,7 +36527,7 @@ export const initialEntities: Entity[] = [
         type: "date",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "claim_reserves", column: "rsv_adjustment_expense_as_of_date" },
+        mapping: { table: "claim_reserves", column: "rsv_total_loss_as_of_date" },
       },
       {
         id: "p_risk_090",
@@ -36917,7 +36914,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "risk_scores", column: "risk_territory_date" },
+        mapping: { table: "risk_scores", column: "risk_territory_tier" },
       },
       {
         id: "p_risk_133",
@@ -36980,7 +36977,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "risk_scores", column: "credit_tier" },
+        mapping: { table: "risk_scores", column: "risk_tier" },
       },
       {
         id: "p_risk_140",
@@ -37121,7 +37118,7 @@ export const initialEntities: Entity[] = [
   },
   {
     id: "e_risk_coverage",
-    name: "Risk Coverage",
+    name: "RiskCoverage",
     description: "a contract that provides financial protection against specific risks or losses",
     confidence: 0.9,
     status: "confirmed",
@@ -38486,7 +38483,7 @@ export const initialEntities: Entity[] = [
   },
   {
     id: "e_sales_driver",
-    name: "Sales Driver",
+    name: "SalesDriver",
     description: "an individual who drives sales and interacts with customers",
     confidence: 0.9,
     status: "confirmed",
@@ -40132,7 +40129,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "risk_scores", column: "risk_severity_model_version" },
+        mapping: { table: "risk_scores", column: "risk_territory_model_version" },
       },
       {
         id: "p_sales_driver_180",
@@ -40693,7 +40690,7 @@ export const initialEntities: Entity[] = [
         type: "boolean",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "vehicles", column: "vehicle_disc_surch_towing_flag" },
+        mapping: { table: "vehicles", column: "vehicle_disc_surch_garaging_flag" },
       },
       {
         id: "p_sales_driver_242",
@@ -40799,7 +40796,7 @@ export const initialEntities: Entity[] = [
   },
   {
     id: "e_sales_placement",
-    name: "Sales Placement",
+    name: "SalesPlacement",
     description: "a specific arrangement or positioning of a product or service for sale",
     confidence: 0.9,
     status: "confirmed",
@@ -40905,7 +40902,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "driver_violations", column: "violation_surcharge_currency" },
+        mapping: { table: "driver_violations", column: "violation_fine_currency" },
       },
       {
         id: "p_sales_placement_011",
@@ -40914,7 +40911,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "policies", column: "issue_date" },
+        mapping: { table: "policies", column: "updated_date" },
       },
       {
         id: "p_sales_placement_012",
@@ -40977,7 +40974,7 @@ export const initialEntities: Entity[] = [
         type: "date",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "sales_quotes", column: "quote_quoted_rental_as_of_date" },
+        mapping: { table: "sales_quotes", column: "quote_quoted_uim_as_of_date" },
       },
       {
         id: "p_sales_placement_019",
@@ -40986,7 +40983,7 @@ export const initialEntities: Entity[] = [
         type: "decimal",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "sales_quotes", column: "quote_quoted_pip_value" },
+        mapping: { table: "sales_quotes", column: "quote_quoted_med_value" },
       },
       {
         id: "p_sales_placement_020",
@@ -41013,7 +41010,7 @@ export const initialEntities: Entity[] = [
         type: "date",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "policies", column: "policy_rating_tier_effective_date" },
+        mapping: { table: "policies", column: "policy_rating_experience_effective_date" },
       },
       {
         id: "p_sales_placement_023",
@@ -41199,7 +41196,7 @@ export const initialEntities: Entity[] = [
   },
   {
     id: "e_sales_policy",
-    name: "Sales Policy",
+    name: "SalesPolicy",
     description:
       "a contract that outlines the terms and conditions of an insurance agreement, including the coverage, premiums, and duration",
     confidence: 0.9,
@@ -41470,7 +41467,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "policies", column: "companion_carrier" },
+        mapping: { table: "policies", column: "prior_carrier" },
       },
       {
         id: "p_sales_policy_029",
@@ -43978,7 +43975,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "contacts", column: "contact_score_nps_model_version" },
+        mapping: { table: "contacts", column: "contact_score_credit_model_version" },
       },
       {
         id: "p_sales_policy_304",
@@ -45232,7 +45229,7 @@ export const initialEntities: Entity[] = [
   },
   {
     id: "e_sales_quote",
-    name: "Sales Quote",
+    name: "SalesQuote",
     description:
       "a formal offer to sell a product or service at a specified price and under certain conditions",
     confidence: 0.9,
@@ -45267,7 +45264,7 @@ export const initialEntities: Entity[] = [
         type: "date",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "sales_quotes", column: "quote_rating_channel_effective_date" },
+        mapping: { table: "sales_quotes", column: "quote_comp_agent_channel_date" },
       },
       {
         id: "p_sales_quote_003",
@@ -45591,7 +45588,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "driver_violations", column: "violation_surcharge_currency" },
+        mapping: { table: "driver_violations", column: "violation_fine_currency" },
       },
       {
         id: "p_sales_quote_039",
@@ -45645,7 +45642,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "sales_quotes", column: "expiration_date" },
+        mapping: { table: "sales_quotes", column: "bind_date" },
       },
       {
         id: "p_sales_quote_045",
@@ -45942,7 +45939,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "sales_quotes", column: "num_drivers" },
+        mapping: { table: "sales_quotes", column: "quote_number" },
       },
       {
         id: "p_sales_quote_078",
@@ -46309,7 +46306,7 @@ export const initialEntities: Entity[] = [
   },
   {
     id: "e_sales_root",
-    name: "Sales Root",
+    name: "SalesRoot",
     description: "a collection of information related to a sales transaction",
     confidence: 0.9,
     status: "confirmed",
@@ -46541,7 +46538,7 @@ export const initialEntities: Entity[] = [
         type: "int",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "sales_quotes", column: "quote_initial_quote_day" },
+        mapping: { table: "sales_quotes", column: "quote_expiration_day" },
       },
       {
         id: "p_sales_root_025",
@@ -46550,7 +46547,7 @@ export const initialEntities: Entity[] = [
         type: "int",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "sales_quotes", column: "quote_initial_quote_month" },
+        mapping: { table: "sales_quotes", column: "quote_decline_month" },
       },
       {
         id: "p_sales_root_026",
@@ -46559,7 +46556,7 @@ export const initialEntities: Entity[] = [
         type: "int",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "sales_quotes", column: "quote_revision_year" },
+        mapping: { table: "sales_quotes", column: "quote_decline_year" },
       },
       {
         id: "p_sales_root_027",
@@ -46637,7 +46634,7 @@ export const initialEntities: Entity[] = [
   },
   {
     id: "e_sales_vehicle",
-    name: "Sales Vehicle",
+    name: "SalesVehicle",
     description:
       "a road vehicle, typically with four wheels, powered by an internal combustion engine or electric motor",
     confidence: 0.9,
@@ -47220,7 +47217,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "risk_scores", column: "risk_severity_model_version" },
+        mapping: { table: "risk_scores", column: "risk_territory_model_version" },
       },
       {
         id: "p_sales_vehicle_062",
@@ -47382,7 +47379,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "risk_scores", column: "risk_severity_model_version" },
+        mapping: { table: "risk_scores", column: "risk_territory_model_version" },
       },
       {
         id: "p_sales_vehicle_079",
@@ -47511,7 +47508,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "vehicle_coverages", column: "vcov_custom_equipment_override_flag" },
+        mapping: { table: "vehicle_coverages", column: "vcov_custom_equipment_override_reason" },
       },
       {
         id: "p_sales_vehicle_093",
@@ -48097,7 +48094,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "vehicle_coverages", column: "vcov_gap_override_flag" },
+        mapping: { table: "vehicle_coverages", column: "vcov_gap_override_reason" },
       },
       {
         id: "p_sales_vehicle_157",
@@ -49246,7 +49243,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "vehicle_coverages", column: "vcov_oem_parts_override_reason" },
+        mapping: { table: "vehicle_coverages", column: "vcov_oem_parts_override_flag" },
       },
       {
         id: "p_sales_vehicle_284",
@@ -50082,7 +50079,10 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "vehicle_coverages", column: "vcov_rental_reimbursement_override_flag" },
+        mapping: {
+          table: "vehicle_coverages",
+          column: "vcov_rental_reimbursement_override_reason",
+        },
       },
       {
         id: "p_sales_vehicle_374",
@@ -50211,7 +50211,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "vehicle_coverages", column: "vcov_ride_share_period1_override_reason" },
+        mapping: { table: "vehicle_coverages", column: "vcov_ride_share_period1_override_flag" },
       },
       {
         id: "p_sales_vehicle_388",
@@ -50265,7 +50265,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "vehicle_coverages", column: "vcov_ride_share_period2_override_reason" },
+        mapping: { table: "vehicle_coverages", column: "vcov_ride_share_period2_override_flag" },
       },
       {
         id: "p_sales_vehicle_394",
@@ -50319,7 +50319,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "vehicle_coverages", column: "vcov_ride_share_period3_override_flag" },
+        mapping: { table: "vehicle_coverages", column: "vcov_ride_share_period3_override_reason" },
       },
       {
         id: "p_sales_vehicle_400",
@@ -50355,7 +50355,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "risk_scores", column: "risk_severity_model_version" },
+        mapping: { table: "risk_scores", column: "risk_territory_model_version" },
       },
       {
         id: "p_sales_vehicle_404",
@@ -50724,7 +50724,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "vehicles", column: "telematics_flag" },
+        mapping: { table: "vehicles", column: "telematics_score" },
       },
       {
         id: "p_sales_vehicle_445",
@@ -50850,7 +50850,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "risk_scores", column: "risk_severity_model_version" },
+        mapping: { table: "risk_scores", column: "risk_territory_model_version" },
       },
       {
         id: "p_sales_vehicle_459",
@@ -51473,9 +51473,8 @@ export const initialEntities: Entity[] = [
   },
   {
     id: "e_telematics_device",
-    name: "Telematics Device",
-    description:
-      "A Telematics Device record, auto-derived from a repeated identifier pattern in the source data.",
+    name: "TelematicsDevice",
+    description: "Auto-created entity 'Telematics Device'",
     confidence: 0.9,
     status: "confirmed",
     table: "vehicles",
@@ -51529,7 +51528,7 @@ export const initialEntities: Entity[] = [
       {
         id: "p_underwriter_000",
         name: "identifier",
-        description: "identifier.",
+        description: "identifier",
         type: "string",
         confidence: 0.98,
         status: "confirmed",
@@ -51543,7 +51542,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "contacts", column: "last_name" },
+        mapping: { table: "contacts", column: "dba_name" },
       },
     ],
   },
@@ -51574,7 +51573,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "contacts", column: "last_name" },
+        mapping: { table: "contacts", column: "dba_name" },
       },
     ],
   },
@@ -52145,7 +52144,7 @@ export const initialEntities: Entity[] = [
         type: "decimal",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "risk_scores", column: "risk_fraud_value" },
+        mapping: { table: "risk_scores", column: "risk_driver_risk_value" },
       },
       {
         id: "p_vehicle_062",
@@ -52163,7 +52162,7 @@ export const initialEntities: Entity[] = [
         type: "string",
         confidence: 0.9,
         status: "confirmed",
-        mapping: { table: "vehicles", column: "vehicle_rating_safety_rating_code" },
+        mapping: { table: "vehicles", column: "vehicle_rating_safety_rating_source" },
       },
       {
         id: "p_vehicle_064",
@@ -52443,8 +52442,8 @@ export const initialEntities: Entity[] = [
 export const initialRelations: Relation[] = [
   {
     id: "r_audit_event_is_related_to_sales_policy",
-    name: "is related to",
-    description: "A Audit Event is related to Sales Policy.",
+    name: "isRelatedTo",
+    description: "Audit Event is Related To Sales Policy",
     from: "e_audit_event",
     to: "e_sales_policy",
     confidence: 0.85,
@@ -52459,8 +52458,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_billing_account_is_governed_by_sales_policy",
-    name: "is governed by",
-    description: "A Billing Account is governed by Sales Policy.",
+    name: "isGovernedBy",
+    description: "Billing Account is Governed By Sales Policy",
     from: "e_billing_account",
     to: "e_sales_policy",
     confidence: 0.85,
@@ -52475,8 +52474,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_billing_policy_term_is_associated_with_billing_account",
-    name: "is associated with",
-    description: "A Billing Policy Term is associated with Billing Account.",
+    name: "isAssociatedWith",
+    description: "Billing Policy Term is Associated With Billing Account",
     from: "e_billing_policy_term",
     to: "e_billing_account",
     confidence: 0.85,
@@ -52491,8 +52490,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_claim_contact_is_associated_with_sales_policy",
-    name: "is associated with",
-    description: "A Claim Contact is associated with Sales Policy.",
+    name: "isAssociatedWith",
+    description: "Claim Contact is Associated With Sales Policy",
     from: "e_claim_contact",
     to: "e_sales_policy",
     confidence: 0.85,
@@ -52507,8 +52506,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_claim_contact_is_treated_by_medical_provider",
-    name: "is treated by",
-    description: "A Claim Contact is treated by Medical Provider.",
+    name: "isTreatedBy",
+    description: "Claim Contact is treated by Medical Provider",
     from: "e_claim_contact",
     to: "e_medical_provider",
     confidence: 0.85,
@@ -52523,8 +52522,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_claim_contact_role_is_associated_with_contact",
-    name: "is associated with",
-    description: "A Claim Contact Role is associated with Contact.",
+    name: "isAssociatedWith",
+    description: "Claim Contact Role is Associated With Contact",
     from: "e_claim_contact_role",
     to: "e_contact",
     confidence: 0.85,
@@ -52539,8 +52538,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_claim_event_has_idempotency_key_clm_evt_idempotency",
-    name: "has idempotency key",
-    description: "A Claim Event has idempotency key Clm Evt Idempotency.",
+    name: "hasIdempotencyKey",
+    description: "Claim Event has Idempotency Key Clm Evt Idempotency",
     from: "e_claim_event",
     to: "e_clm_evt_idempotency",
     confidence: 0.85,
@@ -52555,8 +52554,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_claim_event_is_associated_with_sales_policy",
-    name: "is associated with",
-    description: "A Claim Event is associated with Sales Policy.",
+    name: "isAssociatedWith",
+    description: "Claim Event is Associated With Sales Policy",
     from: "e_claim_event",
     to: "e_sales_policy",
     confidence: 0.85,
@@ -52571,8 +52570,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_claim_event_is_correlated_with_correlation",
-    name: "is correlated with",
-    description: "A Claim Event is correlated with Correlation.",
+    name: "isCorrelatedWith",
+    description: "Claim Event is Correlated With Correlation",
     from: "e_claim_event",
     to: "e_correlation",
     confidence: 0.85,
@@ -52587,8 +52586,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_contact_is_associated_with_organization",
-    name: "is associated with",
-    description: "A Contact is associated with Organization.",
+    name: "isAssociatedWith",
+    description: "Contact is associated with Organization",
     from: "e_contact",
     to: "e_organization",
     confidence: 0.85,
@@ -52603,8 +52602,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_contact_is_associated_with_sales_policy",
-    name: "is associated with",
-    description: "A Contact is associated with Sales Policy.",
+    name: "isAssociatedWith",
+    description: "Contact is Associated With Sales Policy",
     from: "e_contact",
     to: "e_sales_policy",
     confidence: 0.85,
@@ -52619,8 +52618,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_contact_is_treated_by_medical_provider",
-    name: "is treated by",
-    description: "A Contact is treated by Medical Provider.",
+    name: "isTreatedBy",
+    description: "Contact is treated by Medical Provider",
     from: "e_contact",
     to: "e_medical_provider",
     confidence: 0.85,
@@ -52636,7 +52635,7 @@ export const initialRelations: Relation[] = [
   {
     id: "r_driver_holds_sales_driver",
     name: "holds",
-    description: "A Driver holds Sales Driver.",
+    description: "Driver holds Sales Driver",
     from: "e_driver",
     to: "e_sales_driver",
     confidence: 0.85,
@@ -52651,8 +52650,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_driver_is_employed_by_employer",
-    name: "is employed by",
-    description: "A Driver is employed by Employer.",
+    name: "isEmployedBy",
+    description: "Driver is Employed By Employer",
     from: "e_driver",
     to: "e_employer",
     confidence: 0.85,
@@ -52667,8 +52666,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_policy_has_companion_policy_companion_policy",
-    name: "has companion policy",
-    description: "A Policy has companion policy Companion Policy.",
+    name: "hasCompanionPolicy",
+    description: "Policy has Companion Policy Companion Policy",
     from: "e_policy",
     to: "e_companion_policy",
     confidence: 0.85,
@@ -52683,8 +52682,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_policy_is_associated_with_sales_policy",
-    name: "is associated with",
-    description: "A Policy is associated with Sales Policy.",
+    name: "isAssociatedWith",
+    description: "Policy is Associated With Sales Policy",
     from: "e_policy",
     to: "e_sales_policy",
     confidence: 0.85,
@@ -52699,8 +52698,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_policy_is_financed_by_finance_company",
-    name: "is financed by",
-    description: "A Policy is financed by Finance Company.",
+    name: "isFinancedBy",
+    description: "Policy is Financed By Finance Company",
     from: "e_policy",
     to: "e_finance_company",
     confidence: 0.85,
@@ -52715,8 +52714,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_policy_is_replaced_by_legacy_policy",
-    name: "is replaced by",
-    description: "A Policy is replaced by Legacy Policy.",
+    name: "isReplacedBy",
+    description: "Policy is Replaced By Legacy Policy",
     from: "e_policy",
     to: "e_legacy_policy",
     confidence: 0.85,
@@ -52731,8 +52730,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_policy_uses_telematics_device_telematics_device",
-    name: "uses telematics device",
-    description: "A Policy uses telematics device Telematics Device.",
+    name: "usesTelematicsDevice",
+    description: "Policy uses Telematics Device Telematics Device",
     from: "e_policy",
     to: "e_telematics_device",
     confidence: 0.85,
@@ -52747,8 +52746,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_policy_was_audited_by_user",
-    name: "was audited by",
-    description: "A Policy was audited by User.",
+    name: "wasAuditedBy",
+    description: "Policy was Created By User",
     from: "e_policy",
     to: "e_user",
     confidence: 0.85,
@@ -52763,8 +52762,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_policy_event_has_idempotency_key_pol_evt_idempotency",
-    name: "has idempotency key",
-    description: "A Policy Event has idempotency key Pol Evt Idempotency.",
+    name: "hasIdempotencyKey",
+    description: "Policy Event has Idempotency Key Pol Evt Idempotency",
     from: "e_policy_event",
     to: "e_pol_evt_idempotency",
     confidence: 0.85,
@@ -52779,8 +52778,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_policy_event_is_associated_with_sales_policy",
-    name: "is associated with",
-    description: "A Policy Event is associated with Sales Policy.",
+    name: "isAssociatedWith",
+    description: "Policy Event is Associated With Sales Policy",
     from: "e_policy_event",
     to: "e_sales_policy",
     confidence: 0.85,
@@ -52795,8 +52794,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_policy_event_is_correlated_with_correlation",
-    name: "is correlated with",
-    description: "A Policy Event is correlated with Correlation.",
+    name: "isCorrelatedWith",
+    description: "Policy Event is Correlated With Correlation",
     from: "e_policy_event",
     to: "e_correlation",
     confidence: 0.85,
@@ -52811,8 +52810,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_rate_quote_is_derived_from_legacy_rate_quote",
-    name: "is derived from",
-    description: "A Rate Quote is derived from Legacy Rate Quote.",
+    name: "isDerivedFrom",
+    description: "Rate Quote is Derived From Legacy Rate Quote",
     from: "e_rate_quote",
     to: "e_legacy_rate_quote",
     confidence: 0.85,
@@ -52827,8 +52826,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_rate_quote_is_governed_by_sales_policy",
-    name: "is governed by",
-    description: "A Rate Quote is governed by Sales Policy.",
+    name: "isGovernedBy",
+    description: "Rate Quote is Governed By Sales Policy",
     from: "e_rate_quote",
     to: "e_sales_policy",
     confidence: 0.85,
@@ -52843,8 +52842,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_risk_is_associated_with_sales_policy",
-    name: "is associated with",
-    description: "A Risk is associated with Sales Policy.",
+    name: "isAssociatedWith",
+    description: "Risk is Associated With Sales Policy",
     from: "e_risk",
     to: "e_sales_policy",
     confidence: 0.85,
@@ -52859,8 +52858,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_risk_is_derived_from_legacy_risk",
-    name: "is derived from",
-    description: "A Risk is derived from Legacy Risk.",
+    name: "isDerivedFrom",
+    description: "Risk is Derived From Legacy Risk",
     from: "e_risk",
     to: "e_legacy_risk",
     confidence: 0.85,
@@ -52876,7 +52875,7 @@ export const initialRelations: Relation[] = [
   {
     id: "r_risk_coverage_covers_risk",
     name: "covers",
-    description: "A Risk Coverage covers Risk.",
+    description: "Risk Coverage covers Risk",
     from: "e_risk_coverage",
     to: "e_risk",
     confidence: 0.85,
@@ -52891,8 +52890,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_sales_driver_holds_foreign_license_with_number_license",
-    name: "holds foreign license with number",
-    description: "A Sales Driver holds foreign license with number License.",
+    name: "holdsForeignLicenseWithNumber",
+    description: "Sales Driver holds Foreign License With Number License",
     from: "e_sales_driver",
     to: "e_license",
     confidence: 0.85,
@@ -52907,8 +52906,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_sales_driver_is_associated_with_policy",
-    name: "is associated with",
-    description: "A Sales Driver is associated with Policy.",
+    name: "isAssociatedWith",
+    description: "Sales Driver is Associated With Policy",
     from: "e_sales_driver",
     to: "e_policy",
     confidence: 0.85,
@@ -52923,8 +52922,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_sales_placement_is_governed_by_sales_policy",
-    name: "is governed by",
-    description: "A Sales Placement is governed by Sales Policy.",
+    name: "isGovernedBy",
+    description: "Sales Placement is Governed By Sales Policy",
     from: "e_sales_placement",
     to: "e_sales_policy",
     confidence: 0.85,
@@ -52939,8 +52938,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_sales_placement_is_identified_by_carrier",
-    name: "is identified by",
-    description: "A Sales Placement is identified by Carrier.",
+    name: "isIdentifiedBy",
+    description: "Sales Placement is Identified By Carrier",
     from: "e_sales_placement",
     to: "e_carrier",
     confidence: 0.85,
@@ -52955,8 +52954,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_sales_placement_is_located_in_territory",
-    name: "is located in",
-    description: "A Sales Placement is located in Territory.",
+    name: "isLocatedIn",
+    description: "Sales Placement is Located In Territory",
     from: "e_sales_placement",
     to: "e_territory",
     confidence: 0.85,
@@ -52971,8 +52970,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_sales_placement_was_made_by_producer",
-    name: "was made by",
-    description: "A Sales Placement was made by Producer.",
+    name: "wasMadeBy",
+    description: "Sales Placement was Made By Producer",
     from: "e_sales_placement",
     to: "e_producer",
     confidence: 0.85,
@@ -52987,8 +52986,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_sales_placement_was_underwritten_by_underwriter",
-    name: "was underwritten by",
-    description: "A Sales Placement was underwritten by Underwriter.",
+    name: "wasUnderwrittenBy",
+    description: "Sales Placement was Underwritten By Underwriter",
     from: "e_sales_placement",
     to: "e_underwriter",
     confidence: 0.85,
@@ -53003,8 +53002,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_sales_policy_has_companion_policy_companion_policy",
-    name: "has companion policy",
-    description: "A Sales Policy has companion policy Companion Policy.",
+    name: "hasCompanionPolicy",
+    description: "Sales Policy has Companion Policy Companion Policy",
     from: "e_sales_policy",
     to: "e_companion_policy",
     confidence: 0.85,
@@ -53019,8 +53018,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_sales_policy_uses_telematics_device_telematics_device",
-    name: "uses telematics device",
-    description: "A Sales Policy uses telematics device Telematics Device.",
+    name: "usesTelematicsDevice",
+    description: "Sales Policy uses Telematics Device Telematics Device",
     from: "e_sales_policy",
     to: "e_telematics_device",
     confidence: 0.85,
@@ -53035,8 +53034,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_sales_quote_is_governed_by_sales_policy",
-    name: "is governed by",
-    description: "A Sales Quote is governed by Sales Policy.",
+    name: "isGovernedBy",
+    description: "Sales Quote is Governed By Sales Policy",
     from: "e_sales_quote",
     to: "e_sales_policy",
     confidence: 0.85,
@@ -53051,8 +53050,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_sales_quote_was_created_by_user",
-    name: "was created by",
-    description: "A Sales Quote was created by User.",
+    name: "wasCreatedBy",
+    description: "Sales Quote was Created By User",
     from: "e_sales_quote",
     to: "e_user",
     confidence: 0.85,
@@ -53067,8 +53066,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_sales_root_is_associated_with_producer",
-    name: "is associated with",
-    description: "A Sales Root is associated with Producer.",
+    name: "isAssociatedWith",
+    description: "Sales Root is Associated With Producer",
     from: "e_sales_root",
     to: "e_producer",
     confidence: 0.85,
@@ -53083,8 +53082,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_sales_root_is_governed_by_sales_policy",
-    name: "is governed by",
-    description: "A Sales Root is governed by Sales Policy.",
+    name: "isGovernedBy",
+    description: "Sales Root is Governed By Sales Policy",
     from: "e_sales_root",
     to: "e_sales_policy",
     confidence: 0.85,
@@ -53099,8 +53098,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_sales_root_is_insuring_named_insured",
-    name: "is insuring",
-    description: "A Sales Root is insuring Named Insured.",
+    name: "isInsuring",
+    description: "Sales Root is Insuring Named Insured",
     from: "e_sales_root",
     to: "e_named_insured",
     confidence: 0.85,
@@ -53115,8 +53114,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_sales_root_is_represented_by_agency",
-    name: "is represented by",
-    description: "A Sales Root is represented by Agency.",
+    name: "isRepresentedBy",
+    description: "Sales Root is Represented By Agency",
     from: "e_sales_root",
     to: "e_agency",
     confidence: 0.85,
@@ -53131,8 +53130,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_sales_vehicle_is_covered_by_policy",
-    name: "is covered by",
-    description: "A Sales Vehicle is covered by Policy.",
+    name: "isCoveredBy",
+    description: "Sales Vehicle is Covered By Policy",
     from: "e_sales_vehicle",
     to: "e_policy",
     confidence: 0.85,
@@ -53147,8 +53146,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_sales_vehicle_is_equipped_with_telematics_device",
-    name: "is equipped with",
-    description: "A Sales Vehicle is equipped with Telematics Device.",
+    name: "isEquippedWith",
+    description: "Sales Vehicle is equipped with Telematics Device",
     from: "e_sales_vehicle",
     to: "e_telematics_device",
     confidence: 0.85,
@@ -53163,8 +53162,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_vehicle_is_associated_with_sales_vehicle",
-    name: "is associated with",
-    description: "A Vehicle is associated with Sales Vehicle.",
+    name: "isAssociatedWith",
+    description: "Vehicle is Associated With Sales Vehicle",
     from: "e_vehicle",
     to: "e_sales_vehicle",
     confidence: 0.85,
@@ -53179,8 +53178,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_vehicle_is_covered_by_policy",
-    name: "is covered by",
-    description: "A Vehicle is covered by Policy.",
+    name: "isCoveredBy",
+    description: "Vehicle is Covered By Policy",
     from: "e_vehicle",
     to: "e_policy",
     confidence: 0.85,
@@ -53195,8 +53194,8 @@ export const initialRelations: Relation[] = [
   },
   {
     id: "r_vehicle_is_equipped_with_telematics_device",
-    name: "is equipped with",
-    description: "A Vehicle is equipped with Telematics Device.",
+    name: "isEquippedWith",
+    description: "Vehicle is equipped with Telematics Device",
     from: "e_vehicle",
     to: "e_telematics_device",
     confidence: 0.85,
