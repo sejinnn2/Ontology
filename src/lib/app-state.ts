@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  initialEntities,
-  initialRelations,
+  createDemoFixture,
+  mappingStatus,
   propertyStatus,
   relationLabel,
   tableByName,
   tables,
   type ColumnRef,
+  type DemoScenario,
   type Entity,
   type Property,
   type Relation,
@@ -82,13 +83,14 @@ export type ConfidenceRange = { min: number; max: number };
 export type SuggestionRef =
   | { kind: "entity"; id: string }
   | { kind: "property"; entityId: string; propertyId: string }
+  | { kind: "mapping"; entityId: string; propertyId: string }
   | { kind: "relation"; id: string };
 
 const SUGGESTION_KEY_SEP = "|";
 
 export function suggestionKey(ref: SuggestionRef): string {
-  return ref.kind === "property"
-    ? `property${SUGGESTION_KEY_SEP}${ref.entityId}${SUGGESTION_KEY_SEP}${ref.propertyId}`
+  return ref.kind === "property" || ref.kind === "mapping"
+    ? `${ref.kind}${SUGGESTION_KEY_SEP}${ref.entityId}${SUGGESTION_KEY_SEP}${ref.propertyId}`
     : `${ref.kind}${SUGGESTION_KEY_SEP}${ref.id}`;
 }
 
@@ -98,6 +100,9 @@ export function parseSuggestionKey(key: string): SuggestionRef | null {
   if (parts[0] === "relation" && parts[1]) return { kind: "relation", id: parts[1] };
   if (parts[0] === "property" && parts[1] && parts[2]) {
     return { kind: "property", entityId: parts[1], propertyId: parts[2] };
+  }
+  if (parts[0] === "mapping" && parts[1] && parts[2]) {
+    return { kind: "mapping", entityId: parts[1], propertyId: parts[2] };
   }
   return null;
 }
@@ -326,52 +331,69 @@ export type HistoryInspection = {
 // restored — see `mergeEntities`'s own doc comment) — never a mock Create/Delete, which would
 // need matching Trash state seeded alongside it to restore correctly. Spans "Today" and
 // "Yesterday" so the panel's own day-grouping has more than one group to show right away.
-const now = Date.now();
-const MOCK_HISTORY_LOG: HistoryLogEntry[] = [
+const DEMO_HISTORY_NOW = new Date("2026-09-15T20:00:00-07:00").getTime();
+const IN_PROGRESS_HISTORY_LOG: HistoryLogEntry[] = [
   {
     id: "hist_mock_1",
-    at: now - 2 * 60_000,
-    title: "Renamed Entity",
-    detail: "Line Item → Order Item",
-    ref: { kind: "entity", id: "e_order_item" },
-    restore: { kind: "entityPatch", id: "e_order_item", before: { name: "Line Item" } },
+    at: DEMO_HISTORY_NOW - 2 * 60_000,
+    title: "Renamed Property",
+    detail: "Order.totalAmount → total",
+    ref: { kind: "property", entityId: "e_order", propertyId: "p_ord_total" },
+    restore: {
+      kind: "propertyPatch",
+      entityId: "e_order",
+      propertyId: "p_ord_total",
+      before: { name: "totalAmount" },
+    },
   },
   {
     id: "hist_mock_2",
-    at: now - 20 * 60_000,
-    title: "Accepted 2 suggestions",
+    at: DEMO_HISTORY_NOW - 20 * 60_000,
+    title: "Reviewed Customer",
     children: [
       {
-        title: "Accepted Property suggestion",
-        detail: "Customer.email",
-        ref: { kind: "property", entityId: "e_customer", propertyId: "p_cust_email" },
+        title: "Accepted Entity suggestion",
+        detail: "Customer",
+        ref: { kind: "entity", id: "e_customer" },
         restore: {
-          kind: "propertyPatch",
-          entityId: "e_customer",
-          propertyId: "p_cust_email",
+          kind: "entityPatch",
+          id: "e_customer",
           before: { status: "suggested" },
         },
       },
       {
-        title: "Accepted Relation suggestion",
-        detail: "places",
-        ref: { kind: "relation", id: "r_places" },
-        restore: { kind: "relationPatch", id: "r_places", before: { status: "suggested" } },
+        title: "Confirmed Identifier mapping",
+        detail: "Customer.id → customers.customer_id",
+        ref: { kind: "property", entityId: "e_customer", propertyId: "p_cust_id" },
+        restore: {
+          kind: "propertyPatch",
+          entityId: "e_customer",
+          propertyId: "p_cust_id",
+          before: {
+            mapping: { table: "customers", column: "customer_id", status: "suggested" },
+          },
+        },
       },
     ],
   },
   {
     id: "hist_mock_3",
-    at: now - 90 * 60_000,
-    title: "Merged Entity Types",
-    detail: "Order Fulfillment + Shipment → Shipment",
-    ref: { kind: "entity", id: "e_shipment" },
-    // No `restore` — a Merge genuinely can't be selectively undone (see `mergeEntities`'s own doc
-    // comment), so this exercises the "disabled checkbox, can't be restored" path in the panel.
+    at: DEMO_HISTORY_NOW - 90 * 60_000,
+    title: "Disconnected Identifier mapping",
+    detail: "Product Details.id",
+    ref: { kind: "property", entityId: "e_product_details", propertyId: "p_pd_id" },
+    restore: {
+      kind: "propertyPatch",
+      entityId: "e_product_details",
+      propertyId: "p_pd_id",
+      before: {
+        mapping: { table: "product_details", column: "sku", status: "suggested" },
+      },
+    },
   },
   {
     id: "hist_mock_4",
-    at: now - 25 * 60 * 60_000,
+    at: DEMO_HISTORY_NOW - 25 * 60 * 60_000,
     title: "Renamed Entity",
     detail: "Purchaser → Customer",
     ref: { kind: "entity", id: "e_customer" },
@@ -380,8 +402,10 @@ const MOCK_HISTORY_LOG: HistoryLogEntry[] = [
 ];
 
 export function useOntologyApp() {
-  const [entities, setEntities] = useState<Entity[]>(initialEntities);
-  const [relations, setRelations] = useState<Relation[]>(initialRelations);
+  const initialFixture = useRef(createDemoFixture("in-progress"));
+  const [demoScenario, setDemoScenario] = useState<DemoScenario>("in-progress");
+  const [entities, setEntities] = useState<Entity[]>(initialFixture.current.entities);
+  const [relations, setRelations] = useState<Relation[]>(initialFixture.current.relations);
   // Mirrors `entities`/`relations` for the handful of mutators below (`updateEntity` especially)
   // that need to read the "before" value for History logging WITHOUT taking a dependency on
   // `entities`/`relations` themselves — critical for `updateEntity`, whose referential stability
@@ -464,7 +488,7 @@ export function useOntologyApp() {
   // every mutator below can log through it without becoming a new function reference every time
   // `entities`/`relations` change — several of them (`updateEntity` especially) need to stay
   // referentially stable for the Overview canvas's own hot drag path.
-  const [historyLog, setHistoryLog] = useState<HistoryLogEntry[]>(MOCK_HISTORY_LOG);
+  const [historyLog, setHistoryLog] = useState<HistoryLogEntry[]>(IN_PROGRESS_HISTORY_LOG);
   // Set only while `restoreHistoryChanges` below is applying its selected changes — each one goes
   // through the SAME mutators as a normal edit (`updateEntity`, `deleteEntity`, ...), which would
   // otherwise each log their own ordinary entry ("Renamed Entity") right alongside the one, single
@@ -1206,6 +1230,7 @@ export function useOntologyApp() {
       const entityIds: string[] = [];
       const relationIds: string[] = [];
       const propertyKeys: { entityId: string; propertyId: string }[] = [];
+      const mappingKeys: { entityId: string; propertyId: string }[] = [];
       keys.forEach((key) => {
         const ref = parseSuggestionKey(key);
         if (!ref) return;
@@ -1215,8 +1240,15 @@ export function useOntologyApp() {
         } else if (ref.kind === "relation") {
           const r = relations.find((x) => x.id === ref.id);
           if (r && r.status !== "error" && r.status !== "confirmed") relationIds.push(ref.id);
-        } else {
+        } else if (ref.kind === "property") {
           propertyKeys.push({ entityId: ref.entityId, propertyId: ref.propertyId });
+        } else {
+          const property = entities
+            .find((entity) => entity.id === ref.entityId)
+            ?.properties.find((item) => item.id === ref.propertyId);
+          if (property?.mapping && mappingStatus(property.mapping) === "suggested") {
+            mappingKeys.push(ref);
+          }
         }
       });
 
@@ -1244,9 +1276,33 @@ export function useOntologyApp() {
         });
       });
 
-      if (entityIds.length > 0 || propertyIds.length > 0 || relationIds.length > 0) {
-        confirmItems({ entityIds, propertyIds, relationIds });
-        const total = entityIds.length + propertyIds.length + relationIds.length;
+      if (
+        entityIds.length > 0 ||
+        propertyIds.length > 0 ||
+        relationIds.length > 0 ||
+        mappingKeys.length > 0
+      ) {
+        const hasOntologyItems =
+          entityIds.length > 0 || propertyIds.length > 0 || relationIds.length > 0;
+        if (hasOntologyItems) confirmItems({ entityIds, propertyIds, relationIds });
+        else pushHistory();
+        if (mappingKeys.length > 0) {
+          const mappingKeySet = new Set(
+            mappingKeys.map(({ entityId, propertyId }) => `${entityId}|${propertyId}`),
+          );
+          setEntities((current) =>
+            current.map((entity) => ({
+              ...entity,
+              properties: entity.properties.map((property) =>
+                property.mapping && mappingKeySet.has(`${entity.id}|${property.id}`)
+                  ? { ...property, mapping: { ...property.mapping, status: "mapped" } }
+                  : property,
+              ),
+            })),
+          );
+        }
+        const total =
+          entityIds.length + propertyIds.length + relationIds.length + mappingKeys.length;
         const parts: string[] = [];
         if (entityIds.length > 0) {
           parts.push(`${entityIds.length} Entit${entityIds.length === 1 ? "y" : "ies"}`);
@@ -1256,6 +1312,9 @@ export function useOntologyApp() {
         }
         if (relationIds.length > 0) {
           parts.push(`${relationIds.length} Relation${relationIds.length === 1 ? "" : "s"}`);
+        }
+        if (mappingKeys.length > 0) {
+          parts.push(`${mappingKeys.length} Mapping${mappingKeys.length === 1 ? "" : "s"}`);
         }
         // Prior status (Suggested or Warning — never Error/Confirmed, both already filtered out
         // above) is read from the same pre-`confirmItems` `entities`/`relations` closure as
@@ -1301,6 +1360,23 @@ export function useOntologyApp() {
                 : undefined,
             };
           }),
+          ...mappingKeys.map(({ entityId, propertyId }) => {
+            const owner = entities.find((entity) => entity.id === entityId);
+            const property = owner?.properties.find((item) => item.id === propertyId);
+            return {
+              title: "Mapping",
+              detail: `${owner?.name || "Untitled entity"}.${property?.name || "Untitled property"}`,
+              ref: { kind: "property" as const, entityId, propertyId },
+              restore: property
+                ? {
+                    kind: "propertyPatch" as const,
+                    entityId,
+                    propertyId,
+                    before: { mapping: property.mapping },
+                  }
+                : undefined,
+            };
+          }),
         ];
         logHistoryEvent({
           title: total === 1 ? "Accepted 1 suggestion" : `Accepted ${total} suggestions`,
@@ -1310,7 +1386,7 @@ export function useOntologyApp() {
       }
       setSuggestionSelection(new Set());
     },
-    [entities, relations, confirmItems, logHistoryEvent],
+    [entities, relations, confirmItems, pushHistory, logHistoryEvent],
   );
 
   // Moves one or more properties from one entity to another in a single atomic update (drag a
@@ -1734,13 +1810,15 @@ export function useOntologyApp() {
     (keys: string[]) => {
       const entityIds = new Set<string>();
       const propertyRefs: { entityId: string; propertyId: string }[] = [];
+      const mappingRefs: { entityId: string; propertyId: string }[] = [];
       const relationIds = new Set<string>();
       keys.forEach((key) => {
         const ref = parseSuggestionKey(key);
         if (!ref) return;
         if (ref.kind === "entity") entityIds.add(ref.id);
         else if (ref.kind === "relation") relationIds.add(ref.id);
-        else propertyRefs.push(ref);
+        else if (ref.kind === "property") propertyRefs.push(ref);
+        else mappingRefs.push(ref);
       });
       const propertyIdsByEntity = new Map<string, Set<string>>();
       propertyRefs.forEach(({ entityId, propertyId }) => {
@@ -1756,11 +1834,21 @@ export function useOntologyApp() {
         .map((r) => r.id);
       const allRelationIds = new Set([...relationIds, ...cascadedRelationIds]);
       const declinedRelations = relations.filter((r) => allRelationIds.has(r.id));
+      const declinedMappings = mappingRefs.filter(({ entityId, propertyId }) => {
+        if (entityIds.has(entityId) || propertyIdsByEntity.get(entityId)?.has(propertyId)) {
+          return false;
+        }
+        const property = entities
+          .find((entity) => entity.id === entityId)
+          ?.properties.find((item) => item.id === propertyId);
+        return !!property?.mapping && mappingStatus(property.mapping) === "suggested";
+      });
 
       if (
         declinedEntities.length === 0 &&
         propertyIdsByEntity.size === 0 &&
-        declinedRelations.length === 0
+        declinedRelations.length === 0 &&
+        declinedMappings.length === 0
       ) {
         setSuggestionSelection(new Set());
         return;
@@ -1773,9 +1861,24 @@ export function useOntologyApp() {
           .filter((e) => !entityIds.has(e.id))
           .map((e) => {
             const propIds = propertyIdsByEntity.get(e.id);
-            return propIds
-              ? { ...e, properties: e.properties.filter((p) => !propIds.has(p.id)) }
-              : e;
+            const rejectedMappingIds = new Set(
+              declinedMappings
+                .filter((mapping) => mapping.entityId === e.id)
+                .map((mapping) => mapping.propertyId),
+            );
+            const properties = propIds
+              ? e.properties.filter((p) => !propIds.has(p.id))
+              : e.properties;
+            return rejectedMappingIds.size > 0
+              ? {
+                  ...e,
+                  properties: properties.map((property) =>
+                    rejectedMappingIds.has(property.id) ? { ...property, mapping: null } : property,
+                  ),
+                }
+              : propIds
+                ? { ...e, properties }
+                : e;
           }),
       );
       setRelations((rs) => rs.filter((r) => !allRelationIds.has(r.id)));
@@ -1816,7 +1919,11 @@ export function useOntologyApp() {
         (n, set) => n + set.size,
         0,
       );
-      const total = declinedEntities.length + declinedPropertyCount + declinedRelations.length;
+      const total =
+        declinedEntities.length +
+        declinedPropertyCount +
+        declinedRelations.length +
+        declinedMappings.length;
       const parts: string[] = [];
       if (declinedEntities.length > 0) {
         parts.push(
@@ -1830,6 +1937,9 @@ export function useOntologyApp() {
         parts.push(
           `${declinedRelations.length} Relation${declinedRelations.length === 1 ? "" : "s"}`,
         );
+      }
+      if (declinedMappings.length > 0) {
+        parts.push(`${declinedMappings.length} Mapping${declinedMappings.length === 1 ? "" : "s"}`);
       }
       // Declining moves each item into Trash exactly like a manual delete does (see the doc
       // comment above) — so its restore is the same `undo*Delete` op a delete's own History child
@@ -1863,6 +1973,23 @@ export function useOntologyApp() {
             detail: relationLabel(r),
             restore: { kind: "undoRelationDelete" as const, id: r.id },
           })),
+          ...declinedMappings.map(({ entityId, propertyId }) => {
+            const owner = entities.find((entity) => entity.id === entityId);
+            const property = owner?.properties.find((item) => item.id === propertyId);
+            return {
+              title: "Mapping",
+              detail: `${owner?.name || "Untitled entity"}.${property?.name || "Untitled property"}`,
+              ref: { kind: "property" as const, entityId, propertyId },
+              restore: property
+                ? {
+                    kind: "propertyPatch" as const,
+                    entityId,
+                    propertyId,
+                    before: { mapping: property.mapping },
+                  }
+                : undefined,
+            };
+          }),
         ],
       });
     },
@@ -2338,7 +2465,39 @@ export function useOntologyApp() {
     return outcome;
   }, [historyInspection, restoreHistoryChanges, flashRestoreHighlight, exitHistoryInspection]);
 
+  const resetDemoScenario = useCallback((scenario: DemoScenario) => {
+    const fixture = createDemoFixture(scenario);
+    setDemoScenario(scenario);
+    setEntities(fixture.entities);
+    setRelations(fixture.relations);
+    setTrashedEntities([]);
+    setTrashedProperties([]);
+    setTrashedRelations([]);
+    setPast([]);
+    setFuture([]);
+    setHistoryLog(scenario === "fresh" ? [] : IN_PROGRESS_HISTORY_LOG);
+    setSelection(null);
+    setDetail(null);
+    setEntityMorphOrigin(null);
+    setView({ x: 60, y: 40, z: 0.55 });
+    setConfidenceRange({ min: 0, max: 100 });
+    setStatusFilter(new Set<ReviewStatus>(["suggested", "confirmed", "warning", "error"]));
+    setSuggestionSelection(new Set());
+    setSearchFocus(null);
+    setIssueInspection(null);
+    setHistoryInspection(null);
+    setHistoryInspectionHoveredNumber(null);
+    setHistoryPanelOpenRaw(false);
+    setHistoryRestoreHighlight([]);
+    if (restoreHighlightTimeoutRef.current) {
+      clearTimeout(restoreHighlightTimeoutRef.current);
+      restoreHighlightTimeoutRef.current = null;
+    }
+  }, []);
+
   return {
+    demoScenario,
+    resetDemoScenario,
     entities,
     relations,
     tables,

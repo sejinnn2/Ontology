@@ -11,6 +11,7 @@ import {
   entitiesUsingTable,
   tablesUsedByEntity,
   entityStatus,
+  propertyStatus,
   entityErrorReason,
   isTableInScope,
   isReviewItemInScope,
@@ -328,6 +329,8 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
   // move the view instead. Clicking/dragging any node itself works exactly the same in either
   // tool, regardless of which one is active.
   const [tool, setTool] = useState<CanvasTool>("select");
+  const [propertySuggestionsHighlightActive, setPropertySuggestionsHighlightActive] =
+    useState(false);
   useCanvasToolShortcuts(tool, setTool, undo, redo);
 
   // The Data Tables panel's own collapse toggle — independent of the Ontology canvas, which is
@@ -339,7 +342,10 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
+    if (e.target !== e.currentTarget) return;
     select(null);
+    clearSuggestionSelection();
+    setPropertySuggestionsHighlightActive(false);
     // Clicking empty canvas is one of Global Search's own "exit this focus state" gestures (see
     // app-state's `searchFocus` doc comment) — harmless to call unconditionally even when no
     // search focus is active, since clearing an already-null value is a no-op.
@@ -638,13 +644,17 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       const info = nodeDragInfo.current;
       nodeDragInfo.current = null;
       if (!info || info.moved) return;
-      // Shift-click adds/removes this Entity from the multi-select set instead of the plain single
-      // `selection` — the same Set `suggestionSelection` already uses for "Select all in range",
-      // so a shift-click multi-selection shows the exact same composition-breakdown bar (see the
-      // bottom-center stack below) rather than a second, parallel multi-select concept.
+      const currentKey = suggestionKey({ kind: "entity", id: info.id });
       if (e.shiftKey) {
-        toggleSuggestionSelected({ kind: "entity", id: info.id });
-        return;
+        if (suggestionSelection.size > 0) {
+          toggleSuggestionSelected({ kind: "entity", id: info.id });
+          return;
+        }
+        if (selection?.kind === "entity" && selection.id !== info.id) {
+          selectSuggestionKeys([suggestionKey({ kind: "entity", id: selection.id }), currentKey]);
+          select(null);
+          return;
+        }
       }
       // A second plain click on this same Entity within `DOUBLE_CLICK_MS` jumps straight into
       // Editing Mode — the fast path alongside the contextual bar's own explicit "Go to Editing
@@ -656,6 +666,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
         return;
       }
       lastEntityClickRef.current = { id: info.id, at: Date.now() };
+      clearSuggestionSelection();
       // A plain (single) click only SELECTS the Entity — it no longer jumps straight into Editing
       // Mode on its own. Selecting reveals the contextual action bar in place of the default AI
       // Review bar (see the bottom-center stack below), which offers "Go to Editing Mode" as its
@@ -668,7 +679,18 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [updateEntity, select, toggleSuggestionSelected, goToEditingMode, view.z, pushHistory]);
+  }, [
+    updateEntity,
+    select,
+    selection,
+    suggestionSelection,
+    selectSuggestionKeys,
+    toggleSuggestionSelected,
+    clearSuggestionSelection,
+    goToEditingMode,
+    view.z,
+    pushHistory,
+  ]);
 
   // Composite "Delete" for the multi-select bar (see `SuggestionSelectionBar`'s own doc comment
   // on `onDeleteSuggestions`) — a selection can mix Entities/Properties/Relations at once (e.g.
@@ -687,7 +709,9 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
         if (!ref) return;
         if (ref.kind === "entity") entityIds.push(ref.id);
         else if (ref.kind === "relation") relationIds.push(ref.id);
-        else propertyItems.push({ entityId: ref.entityId, propertyId: ref.propertyId });
+        else if (ref.kind === "property") {
+          propertyItems.push({ entityId: ref.entityId, propertyId: ref.propertyId });
+        }
       });
       if (entityIds.length > 0) deleteEntities(entityIds);
       if (propertyItems.length > 0) deleteProperties(propertyItems);
@@ -706,6 +730,40 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
   // `selection` isn't a Relation.
   const selectedRelation =
     selection?.kind === "relation" ? (relations.find((r) => r.id === selection.id) ?? null) : null;
+  const selectRelationOnClick = useCallback(
+    (relationId: string, shiftKey: boolean) => {
+      const current = { kind: "relation", id: relationId } as const;
+      if (shiftKey) {
+        if (suggestionSelection.size > 0) {
+          toggleSuggestionSelected(current);
+          return;
+        }
+        if (selection && !(selection.kind === "relation" && selection.id === relationId)) {
+          const previousKey =
+            selection.kind === "entity"
+              ? suggestionKey({ kind: "entity", id: selection.id })
+              : selection.kind === "relation"
+                ? suggestionKey({ kind: "relation", id: selection.id })
+                : null;
+          if (previousKey) {
+            selectSuggestionKeys([previousKey, suggestionKey(current)]);
+            select(null);
+            return;
+          }
+        }
+      }
+      clearSuggestionSelection();
+      select(current);
+    },
+    [
+      selection,
+      suggestionSelection,
+      select,
+      selectSuggestionKeys,
+      toggleSuggestionSelected,
+      clearSuggestionSelection,
+    ],
+  );
 
   const zoomBy = useCallback(
     (factor: number) => {
@@ -800,6 +858,25 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
   // visible; hovering is the only gesture that stays on this canvas long enough to see it.
   const [hoveredEntityId, setHoveredEntityId] = useState<string | null>(null);
   const highlightId = hoveredEntityId ?? (selection?.kind === "entity" ? selection.id : null);
+  const multiSelectedEntityIds = useMemo(() => {
+    const ids = new Set<string>();
+    suggestionSelection.forEach((key) => {
+      const selected = parseSuggestionKey(key);
+      if (selected?.kind === "entity") ids.add(selected.id);
+    });
+    return ids;
+  }, [suggestionSelection]);
+  const suggestedPropertyEntityIds = useMemo(
+    () =>
+      new Set(
+        entities
+          .filter((candidate) =>
+            candidate.properties.some((property) => propertyStatus(property) === "suggested"),
+          )
+          .map((candidate) => candidate.id),
+      ),
+    [entities],
+  );
 
   // Same "in focus" emphasis, but from the Data Tables entry point instead of Entity types — the
   // basis for what's highlighted just becomes "which entities map to this table" (via
@@ -1166,6 +1243,10 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     ) {
       return "muted" as const;
     }
+    if (propertySuggestionsHighlightActive)
+      return suggestedPropertyEntityIds.has(entityId) ? ("normal" as const) : ("muted" as const);
+    if (suggestionSelection.size > 0)
+      return multiSelectedEntityIds.has(entityId) ? ("active" as const) : ("normal" as const);
     if (!activeEntityIds) return "normal" as const;
     if (activeEntityIds.has(entityId)) return "active" as const;
     if (neighborIds?.has(entityId)) return "related" as const;
@@ -1417,7 +1498,9 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                 const b = entities.find((e) => e.id === r.to);
                 const geo = relationGeometry.get(r.id);
                 if (!a || !b || !geo) return null;
-                const isSelected = selection?.kind === "relation" && selection.id === r.id;
+                const isSelected =
+                  (selection?.kind === "relation" && selection.id === r.id) ||
+                  suggestionSelection.has(suggestionKey({ kind: "relation", id: r.id }));
                 // Only genuinely relevant while a search is active — both endpoints in the
                 // connected set, not just one, so a Relation search result highlights exactly
                 // that relation (and any other directly connecting two connected entities)
@@ -1426,14 +1509,21 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                   ? searchContext.connectedEntityIds.has(r.from) &&
                     searchContext.connectedEntityIds.has(r.to)
                   : false;
+                const propertySuggestionFocusEdge =
+                  propertySuggestionsHighlightActive &&
+                  (suggestedPropertyEntityIds.has(r.from) || suggestedPropertyEntityIds.has(r.to));
                 // Table-hover's own `activeEntityIds` (the entities using that table) highlights
                 // those Entity Types only — relations never light up for it, only for an actual
                 // Entity hover/search focus, hence the `!hoveredTableName` guard here.
-                const isFocusEdge = searchContext
-                  ? bothSearchConnected
-                  : activeEntityIds && !hoveredTableName
-                    ? activeEntityIds.has(r.from) || activeEntityIds.has(r.to)
-                    : false;
+                const isFocusEdge = propertySuggestionsHighlightActive
+                  ? propertySuggestionFocusEdge
+                  : suggestionSelection.size > 0
+                    ? false
+                    : searchContext
+                      ? bothSearchConnected
+                      : activeEntityIds && !hoveredTableName
+                        ? activeEntityIds.has(r.from) || activeEntityIds.has(r.to)
+                        : false;
                 // A Relation's own review-scope uses ITS OWN status/confidence (Relations →
                 // Relation suggestion confidence), not either connected Entity's — same
                 // `isReviewItemInScope` predicate Confidence/Filter apply to every other object
@@ -1442,7 +1532,11 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                 const outOfScope =
                   !bothSearchConnected &&
                   !isReviewItemInScope(r.status, r.confidence, confidenceRange, statusFilter);
-                const isMuted = outOfScope || (activeEntityIds !== null && !isFocusEdge);
+                const isMuted =
+                  outOfScope ||
+                  (propertySuggestionsHighlightActive
+                    ? !propertySuggestionFocusEdge
+                    : activeEntityIds !== null && !isFocusEdge);
                 return (
                   <path
                     key={r.id}
@@ -1452,8 +1546,8 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                     className={cn(
                       "transition-opacity",
                       isSelected
-                        ? "stroke-primary"
-                        : isFocusEdge
+                        ? "stroke-[#3b82f6]"
+                        : isFocusEdge && !propertySuggestionsHighlightActive
                           ? "stroke-[#3b82f6]"
                           : "stroke-zinc-400",
                       isMuted && "opacity-20",
@@ -1496,17 +1590,28 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                 ? searchContext.connectedEntityIds.has(r.from) &&
                   searchContext.connectedEntityIds.has(r.to)
                 : false;
+              const propertySuggestionFocusEdge =
+                propertySuggestionsHighlightActive &&
+                (suggestedPropertyEntityIds.has(r.from) || suggestedPropertyEntityIds.has(r.to));
               // Same table-hover guard as the connector line above — relations only ever light up
               // for an actual Entity hover/search focus, never for Table hover's own entity set.
-              const isFocusEdge = searchContext
-                ? bothSearchConnected
-                : activeEntityIds && !hoveredTableName
-                  ? activeEntityIds.has(r.from) || activeEntityIds.has(r.to)
-                  : false;
+              const isFocusEdge = propertySuggestionsHighlightActive
+                ? propertySuggestionFocusEdge
+                : suggestionSelection.size > 0
+                  ? false
+                  : searchContext
+                    ? bothSearchConnected
+                    : activeEntityIds && !hoveredTableName
+                      ? activeEntityIds.has(r.from) || activeEntityIds.has(r.to)
+                      : false;
               const outOfScope =
                 !bothSearchConnected &&
                 !isReviewItemInScope(r.status, r.confidence, confidenceRange, statusFilter);
-              const isMuted = outOfScope || (activeEntityIds !== null && !isFocusEdge);
+              const isMuted =
+                outOfScope ||
+                (propertySuggestionsHighlightActive
+                  ? !propertySuggestionFocusEdge
+                  : activeEntityIds !== null && !isFocusEdge);
               return (
                 <div
                   key={r.id}
@@ -1520,20 +1625,12 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                     // once a specific event is open (see this file's own `historyPanelOpen` gates
                     // elsewhere, e.g. the Entity node click handler right above).
                     if (historyPanelOpen) return;
-                    // Shift-click adds/removes this Relation from the multi-select set instead of
-                    // the plain single `selection` — see the matching Entity node click handler's
-                    // own doc comment on why that's the same Set `suggestionSelection` already
-                    // uses for "Select all in range", not a second parallel mechanism.
-                    if (e.shiftKey) {
-                      toggleSuggestionSelected({ kind: "relation", id: r.id });
-                      return;
-                    }
-                    select({ kind: "relation", id: r.id });
+                    selectRelationOnClick(r.id, e.shiftKey);
                   }}
                   className={cn(
                     "group/relpill absolute z-10 -translate-x-1/2 -translate-y-1/2 transition-opacity",
                     historyPanelOpen ? "cursor-default" : "cursor-pointer",
-                    (isSelected || isMultiSelected) && "ring-2 ring-primary rounded-full",
+                    (isSelected || isMultiSelected) && "rounded-full ring-2 ring-[#3b82f6]",
                     isMuted && "opacity-20",
                   )}
                 >
@@ -1543,7 +1640,10 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                       multi-select alike, see the bottom-center stack below), matching how Entity
                       Types already work. */}
                   <div
-                    style={{ borderColor: statusBorderColor(r.status) }}
+                    style={{
+                      borderColor:
+                        isSelected || isMultiSelected ? "#3b82f6" : statusBorderColor(r.status),
+                    }}
                     className="inline-flex items-center justify-center gap-0 rounded-full border-[1.5px] bg-white p-1 shadow-[0_2.281px_1.14px_0_rgba(0,0,0,0.1)] transition-[gap,padding] group-hover/relpill:gap-1 group-hover/relpill:pr-2"
                   >
                     <span className="flex size-[18px] shrink-0 items-center justify-center rounded-full">
@@ -1578,6 +1678,10 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                 <OntologyNode
                   entity={entity}
                   detailed={view.z > 1}
+                  showPropertySummary={view.z > 1.1}
+                  emphasizeSuggestedProperties={
+                    propertySuggestionsHighlightActive && suggestedPropertyEntityIds.has(entity.id)
+                  }
                   emphasis={emphasisFor(entity.id)}
                   // Editing the canvas while previewing a historical point would silently apply
                   // to CURRENT Ontology underneath — see this feature's own spec on why a preview
@@ -1731,6 +1835,10 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                 confidenceRange={confidenceRange}
                 onConfidenceRangeChange={setConfidenceRange}
                 onSelectSuggestionsInRange={selectSuggestionKeys}
+                propertySuggestionsHighlightActive={propertySuggestionsHighlightActive}
+                onTogglePropertySuggestionsHighlight={() =>
+                  setPropertySuggestionsHighlightActive((active) => !active)
+                }
               />
             )}
           </div>

@@ -47,7 +47,13 @@ export type ContextItem =
   | { kind: "property"; entity: Entity; property: Property }
   | { kind: "relation"; relation: Relation }
   | { kind: "table"; table: TableSchema }
-  | { kind: "column"; tableName: string; column: TableColumn };
+  | {
+      kind: "column";
+      tableName: string;
+      column: TableColumn;
+      mappingEntityId?: string;
+      mappingPropertyId?: string;
+    };
 
 export function contextItemKey(item: ContextItem): string {
   switch (item.kind) {
@@ -60,7 +66,7 @@ export function contextItemKey(item: ContextItem): string {
     case "table":
       return `table:${item.table.name}`;
     case "column":
-      return `column:${item.tableName}.${item.column.name}`;
+      return `column:${item.tableName}.${item.column.name}:${item.mappingEntityId ?? ""}:${item.mappingPropertyId ?? ""}`;
   }
 }
 
@@ -230,6 +236,7 @@ function ReviewedItemBody({
           <input
             key={name}
             type="text"
+            autoFocus={!name}
             defaultValue={name}
             onPointerDown={(e) => e.stopPropagation()}
             onBlur={(e) => {
@@ -533,14 +540,25 @@ export function ContextPanelBody({
       // `mappingReasoningContent`'s own doc comment) — this is the only place that owner/property
       // pair gets looked up, since `ContextItem`'s own "column" case only carries the raw
       // table+column, not which Property (if any) maps into it.
-      const owner = entities.find((e) =>
-        e.properties.some(
-          (p) => p.mapping?.table === item.tableName && p.mapping.column === item.column.name,
-        ),
+      const matchingMappings = entities.flatMap((entity) =>
+        entity.properties
+          .filter(
+            (property) =>
+              property.mapping?.table === item.tableName &&
+              property.mapping.column === item.column.name,
+          )
+          .map((property) => ({ entity, property })),
       );
-      const property = owner?.properties.find(
-        (p) => p.mapping?.table === item.tableName && p.mapping.column === item.column.name,
-      );
+      const selectedMapping = item.mappingEntityId
+        ? matchingMappings.find(
+            ({ entity, property }) =>
+              entity.id === item.mappingEntityId && property.id === item.mappingPropertyId,
+          )
+        : (matchingMappings.find(
+            ({ property }) => property.mapping && mappingStatus(property.mapping) === "suggested",
+          ) ?? matchingMappings[0]);
+      const owner = selectedMapping?.entity;
+      const property = selectedMapping?.property;
       const mapping = owner && property ? mappingReasoningContent(owner, property) : null;
       return (
         <>
@@ -550,7 +568,7 @@ export function ContextPanelBody({
           </p>
           {/* Confidence reasoning is a pending-suggestion fact, same rule as the Entity/Property/
               Relation action area below — gone once the mapping is Applied ("confirmed"). */}
-          {mapping && property && propertyStatus(property) !== "confirmed" && (
+          {mapping && property?.mapping && mappingStatus(property.mapping) === "suggested" && (
             <div className="flex w-full flex-col gap-3 rounded-[8px] bg-[#f8f8f8] p-4">
               <div className="flex items-center gap-2">
                 <p className="text-[14px] font-medium leading-[1.2] text-[#171b22]">
@@ -594,19 +612,17 @@ export function ContextPanelBody({
                   >
                     <SelectionBarDeclineIcon size={14} /> Reject
                   </button>
-                  {propertyStatus(property) !== "error" && (
-                    <button
-                      type="button"
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onAcceptMapping?.(owner.id, property.id);
-                      }}
-                      className="flex h-8 flex-1 items-center justify-center gap-1 rounded-md border border-input px-3 text-[12px] font-medium text-[#161919] transition-colors hover:bg-accent"
-                    >
-                      <SelectionBarAcceptIcon size={14} /> Accept
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onAcceptMapping?.(owner.id, property.id);
+                    }}
+                    className="flex h-8 flex-1 items-center justify-center gap-1 rounded-md border border-input px-3 text-[12px] font-medium text-[#161919] transition-colors hover:bg-accent"
+                  >
+                    <SelectionBarAcceptIcon size={14} /> Accept
+                  </button>
                 </>
               )}
             </div>

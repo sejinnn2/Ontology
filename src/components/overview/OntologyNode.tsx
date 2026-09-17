@@ -3,14 +3,20 @@ import { cn } from "@/lib/utils";
 import type { Side } from "@/lib/geometry";
 import {
   entityDisplayStatus,
+  entityStatus,
   propertyStatus,
+  propertyStatusCounts,
   entityErrorReason,
   tablesUsedByEntity,
   type Entity,
   type ReviewStatus,
 } from "@/lib/mock-data";
 import { ConnectionHandle } from "@/components/ontology/ConnectionHandle";
-import { StatusBadge, statusBorderColor } from "@/components/ontology/StatusBadge";
+import {
+  StatusBadge,
+  reviewStatusLabel,
+  statusBorderColor,
+} from "@/components/ontology/StatusBadge";
 import { ConfidenceChip } from "@/components/ontology/ConfidenceChip";
 
 /** Overview's own fixed canvas-node footprint (Figma: node 246:63476 / 246:63464) — the circle
@@ -63,14 +69,20 @@ const RING_BADGE_SIZE = (36 / RING_VIEWBOX) * ONTOLOGY_NODE_SIZE;
  * which is a completely separate, independent fact. Drawn clockwise from 12 o'clock in Error →
  * Warning → Confirmed → Suggested order. Fades out on hover — see `HoverRing` below, its
  * replacement while the node is actually being pointed at. */
-function PropertyStatusRing({ entity }: { entity: Entity }) {
+function PropertyStatusRing({
+  entity,
+  counts,
+  emphasizeSuggested = false,
+}: {
+  entity: Entity;
+  counts: ReturnType<typeof propertyStatusCounts>;
+  emphasizeSuggested?: boolean;
+}) {
   const statuses: ReviewStatus[] = ["error", "warning", "confirmed", "suggested"];
-  const counts = statuses.map(
-    (status) => entity.properties.filter((property) => propertyStatus(property) === status).length,
-  );
+  const orderedCounts = statuses.map((status) => counts[status]);
   const total = entity.properties.length;
   const circumference = 2 * Math.PI * RING_R;
-  const segments = counts.filter((count) => count > 0).length;
+  const segments = orderedCounts.filter((count) => count > 0).length;
   // A status this rare (say 1 Property out of 50) would render as a near-invisible sliver at its
   // true proportional length — the whole point of this ring is to surface EVERY status that's
   // actually present, not just the dominant ones, so exact proportionality isn't the goal here.
@@ -80,7 +92,7 @@ function PropertyStatusRing({ entity }: { entity: Entity }) {
   // visually larger, it just never fully swallows a rare one.
   const MIN_SHARE = 0.12;
   const minLength = circumference * MIN_SHARE;
-  const raw = counts.map((count) => ({
+  const raw = orderedCounts.map((count) => ({
     count,
     length: count > 0 ? (circumference * count) / total : 0,
   }));
@@ -94,46 +106,71 @@ function PropertyStatusRing({ entity }: { entity: Entity }) {
     return dominantTotal > 0 ? (remaining * r.count) / dominantTotal : r.length;
   });
   let offset = 0;
+  const suggestedIndex = statuses.indexOf("suggested");
+  const suggestedStart = lengths.slice(0, suggestedIndex).reduce((sum, length) => sum + length, 0);
+  const suggestedLength = lengths[suggestedIndex] ?? 0;
+  const suggestedAngle =
+    ((suggestedStart + suggestedLength / 2) / circumference) * Math.PI * 2 - Math.PI / 2;
+  const badgeRadius = 28;
+  const badgeX = RING_VIEWBOX / 2 + Math.cos(suggestedAngle) * badgeRadius;
+  const badgeY = RING_VIEWBOX / 2 + Math.sin(suggestedAngle) * badgeRadius;
+
   return (
-    <svg
-      aria-hidden="true"
-      viewBox={`0 0 ${RING_VIEWBOX} ${RING_VIEWBOX}`}
-      className="pointer-events-none absolute inset-0 size-11 -rotate-90 transition-opacity group-hover:opacity-0"
-    >
-      {total === 0 && (
-        <circle
-          cx={RING_VIEWBOX / 2}
-          cy={RING_VIEWBOX / 2}
-          r={RING_R}
-          fill="none"
-          stroke="#d4d4d8"
-          strokeWidth={RING_STROKE}
-        />
-      )}
-      {statuses.map((status, index) => {
-        const length = lengths[index];
-        if (!length) return null;
-        // ~4° seam between segments in the source file — 1.5 (of this ring's own ~135.8
-        // circumference) matches that almost exactly, shrinking only for a segment small enough
-        // that it would otherwise eat noticeably into that one status's own visible share.
-        const gap = segments > 1 ? Math.min(1.5, length * 0.2) : 0;
-        const start = offset;
-        offset += length;
-        return (
+    <>
+      <svg
+        aria-hidden="true"
+        viewBox={`0 0 ${RING_VIEWBOX} ${RING_VIEWBOX}`}
+        className="pointer-events-none absolute inset-0 size-11 -rotate-90 transition-opacity group-hover:opacity-0"
+      >
+        {total === 0 && (
           <circle
-            key={status}
             cx={RING_VIEWBOX / 2}
             cy={RING_VIEWBOX / 2}
             r={RING_R}
             fill="none"
-            stroke={PROPERTY_RING_COLORS[status]}
+            stroke="#d4d4d8"
             strokeWidth={RING_STROKE}
-            strokeDasharray={`${length - gap} ${circumference - length + gap}`}
-            strokeDashoffset={-(start + gap / 2)}
           />
-        );
-      })}
-    </svg>
+        )}
+        {statuses.map((status, index) => {
+          const length = lengths[index];
+          if (!length) return null;
+          // ~4° seam between segments in the source file — 1.5 (of this ring's own ~135.8
+          // circumference) matches that almost exactly, shrinking only for a segment small enough
+          // that it would otherwise eat noticeably into that one status's own visible share.
+          const gap = segments > 1 ? Math.min(1.5, length * 0.2) : 0;
+          const start = offset;
+          offset += length;
+          return (
+            <circle
+              key={status}
+              cx={RING_VIEWBOX / 2}
+              cy={RING_VIEWBOX / 2}
+              r={RING_R}
+              fill="none"
+              stroke={PROPERTY_RING_COLORS[status]}
+              strokeWidth={
+                emphasizeSuggested && status === "suggested" ? RING_STROKE * 2 : RING_STROKE
+              }
+              strokeDasharray={`${length - gap} ${circumference - length + gap}`}
+              strokeDashoffset={-(start + gap / 2)}
+            />
+          );
+        })}
+      </svg>
+      {emphasizeSuggested && counts.suggested > 0 && (
+        <span
+          aria-label={`${counts.suggested} suggested properties`}
+          style={{
+            left: `${(badgeX / RING_VIEWBOX) * 100}%`,
+            top: `${(badgeY / RING_VIEWBOX) * 100}%`,
+          }}
+          className="pointer-events-none absolute z-20 inline-flex size-4 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-[#7C61FF] text-[9px] font-semibold leading-none text-white shadow-sm"
+        >
+          {counts.suggested}
+        </span>
+      )}
+    </>
   );
 }
 
@@ -189,6 +226,8 @@ const SIDE_POSITION: Record<Side, string> = {
 export function OntologyNode({
   entity,
   detailed,
+  showPropertySummary = false,
+  emphasizeSuggestedProperties = false,
   emphasis = "normal",
   onClick,
   onStartMove,
@@ -206,6 +245,11 @@ export function OntologyNode({
   /** Show confidence + props/table count below the name — Overview passes `view.z > 1` (zoomed
    * past 100%), matching Figma's own zoomed-in variant. */
   detailed: boolean;
+  /** Overview-only semantic zoom layer. Kept separate from `detailed` so the existing confidence
+   * threshold and Detail View satellites remain unchanged. */
+  showPropertySummary?: boolean;
+  /** Overview Property Suggestions highlight mode only. */
+  emphasizeSuggestedProperties?: boolean;
   emphasis?: "active" | "related" | "muted" | "normal";
   /** Explicitly `| undefined` (not just optional) so a caller can switch these off conditionally —
    * e.g. Overview disables all three for the duration of History Inspection Mode, since editing
@@ -230,14 +274,50 @@ export function OntologyNode({
   const dragging = connectSourceSide !== null;
   const isTarget = connectTargetSide !== null;
   const tableNames = tablesUsedByEntity(entity);
-  const status = propertyStatusRing ? entity.status : entityDisplayStatus(entity);
+  const status = propertyStatusRing ? entityStatus(entity) : entityDisplayStatus(entity);
+  const propertySummary = propertyStatusCounts(entity.properties);
+  const entityStatusGlyph =
+    status === "confirmed" ? "✓" : status === "suggested" ? "✦" : status === "warning" ? "!" : "!";
+  const entityStatusTooltip = (
+    <div className="min-w-[120px] space-y-1.5">
+      <div className="flex items-center gap-1.5 font-medium text-white">
+        <span style={{ color: PROPERTY_RING_COLORS[status] }}>{entityStatusGlyph}</span>
+        <span>Entity {reviewStatusLabel(status).toLowerCase()}</span>
+      </div>
+      <div className="border-t border-white/15 pt-1.5">
+        <p className="mb-1 font-medium text-white">Properties · {entity.properties.length}</p>
+        <div className="space-y-0.5 text-[#D4D7DC]">
+          {(["confirmed", "suggested", "warning", "error"] as const).map((propertyReviewStatus) => {
+            const count = propertySummary[propertyReviewStatus];
+            if (count === 0) return null;
+            return (
+              <div key={propertyReviewStatus} className="flex items-center gap-1.5">
+                <span
+                  className="size-1.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: PROPERTY_RING_COLORS[propertyReviewStatus] }}
+                />
+                <span>
+                  {count} {reviewStatusLabel(propertyReviewStatus)}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
   // Which of the 4 handles the pointer is directly over right now — drives the "enlarge + show a
   // plus" progressive-reveal step described on `ConnectionHandle`'s own `enlarged`/`showPlus`
   // props. Purely local, per-node UI state; never touches app-state.
   const [hoveredSide, setHoveredSide] = useState<Side | null>(null);
 
   return (
-    <div className="group relative flex w-[100px] shrink-0 flex-col items-center gap-2 text-center">
+    <div
+      className={cn(
+        "group relative flex w-[100px] shrink-0 flex-col items-center gap-2 text-center transition-opacity",
+        emphasis === "muted" && "opacity-20",
+      )}
+    >
       <button
         type="button"
         onPointerDown={(e) => {
@@ -265,13 +345,16 @@ export function OntologyNode({
             // No border at all when the ring is doing that job instead keeps both concentric.
             propertyStatusRing ? "border-0" : "border-[1.5px]",
             emphasis === "active" && "ring-[3px] ring-[#3b82f6]",
-            emphasis === "muted" && "opacity-20",
             moveTarget && "ring-[4px] ring-primary",
           )}
         >
           {propertyStatusRing && (
             <>
-              <PropertyStatusRing entity={entity} />
+              <PropertyStatusRing
+                entity={entity}
+                counts={propertySummary}
+                emphasizeSuggested={emphasizeSuggestedProperties}
+              />
               <HoverRing />
             </>
           )}
@@ -280,7 +363,8 @@ export function OntologyNode({
             size={propertyStatusRing ? RING_BADGE_SIZE : 35}
             confidence={entity.confidence}
             warningReason={entity.warningReason}
-            errorReason={propertyStatusRing ? entity.errorReason : entityErrorReason(entity)}
+            errorReason={entityErrorReason(entity)}
+            tooltipContent={entityStatusTooltip}
           />
           {onStartConnect &&
             SIDES.map((side) => {
@@ -331,12 +415,37 @@ export function OntologyNode({
             >
               {entity.name}
             </span>
-            {detailed && <ConfidenceChip confidence={entity.confidence} />}
+            {detailed && entity.status !== "confirmed" && (
+              <ConfidenceChip confidence={entity.confidence} />
+            )}
           </span>
           {detailed && !propertyStatusRing && (
             <span className="whitespace-nowrap text-[10px] font-normal leading-[10px] text-[#909090]">
               {entity.properties.length} props · {tableNames.length} table
               {tableNames.length === 1 ? "" : "s"}
+            </span>
+          )}
+          {showPropertySummary && propertyStatusRing && (
+            <span className="flex items-center gap-1 whitespace-nowrap text-[10px] font-medium leading-4 text-[#70757c]">
+              <span>{entity.properties.length} props</span>
+              {(
+                [
+                  ["suggested", propertySummary.suggested],
+                  ["warning", propertySummary.warning],
+                  ["error", propertySummary.error],
+                ] as const
+              ).map(([summaryStatus, count]) =>
+                count > 0 ? (
+                  <span
+                    key={summaryStatus}
+                    style={{ backgroundColor: PROPERTY_RING_COLORS[summaryStatus] }}
+                    className="inline-flex size-4 items-center justify-center rounded-full text-[9px] font-semibold leading-none text-white"
+                    title={`${count} ${summaryStatus} ${count === 1 ? "property" : "properties"}`}
+                  >
+                    {count}
+                  </span>
+                ) : null,
+              )}
             </span>
           )}
         </span>

@@ -1,3 +1,9 @@
+import {
+  buildEnterpriseEntities,
+  buildEnterpriseRelations,
+  buildEnterpriseTables,
+} from "./enterprise-fixture";
+
 /** This single field carries two conceptually separate questions for an Entity/Property/Relation,
  * which is why the app is careful never to conflate it with the OTHER two ways an object's state
  * gets described elsewhere:
@@ -92,12 +98,20 @@ export type Relation = {
   to: string;
   confidence: number;
   status: ReviewStatus;
+  cardinality?: "1:1" | "1:N" | "N:1" | "N:N";
+  sourceMapping?: {
+    fromTable: string;
+    fromColumns: string[];
+    toTable: string;
+    toColumns: string[];
+  };
 } & ReviewFlags;
 
 export type TableColumn = {
   name: string;
   type: string;
   description: string;
+  nullable?: boolean;
 };
 /** Deliberately no `confidence` field, on either this or `TableColumn` above — a Table/Column is
  * raw source data, already known to exist; Confidence belongs to an AI-generated semantic
@@ -114,7 +128,7 @@ export type TableSchema = {
   rows: Record<string, string>[];
 };
 
-export const tables: TableSchema[] = [
+const baseTables: TableSchema[] = [
   {
     name: "customers",
     description: "One row per registered shopper, including their loyalty tier.",
@@ -525,6 +539,9 @@ export const tables: TableSchema[] = [
   },
 ];
 
+export const tables: TableSchema[] = buildEnterpriseTables(baseTables);
+const tableIndex = new Map(tables.map((table) => [table.name, table]));
+
 // The "Product Details" Entity Type below exists to cover a few review scenarios none of the
 // other seed entities do: dozens of properties at once (a long, scrollable list — most of the
 // other entities have 2-6), a named identifier property with no mapping at all (`id` below), and
@@ -896,7 +913,7 @@ const productDetailProperties: Property[] = [
 /** Initial seed data only — the live, mutable ontology lives in useOntologyApp()'s React state,
  * seeded from these arrays once on mount. Nothing should import `initialEntities` /
  * `initialRelations` directly at runtime except that one seeding call. */
-export const initialEntities: Entity[] = [
+const baseEntities: Entity[] = [
   {
     id: "e_customer",
     name: "Customer",
@@ -1187,6 +1204,15 @@ export const initialEntities: Entity[] = [
     y: 600,
     properties: [
       {
+        id: "p_ship_id",
+        name: "id",
+        description: "Identifier for the shipment record.",
+        type: "string",
+        confidence: 0.92,
+        status: "suggested",
+        mapping: null,
+      },
+      {
         id: "p_ship_carrier",
         name: "carrier",
         description: "Carrier used to ship the order.",
@@ -1301,8 +1327,10 @@ export const initialEntities: Entity[] = [
   },
 ];
 
+export const initialEntities: Entity[] = buildEnterpriseEntities(baseEntities, tables);
+
 /** Initial seed data only — see the note on initialEntities above. */
-export const initialRelations: Relation[] = [
+const baseRelations: Relation[] = [
   {
     id: "r_places",
     name: "places",
@@ -1384,6 +1412,76 @@ export const initialRelations: Relation[] = [
   },
 ];
 
+export const initialRelations: Relation[] = buildEnterpriseRelations(
+  baseRelations,
+  initialEntities,
+);
+
+export type DemoScenario = "fresh" | "in-progress";
+
+/** Builds a new, isolated fixture every time so switching scenarios never reuses mutated state. */
+export function createDemoFixture(scenario: DemoScenario): {
+  entities: Entity[];
+  relations: Relation[];
+} {
+  const entities = initialEntities.map((entity) => ({
+    ...entity,
+    properties: entity.properties.map((property) => ({
+      ...property,
+      mapping: property.mapping ? { ...property.mapping } : null,
+    })),
+  }));
+  const relations = initialRelations.map((relation) => ({ ...relation }));
+
+  if (scenario === "fresh") {
+    entities.forEach((entity) => {
+      entity.status = "suggested";
+      delete entity.warningReason;
+      delete entity.errorReason;
+      entity.properties.forEach((property) => {
+        property.status = "suggested";
+        delete property.warningReason;
+        delete property.errorReason;
+        if (property.mapping) property.mapping.status = "suggested";
+      });
+    });
+    relations.forEach((relation) => {
+      relation.status = "suggested";
+      delete relation.warningReason;
+      delete relation.errorReason;
+    });
+    const shipment = entities.find((entity) => entity.id === "e_shipment");
+    const shipmentId = shipment?.properties.find((property) => property.id === "p_ship_id");
+    if (shipmentId) {
+      shipmentId.mapping = { table: "orders", column: "order_id", status: "suggested" };
+    }
+    const productDetails = entities.find((entity) => entity.id === "e_product_details");
+    const productDetailsId = productDetails?.properties.find(
+      (property) => property.id === "p_pd_id",
+    );
+    if (productDetailsId) {
+      productDetailsId.mapping = {
+        table: "product_details",
+        column: "sku",
+        status: "suggested",
+      };
+    }
+    return { entities, relations };
+  }
+
+  // In Progress: mappings on already-reviewed objects are applied, while pending objects retain
+  // Suggested Mappings and null remains a deliberate no-suggestion state.
+  entities.forEach((entity) =>
+    entity.properties.forEach((property) => {
+      if (property.mapping) {
+        property.mapping.status =
+          entity.status === "confirmed" && property.status === "confirmed" ? "mapped" : "suggested";
+      }
+    }),
+  );
+  return { entities, relations };
+}
+
 /** Whether a Property gets the key-icon Identifier treatment — true for an explicit
  * `isIdentifier: true` flag (set only by the Entity-creation wizard, which lets a user pick any
  * name for their Identifier — see `Property`'s own doc comment) OR, for every existing seed
@@ -1413,6 +1511,23 @@ export function propertyStatus(property: Property): ReviewStatus {
   return property.status;
 }
 
+export type PropertyStatusCounts = Record<ReviewStatus, number>;
+const propertyStatusCountsCache = new WeakMap<Property[], PropertyStatusCounts>();
+
+/** One status pass per immutable Property-array snapshot, shared by every node ring, tooltip, and
+ * semantic-zoom summary. Large Entity Types used to scan the same 150+ Properties four separate
+ * times every time hover/selection caused the Overview to render. */
+export function propertyStatusCounts(properties: Property[]): PropertyStatusCounts {
+  const cached = propertyStatusCountsCache.get(properties);
+  if (cached) return cached;
+  const counts: PropertyStatusCounts = { confirmed: 0, suggested: 0, warning: 0, error: 0 };
+  properties.forEach((property) => {
+    counts[propertyStatus(property)] += 1;
+  });
+  propertyStatusCountsCache.set(properties, counts);
+  return counts;
+}
+
 /** The explanation shown alongside `propertyStatus`'s Error — the fixed Identifier-mapping
  * sentence when that's why it's Error, otherwise whatever `errorReason` is stored on the property
  * itself (which only ever matters while `status` is independently "error" for some other reason). */
@@ -1423,56 +1538,40 @@ export function propertyErrorReason(property: Property): string | undefined {
   return property.errorReason;
 }
 
-/** An Entity Type's true review status — "error" whenever it has no Identifier Property at all
- * (deleted, or renamed/un-flagged away from `isIdentifierProperty`), or whenever at least one of
- * its own Properties is (per `propertyStatus`) currently blocked by the Identifier-mapping rule.
- * Both are purely inherited/aggregated and never a status the entity itself is ever directly set
- * to; otherwise it's exactly whatever `status` is stored on the entity. Editing the ontology into
- * either invalid state is always allowed (see Editing Mode's own "allow the edit, then surface the
- * Error" rule) — this just reflects the CURRENT state, live, every call, so gaining or losing an
- * Identifier (or mapping one) clears or sets it the moment that becomes true, never cached. */
+/** Effective issue indicator for an Entity Type. It combines only:
+ *  - direct Entity issues (including the Entity-level missing-Identifier invariant), and
+ *  - parent-impacting descendant issues (an Identifier Property without a mapping).
+ * Ordinary Property warnings/errors are local and never participate here. Confidence is an
+ * entirely separate value and is never read by this function. */
 export function entityStatus(entity: Entity): ReviewStatus {
   if (!entity.properties.some(isIdentifierProperty)) return "error";
-  if (entity.properties.some((p) => propertyStatus(p) === "error")) return "error";
+  if (
+    entity.properties.some(
+      (property) => isIdentifierProperty(property) && property.mapping === null,
+    )
+  ) {
+    return "error";
+  }
   return entity.status;
 }
 
-/** The Entity Type's DISPLAYED status — a pure, read-only roll-up of the badge/icon shown wherever
- * an Entity's status is rendered (Overview canvas node, Editing Mode card header, "Entity types"
- * toolbox row): the highest-priority status found across the Entity itself and every one of its
- * own Properties, in the order Error > Warning > Suggested > Confirmed (`entityStatus` above is
- * already one of the candidates, so its own "no Identifier"/"unmapped Identifier" auto-Error rules
- * still apply here too). This never rewrites any Property's own stored status — purely a display
- * fact, recomputed live every call, exactly like `entityStatus` itself.
- *
- * Deliberately a SEPARATE function from `entityStatus`, not a replacement for it: several other
- * call sites key off `entityStatus`'s narrower meaning — "is this Entity's OWN status (or its
- * Identifier-mapping rule) Error" — and would silently change behavior if broadened to "is ANY
- * Property anything other than Confirmed" (e.g. `EntitySelectionBar`'s Accept/Decline eligibility,
- * `AiReviewBar`'s "how many Entities are themselves a pending AI suggestion" breakdown, and the
- * Entity Inspector's own Warning explanation box, which must only appear for the Entity's own real
- * Warning — never a stand-in for some other Property's unrelated one). Use this one only for an
- * actual displayed badge; use `entityStatus` for anything that gates behavior or explains itself
- * with the Entity's own `warningReason`/`errorReason` text. */
+/** The displayed Entity indicator uses the same deliberately narrow aggregation as entityStatus.
+ * It does not roll up ordinary descendant issues. */
 export function entityDisplayStatus(entity: Entity): ReviewStatus {
-  const priority: ReviewStatus[] = ["error", "warning", "suggested", "confirmed"];
-  const statuses = [entityStatus(entity), ...entity.properties.map(propertyStatus)];
-  for (const level of priority) {
-    if (statuses.includes(level)) return level;
-  }
   return entityStatus(entity);
 }
 
-/** The explanation shown alongside `entityStatus`'s aggregated Error — never the generic
- * `entity.errorReason` (that only applies while the entity's own stored `status` is independently
- * "error", which neither of these two automatic rules ever sets directly). Checked in the same
- * order as `entityStatus` above: missing an Identifier entirely takes priority over merely having
- * one that isn't mapped yet, since the latter can't even be evaluated without one. */
+/** Explanation for the Entity's aggregated indicator. The Identifier Property retains its own
+ * specific error; this text only explains why that descendant issue affects the parent Entity. */
 export function entityErrorReason(entity: Entity): string | undefined {
   if (!entity.properties.some(isIdentifierProperty)) {
     return MISSING_IDENTIFIER_ERROR_REASON;
   }
-  if (entity.properties.some((p) => propertyStatus(p) === "error")) {
+  if (
+    entity.properties.some(
+      (property) => isIdentifierProperty(property) && property.mapping === null,
+    )
+  ) {
     return ENTITY_UNMAPPED_IDENTIFIER_REASON;
   }
   return entity.errorReason;
@@ -1513,7 +1612,7 @@ export function relationErrorReason(relation: Relation, entities: Entity[]): str
   return relation.errorReason;
 }
 
-export const tableByName = (name: string) => tables.find((t) => t.name === name);
+export const tableByName = (name: string) => tableIndex.get(name);
 
 /** Real example values for one column, drawn straight from the table's own mock `rows` (never a
  * separately-authored sample list, so it can't drift from the data actually shown elsewhere) —
@@ -1555,6 +1654,8 @@ export type ColumnUsage = {
     entityName: string;
     propertyId: string;
     propertyName: string;
+    confidence: number;
+    reviewStatus: ReviewStatus;
     /** This ONE mapper's own connector state — a column can have several mappers with a mix of
      * `"suggested"`/`"mapped"` at once (see `ColGroupEntry`'s own doc comment in DetailView.tsx for
      * how the canvas resolves that mix into one displayed state). */
@@ -1562,27 +1663,64 @@ export type ColumnUsage = {
   }[];
 };
 
+type MappingLookup = Map<string, Map<string, ColumnUsage["mappedBy"]>>;
+const mappingLookupCache = new WeakMap<Entity[], MappingLookup>();
+const tableUsageCache = new WeakMap<Entity[], Map<string, ColumnUsage[]>>();
+
+/** Builds the Property→Column reverse index once for each immutable live `entities` snapshot.
+ * React mutations replace that array, so WeakMap identity gives automatic invalidation without
+ * retaining old ontology snapshots. This turns every Table badge/list query from a full scan of
+ * all Properties into a small lookup over that Table's own columns. */
+function mappingLookupFor(entities: Entity[]): MappingLookup {
+  const cached = mappingLookupCache.get(entities);
+  if (cached) return cached;
+  const lookup: MappingLookup = new Map();
+  entities.forEach((entity) => {
+    entity.properties.forEach((property) => {
+      if (!property.mapping) return;
+      let byColumn = lookup.get(property.mapping.table);
+      if (!byColumn) {
+        byColumn = new Map();
+        lookup.set(property.mapping.table, byColumn);
+      }
+      const mappedBy = byColumn.get(property.mapping.column) ?? [];
+      mappedBy.push({
+        entityId: entity.id,
+        entityName: entity.name,
+        propertyId: property.id,
+        propertyName: property.name,
+        status: mappingStatus(property.mapping),
+        confidence: property.confidence,
+        reviewStatus: property.status,
+      });
+      byColumn.set(property.mapping.column, mappedBy);
+    });
+  });
+  mappingLookupCache.set(entities, lookup);
+  return lookup;
+}
+
 /** Every column of a table, and which entity properties (if any) map to it — the reverse of an
  * entity's own property list, used by the table-anchored Detail view. Takes the live `entities`
  * as a parameter (rather than closing over seed data) so it always reflects current state. */
 export function tableColumnUsage(tableName: string, entities: Entity[]): ColumnUsage[] {
+  let byTable = tableUsageCache.get(entities);
+  if (!byTable) {
+    byTable = new Map();
+    tableUsageCache.set(entities, byTable);
+  }
+  const cached = byTable.get(tableName);
+  if (cached) return cached;
   const table = tableByName(tableName);
   if (!table) return [];
-  return table.columns.map((col) => ({
+  const mappedByColumn = mappingLookupFor(entities).get(tableName);
+  const usage = table.columns.map((col) => ({
     name: col.name,
     type: col.type,
-    mappedBy: entities.flatMap((e) =>
-      e.properties
-        .filter((p) => p.mapping?.table === tableName && p.mapping.column === col.name)
-        .map((p) => ({
-          entityId: e.id,
-          entityName: e.name,
-          propertyId: p.id,
-          propertyName: p.name,
-          status: mappingStatus(p.mapping!),
-        })),
-    ),
+    mappedBy: mappedByColumn?.get(col.name) ?? [],
   }));
+  byTable.set(tableName, usage);
+  return usage;
 }
 
 /** How many of a table's own columns have at least one CONFIRMED ("mapped") connection — a column
@@ -1613,7 +1751,12 @@ export function tableMappingStatus(
 
 /** Every entity that draws at least one property from this table. */
 export function entitiesUsingTable(tableName: string, entities: Entity[]): Entity[] {
-  return entities.filter((e) => e.properties.some((p) => p.mapping?.table === tableName));
+  const entityIds = new Set(
+    Array.from(mappingLookupFor(entities).get(tableName)?.values() ?? []).flatMap((mappedBy) =>
+      mappedBy.map((mapping) => mapping.entityId),
+    ),
+  );
+  return entities.filter((entity) => entityIds.has(entity.id));
 }
 
 /** Every distinct table this entity draws at least one property from — the mirror of
@@ -1813,17 +1956,10 @@ export function isColumnInScope(
   confidenceRange: { min: number; max: number },
   statusFilter: Set<ReviewStatus>,
 ): boolean {
-  const mappingProperties: Property[] = [];
-  entities.forEach((e) => {
-    e.properties.forEach((p) => {
-      if (p.mapping?.table === tableName && p.mapping.column === columnName) {
-        mappingProperties.push(p);
-      }
-    });
-  });
-  if (mappingProperties.length === 0) return true;
-  return mappingProperties.some((p) =>
-    isReviewItemInScope(p.status, p.confidence, confidenceRange, statusFilter),
+  const mappedBy = mappingLookupFor(entities).get(tableName)?.get(columnName) ?? [];
+  if (mappedBy.length === 0) return true;
+  return mappedBy.some((mapping) =>
+    isReviewItemInScope(mapping.reviewStatus, mapping.confidence, confidenceRange, statusFilter),
   );
 }
 
@@ -1842,8 +1978,10 @@ export function isTableInScope(
   const usage = tableColumnUsage(tableName, entities);
   const mappedColumns = usage.filter((c) => c.mappedBy.length > 0);
   if (mappedColumns.length === 0) return true;
-  return mappedColumns.some((c) =>
-    isColumnInScope(tableName, c.name, entities, confidenceRange, statusFilter),
+  return mappedColumns.some((column) =>
+    column.mappedBy.some((mapping) =>
+      isReviewItemInScope(mapping.reviewStatus, mapping.confidence, confidenceRange, statusFilter),
+    ),
   );
 }
 
@@ -1858,9 +1996,9 @@ export function tableHighestMappingConfidence(
   entities: Entity[],
 ): number | undefined {
   let max: number | undefined;
-  entities.forEach((e) => {
-    e.properties.forEach((p) => {
-      if (p.mapping?.table === tableName && (max == null || p.confidence > max)) max = p.confidence;
+  tableColumnUsage(tableName, entities).forEach((column) => {
+    column.mappedBy.forEach((mapping) => {
+      if (max == null || mapping.confidence > max) max = mapping.confidence;
     });
   });
   return max;
