@@ -902,7 +902,7 @@ export const initialEntities: Entity[] = [
     name: "Customer",
     description: "A person who places orders.",
     confidence: 0.92,
-    status: "confirmed",
+    status: "suggested",
     table: "customers",
     x: 40,
     y: 300,
@@ -913,7 +913,7 @@ export const initialEntities: Entity[] = [
         description: "Unique identifier for this customer.",
         type: "string",
         confidence: 0.99,
-        status: "confirmed",
+        status: "suggested",
         mapping: { table: "customers", column: "customer_id" },
       },
       {
@@ -922,7 +922,7 @@ export const initialEntities: Entity[] = [
         description: "Customer's contact email address.",
         type: "string",
         confidence: 0.97,
-        status: "confirmed",
+        status: "suggested",
         mapping: { table: "customers", column: "email" },
       },
       {
@@ -931,7 +931,7 @@ export const initialEntities: Entity[] = [
         description: "Customer's given name.",
         type: "string",
         confidence: 0.95,
-        status: "confirmed",
+        status: "suggested",
         mapping: { table: "customers", column: "first_name" },
       },
       {
@@ -940,7 +940,7 @@ export const initialEntities: Entity[] = [
         description: "Customer's family name.",
         type: "string",
         confidence: 0.95,
-        status: "confirmed",
+        status: "suggested",
         mapping: { table: "customers", column: "last_name" },
       },
       {
@@ -968,7 +968,7 @@ export const initialEntities: Entity[] = [
     name: "Order",
     description: "A purchase placed by a customer.",
     confidence: 0.9,
-    status: "confirmed",
+    status: "suggested",
     table: "orders",
     x: 360,
     y: 300,
@@ -979,7 +979,7 @@ export const initialEntities: Entity[] = [
         description: "Unique identifier for this order.",
         type: "string",
         confidence: 0.99,
-        status: "confirmed",
+        status: "suggested",
         mapping: { table: "orders", column: "order_id" },
       },
       {
@@ -988,7 +988,7 @@ export const initialEntities: Entity[] = [
         description: "Date the order was placed.",
         type: "date",
         confidence: 0.95,
-        status: "confirmed",
+        status: "suggested",
         mapping: { table: "orders", column: "order_date" },
       },
       {
@@ -997,7 +997,7 @@ export const initialEntities: Entity[] = [
         description: "Current fulfillment status of the order.",
         type: "enum",
         confidence: 0.9,
-        status: "confirmed",
+        status: "suggested",
         mapping: { table: "orders", column: "status" },
       },
       {
@@ -1009,9 +1009,7 @@ export const initialEntities: Entity[] = [
         // Hand-set to "warning" (see ReviewFlags) — a non-Identifier Property is never Error in
         // this app (see mock-data's own `propertyStatus`), so a schema concern short of that gets
         // Warning instead; not derived from the 60% confidence above, which is a separate concern.
-        status: "warning",
-        warningReason:
-          "The mapped column's stored type in the source table was recently changed from numeric to varchar — this mapping likely needs to be redone once the schema settles.",
+        status: "suggested",
         mapping: { table: "orders", column: "total_amount" },
       },
     ],
@@ -1021,7 +1019,7 @@ export const initialEntities: Entity[] = [
     name: "Order Item",
     description: "A single product line within an order.",
     confidence: 0.95,
-    status: "confirmed",
+    status: "suggested",
     table: "order_items",
     x: 680,
     y: 60,
@@ -1032,7 +1030,7 @@ export const initialEntities: Entity[] = [
         description: "Unique identifier for this order line item.",
         type: "string",
         confidence: 0.99,
-        status: "confirmed",
+        status: "suggested",
         mapping: { table: "order_items", column: "order_item_id" },
       },
       {
@@ -1041,7 +1039,7 @@ export const initialEntities: Entity[] = [
         description: "Quantity of the product ordered on this line.",
         type: "int",
         confidence: 0.97,
-        status: "confirmed",
+        status: "suggested",
         mapping: { table: "order_items", column: "qty" },
       },
       {
@@ -1050,7 +1048,7 @@ export const initialEntities: Entity[] = [
         description: "Price charged per unit on this line.",
         type: "decimal",
         confidence: 0.93,
-        status: "confirmed",
+        status: "suggested",
         mapping: { table: "order_items", column: "unit_price" },
       },
     ],
@@ -1060,7 +1058,7 @@ export const initialEntities: Entity[] = [
     name: "Product",
     description: "A sellable item, independent of size or color.",
     confidence: 0.87,
-    status: "confirmed",
+    status: "suggested",
     table: "products",
     x: 1000,
     y: 60,
@@ -1071,7 +1069,7 @@ export const initialEntities: Entity[] = [
         description: "Unique identifier for this product.",
         type: "string",
         confidence: 0.99,
-        status: "confirmed",
+        status: "suggested",
         mapping: { table: "products", column: "product_id" },
       },
       {
@@ -1080,7 +1078,7 @@ export const initialEntities: Entity[] = [
         description: "Display name of the product.",
         type: "string",
         confidence: 0.95,
-        status: "confirmed",
+        status: "suggested",
         mapping: { table: "products", column: "product_name" },
       },
       {
@@ -1099,7 +1097,7 @@ export const initialEntities: Entity[] = [
     name: "Category",
     description: "A grouping products can be classified under.",
     confidence: 0.93,
-    status: "confirmed",
+    status: "suggested",
     table: "categories",
     x: 1320,
     y: 220,
@@ -1110,7 +1108,7 @@ export const initialEntities: Entity[] = [
         description: "Unique identifier for this category.",
         type: "string",
         confidence: 0.99,
-        status: "confirmed",
+        status: "suggested",
         mapping: { table: "categories", column: "category_id" },
       },
       {
@@ -1119,7 +1117,7 @@ export const initialEntities: Entity[] = [
         description: "Display name of the category.",
         type: "string",
         confidence: 0.97,
-        status: "confirmed",
+        status: "suggested",
         mapping: { table: "categories", column: "category_name" },
       },
     ],
@@ -1129,7 +1127,7 @@ export const initialEntities: Entity[] = [
     name: "Payment",
     description: "A payment captured against an order.",
     confidence: 0.94,
-    status: "confirmed",
+    status: "suggested",
     table: "payments",
     x: 680,
     y: 540,
@@ -1140,7 +1138,7 @@ export const initialEntities: Entity[] = [
         description: "Unique identifier for this payment.",
         type: "string",
         confidence: 0.99,
-        status: "confirmed",
+        status: "suggested",
         mapping: { table: "payments", column: "payment_id" },
       },
       {
@@ -1149,7 +1147,7 @@ export const initialEntities: Entity[] = [
         description: "Payment method used to capture this payment.",
         type: "enum",
         confidence: 0.92,
-        status: "confirmed",
+        status: "suggested",
         mapping: { table: "payments", column: "method" },
       },
       {
@@ -1158,7 +1156,7 @@ export const initialEntities: Entity[] = [
         description: "Amount captured for this payment.",
         type: "decimal",
         confidence: 0.95,
-        status: "confirmed",
+        status: "suggested",
         mapping: { table: "payments", column: "amount" },
       },
       {
@@ -1179,9 +1177,7 @@ export const initialEntities: Entity[] = [
     confidence: 0.68,
     // Hand-set to "warning" (see ReviewFlags) purely to exercise the contextual panel's Warning
     // layout — not derived from the 68% confidence above, which is a separate concern.
-    status: "warning",
-    warningReason:
-      "This entity was built entirely from columns on the orders table rather than its own dedicated table — worth confirming that's intentional before relying on it.",
+    status: "suggested",
     table: "orders",
     x: 360,
     y: 600,
@@ -1310,7 +1306,7 @@ export const initialRelations: Relation[] = [
     from: "e_customer",
     to: "e_order",
     confidence: 0.95,
-    status: "confirmed",
+    status: "suggested",
   },
   {
     id: "r_contains",
@@ -1319,7 +1315,7 @@ export const initialRelations: Relation[] = [
     from: "e_order",
     to: "e_order_item",
     confidence: 0.97,
-    status: "confirmed",
+    status: "suggested",
   },
   {
     id: "r_references",
@@ -1328,7 +1324,7 @@ export const initialRelations: Relation[] = [
     from: "e_order_item",
     to: "e_product",
     confidence: 0.96,
-    status: "confirmed",
+    status: "suggested",
   },
   {
     id: "r_belongs_to",
@@ -1337,7 +1333,7 @@ export const initialRelations: Relation[] = [
     from: "e_product",
     to: "e_category",
     confidence: 0.93,
-    status: "confirmed",
+    status: "suggested",
   },
   {
     id: "r_paid_by",
@@ -1346,7 +1342,7 @@ export const initialRelations: Relation[] = [
     from: "e_order",
     to: "e_payment",
     confidence: 0.9,
-    status: "confirmed",
+    status: "suggested",
   },
   {
     id: "r_shipped_via",
@@ -1366,9 +1362,7 @@ export const initialRelations: Relation[] = [
     confidence: 0.3,
     // Hand-set to "warning" (see ReviewFlags) purely to exercise the contextual panel's Warning
     // layout — not derived from the 30% confidence above, which is a separate concern.
-    status: "warning",
-    warningReason:
-      "This overlaps with the existing Order → Order Item → Product path — confirm whether Order should really link to Category directly, or if this duplicates that chain.",
+    status: "suggested",
   },
   {
     id: "r_details_for",
