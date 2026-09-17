@@ -20,7 +20,7 @@ function DevScenarioSwitcher() {
   return (
     <div className="flex h-10 shrink-0 items-center justify-center gap-1 border-b border-white/10 bg-[#1c1c18] px-3">
       <span className="px-2 text-[10px] font-semibold uppercase tracking-wider text-white/55">
-        Demo fixture
+        Demo scenario
       </span>
       {(["fresh", "in-progress"] as const).map((scenario, index) => (
         <button
