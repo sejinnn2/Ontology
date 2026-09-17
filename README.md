@@ -33,6 +33,65 @@ The product is intentionally canvas-first. Entity Types, Properties, Relations, 
 - Track edits in History, inspect past changes on the canvas, and restore selected changes.
 - Use undo and redo across Overview and Editing Mode.
 
+## Interaction guide
+
+### Canvas navigation
+
+- Use the pointer tool to select and edit objects, or the hand tool to pan the canvas.
+- Press `V` for the pointer tool and `H` for the hand tool. Hold `Space` to pan temporarily.
+- Zoom with the canvas controls, choose a zoom preset, or fit the graph to the viewport.
+- Undo with `Cmd/Ctrl+Z` and redo with `Cmd/Ctrl+Shift+Z`; the toolbar provides the same actions.
+- Search for Entity Types, Properties, Relations, Data Tables, and Columns, then jump to the result in context.
+
+### Selection
+
+- Click an item to make it the single selection.
+- `Shift+click` adds or removes items from a multi-selection. This rule is shared across selectable object types.
+- Click empty canvas space or use **Clear selection** to clear the current selection.
+- Multi-selected items use the contextual control bar for the actions valid for that selection, including Merge, Split, Delete, Accept, and Reject.
+
+### Overview graph
+
+- Select an Entity Type or Relation to inspect it while preserving the surrounding ontology as context.
+- Follow Relation connectors between Entity Types; hover and selection expose the relevant endpoints and status details.
+- Entity status and the Property-status ring remain separate. Hover a compact Entity node to see the Entity status and its Property-status distribution.
+- Double-click an Entity Type, or select it and use **Go to Editing Mode**, to open its focused workspace. Click a connected Data Table to open its table-focused Editing Mode.
+- Use the top mapping-status counts to understand mapped coverage across Entities, Properties, Relations, Tables, and Columns.
+
+### Editing Mode
+
+- Explore the focused Entity Type or Data Table together with connected ontology and source-data objects.
+- Expand or collapse Entity and Table cards and their Mapped/Unmapped groups. Connected rows stay coordinated where the two sides represent the same mapping context.
+- Use **Only Identifier** to focus the corresponding Entity and Table views on identifier fields.
+- Sort Properties and Columns by name or confidence where the control is available.
+- Click an Entity, Property, Relation, Table, Column, or mapping connector to open its contextual details.
+- Inspect descriptions, AI reasoning, confidence, validation information, schema, and sample values without showing all source data by default.
+
+### Mapping and ontology editing
+
+- Drag a Property or Column connection handle to its counterpart to create a mapping.
+- Select a suggested mapping connector to review and Accept or Reject the proposed connection.
+- Drag Properties between Entity Types. When a destination has a conflict, resolve it in the provided conflict flow.
+- Multi-select Properties from one Entity Type and use **Split** to create a separate Entity Type.
+- Multi-select Entity Types and use **Merge** to combine them and choose the resulting name.
+- Create and edit Entity Types, Properties, and Relations directly from the canvas affordances.
+- Delete applied objects or reject pending suggestions through the contextual selection controls.
+
+### Suggestions and review state
+
+- Adjust the confidence range to choose which AI suggestions are currently in review scope.
+- Use the suggestion breakdown for Entities, Properties, Relations, Tables, and Columns; Table and Column counts are derived from pending mapping suggestions.
+- **Select all in range** includes eligible ontology suggestions and mapping suggestions in the current confidence range.
+- Accept or Reject a single suggestion or a multi-selection. Accepting warnings requires an explicit confirmation; errors remain blocked.
+- Mapping acceptance changes the mapping lifecycle independently from the ontology object's own review status.
+
+### History, Trash, and scenarios
+
+- Open History to inspect recorded changes on the canvas and restore a selected earlier change.
+- Use Undo and Redo from either Overview or Editing Mode.
+- Open Trash to inspect deleted objects and restore them.
+- Use **Demo Scenario** to switch between the deterministic Fresh and In Progress review states.
+
 ## Status model
 
 Ontology review status and confidence are separate concepts.
