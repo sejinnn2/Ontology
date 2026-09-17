@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { parseSuggestionKey } from "@/lib/app-state";
-import type { Entity, Relation } from "@/lib/mock-data";
+import { mappingStatus, type Entity, type Relation } from "@/lib/mock-data";
 import {
   Dialog,
   DialogContent,
@@ -72,14 +72,16 @@ export function SuggestionSelectionBar({
     let entityCount = 0;
     let propertyCount = 0;
     let relationCount = 0;
+    let mappingCount = 0;
     suggestionSelection.forEach((key) => {
       const ref = parseSuggestionKey(key);
       if (!ref) return;
       if (ref.kind === "entity") entityCount += 1;
       else if (ref.kind === "relation") relationCount += 1;
-      else propertyCount += 1;
+      else if (ref.kind === "property") propertyCount += 1;
+      else mappingCount += 1;
     });
-    return { entityCount, propertyCount, relationCount };
+    return { entityCount, propertyCount, relationCount, mappingCount };
   }, [suggestionSelection]);
   const compositionLabel = useMemo(() => {
     const parts: string[] = [];
@@ -96,6 +98,9 @@ export function SuggestionSelectionBar({
         `${composition.relationCount} Relation${composition.relationCount === 1 ? "" : "s"}`,
       );
     }
+    if (composition.mappingCount > 0) {
+      parts.push(`${composition.mappingCount} Mapping${composition.mappingCount === 1 ? "" : "s"}`);
+    }
     return parts.join(" · ");
   }, [composition]);
 
@@ -111,7 +116,7 @@ export function SuggestionSelectionBar({
         if (entities.find((x) => x.id === ref.id)?.status === "warning") count += 1;
       } else if (ref.kind === "relation") {
         if (relations.find((x) => x.id === ref.id)?.status === "warning") count += 1;
-      } else {
+      } else if (ref.kind === "property") {
         if (findPropertyOwner(ref.propertyId)?.property.status === "warning") count += 1;
       }
     });
@@ -130,8 +135,14 @@ export function SuggestionSelectionBar({
         if (entities.find((x) => x.id === ref.id)?.status === "suggested") return true;
       } else if (ref.kind === "relation") {
         if (relations.find((x) => x.id === ref.id)?.status === "suggested") return true;
-      } else if (findPropertyOwner(ref.propertyId)?.property.status === "suggested") {
+      } else if (
+        ref.kind === "property" &&
+        findPropertyOwner(ref.propertyId)?.property.status === "suggested"
+      ) {
         return true;
+      } else if (ref.kind === "mapping") {
+        const mapping = findPropertyOwner(ref.propertyId)?.property.mapping;
+        if (mapping && mappingStatus(mapping) === "suggested") return true;
       }
     }
     return false;

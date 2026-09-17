@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 import {
   buildConfirmPlan,
   entityStatus,
+  mappingStatus,
   propertyStatus,
   type Entity,
   type Relation,
@@ -218,6 +219,8 @@ export function AiReviewBar({
   confidenceRange,
   onConfidenceRangeChange,
   onSelectSuggestionsInRange,
+  propertySuggestionsHighlightActive = false,
+  onTogglePropertySuggestionsHighlight,
 }: {
   entities: Entity[];
   relations: Relation[];
@@ -225,6 +228,8 @@ export function AiReviewBar({
   confidenceRange: ConfidenceRange;
   onConfidenceRangeChange: (range: ConfidenceRange) => void;
   onSelectSuggestionsInRange: (keys: string[]) => void;
+  propertySuggestionsHighlightActive?: boolean;
+  onTogglePropertySuggestionsHighlight?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -276,6 +281,19 @@ export function AiReviewBar({
     if (r && inConfidenceRange(r.confidence)) {
       eligibleKeys.push(suggestionKey({ kind: "relation", id }));
     }
+  });
+  entities.forEach((entity) => {
+    entity.properties.forEach((property) => {
+      if (
+        property.mapping &&
+        mappingStatus(property.mapping) === "suggested" &&
+        inConfidenceRange(property.confidence)
+      ) {
+        eligibleKeys.push(
+          suggestionKey({ kind: "mapping", entityId: entity.id, propertyId: property.id }),
+        );
+      }
+    });
   });
   // Feeds only the "N more in range excluded" tooltip below — items blocked by an Error are never
   // in `eligibleKeys`, regardless of Confidence range.
@@ -330,7 +348,7 @@ export function AiReviewBar({
   const columnGroups = new Map<string, { any: boolean; inRange: boolean }>();
   entities.forEach((e) => {
     e.properties.forEach((p) => {
-      if (propertyStatus(p) !== "suggested" || !p.mapping) return;
+      if (!p.mapping || mappingStatus(p.mapping) !== "suggested") return;
       const inRange = inConfidenceRange(p.confidence);
       const tableKey = p.mapping.table;
       const columnKey = `${p.mapping.table}.${p.mapping.column}`;
@@ -387,7 +405,22 @@ export function AiReviewBar({
             return (
               <Tooltip key={key}>
                 <TooltipTrigger asChild>
-                  <div tabIndex={0} className="flex shrink-0 items-center gap-1.5 outline-none">
+                  <button
+                    type="button"
+                    tabIndex={0}
+                    onClick={
+                      key === "properties" ? onTogglePropertySuggestionsHighlight : undefined
+                    }
+                    className={cn(
+                      "flex shrink-0 items-center gap-1.5 rounded-full outline-none",
+                      key === "properties" &&
+                        onTogglePropertySuggestionsHighlight &&
+                        "cursor-pointer px-1 py-0.5 hover:bg-violet-200/60",
+                      key === "properties" &&
+                        propertySuggestionsHighlightActive &&
+                        "bg-violet-200/80 ring-1 ring-violet-400",
+                    )}
+                  >
                     <span className="flex items-center gap-1.5">
                       <span className="size-[18px] shrink-0 text-[#4c1d95]">{meta.icon}</span>
                       <span className="whitespace-nowrap text-sm leading-none text-[#4c1d95]">
@@ -397,7 +430,7 @@ export function AiReviewBar({
                     <span className="w-fit max-w-[56px] whitespace-nowrap text-sm leading-none tabular-nums text-foreground">
                       {inRange}/{total}
                     </span>
-                  </div>
+                  </button>
                 </TooltipTrigger>
                 <TooltipContent side="top">
                   <p>{breakdownTooltipText(key, inRange, total)}</p>

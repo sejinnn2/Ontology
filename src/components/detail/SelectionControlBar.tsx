@@ -45,6 +45,7 @@ export function SelectionControlBar({
   entities,
   properties,
   relations,
+  mappingCount = 0,
   onClear,
   onMerge,
   onSplit,
@@ -58,6 +59,7 @@ export function SelectionControlBar({
   entities: Entity[];
   properties: { entity: Entity; property: Property }[];
   relations: Relation[];
+  mappingCount?: number;
   onClear: () => void;
   /** Present only when 2+ Entities are selected — Merge's only real eligibility rule. */
   onMerge?: (() => void) | undefined;
@@ -71,7 +73,7 @@ export function SelectionControlBar({
   onReject?: (() => void) | undefined;
   rejectCount: number;
 }) {
-  const total = entities.length + properties.length + relations.length;
+  const total = entities.length + properties.length + relations.length + mappingCount;
   const compositionLabel = useMemo(() => {
     const parts: string[] = [];
     if (entities.length > 0) {
@@ -83,8 +85,11 @@ export function SelectionControlBar({
     if (relations.length > 0) {
       parts.push(`${relations.length} Relation${relations.length === 1 ? "" : "s"}`);
     }
+    if (mappingCount > 0) {
+      parts.push(`${mappingCount} Mapping${mappingCount === 1 ? "" : "s"}`);
+    }
     return parts.join(" · ");
-  }, [entities.length, properties.length, relations.length]);
+  }, [entities.length, properties.length, relations.length, mappingCount]);
 
   // Only grows a "(N)" suffix when the action doesn't cover the whole current selection — a pure
   // selection (every object the same status) reads as a plain "Delete"/"Accept"/"Reject".

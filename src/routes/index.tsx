@@ -7,6 +7,7 @@ import { DetailView, type AnchorMorphRects } from "@/components/detail/DetailVie
 import { Header } from "@/components/nav/Header";
 import { GlobalSidebar } from "@/components/nav/GlobalSidebar";
 import { EntityMorphOverlay } from "@/components/overview/EntityMorphOverlay";
+import { entityErrorReason, entityStatus } from "@/lib/mock-data";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -56,7 +57,7 @@ function Index() {
     : null;
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
+    <div className="flex h-full w-full overflow-hidden bg-background text-foreground">
       <GlobalSidebar />
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <Header
@@ -100,11 +101,11 @@ function Index() {
           circleOrigin={app.entityMorphOrigin.circleRect}
           labelOrigin={app.entityMorphOrigin.labelRect}
           target={morphTarget}
-          status={morphEntity.status}
+          status={entityStatus(morphEntity)}
           confidence={morphEntity.confidence}
           name={morphEntity.name}
           warningReason={morphEntity.warningReason}
-          errorReason={morphEntity.errorReason}
+          errorReason={entityErrorReason(morphEntity)}
           onDone={() => {
             setMorphTarget(null);
             app.clearEntityMorphOrigin();

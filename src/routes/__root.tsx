@@ -11,9 +11,38 @@ import { useEffect, type ReactNode } from "react";
 import { Agentation } from "agentation";
 
 import appCss from "../styles.css?url";
-import { reportLovableError } from "../lib/lovable-error-reporting";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { OntologyAppProvider } from "@/lib/ontology-context";
+import { OntologyAppProvider, useOntologyAppContext } from "@/lib/ontology-context";
+
+function DevScenarioSwitcher() {
+  const app = useOntologyAppContext();
+  return (
+    <div className="flex h-10 shrink-0 items-center justify-center gap-1 border-b border-white/10 bg-[#1c1c18] px-3">
+      <span className="px-2 text-[10px] font-semibold uppercase tracking-wider text-white/55">
+        Demo scenario
+      </span>
+      {(["fresh", "in-progress"] as const).map((scenario, index) => (
+        <button
+          key={scenario}
+          type="button"
+          onClick={() => app.resetDemoScenario(scenario)}
+          className={`rounded-full px-3 py-1 text-[11px] font-medium transition-colors ${
+            app.demoScenario === scenario
+              ? "bg-white text-[#1c1c18]"
+              : "text-white/70 hover:bg-white/10 hover:text-white"
+          }`}
+        >
+          {index === 0 ? "01 · Fresh" : "02 · In Progress"}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function OntologyRoutes() {
+  const { demoScenario } = useOntologyAppContext();
+  return <Outlet key={demoScenario} />;
+}
 
 function NotFoundComponent() {
   return (
@@ -41,7 +70,6 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   console.error(error);
   const router = useRouter();
   useEffect(() => {
-    reportLovableError(error, { boundary: "tanstack_root_error_component" });
   }, [error]);
 
   return (
@@ -80,14 +108,12 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Lovable App" },
-      { name: "description", content: "Lovable Generated Project" },
-      { name: "author", content: "Lovable" },
-      { property: "og:title", content: "Lovable App" },
-      { property: "og:description", content: "Lovable Generated Project" },
+      { title: "Canvas Connect Review" },
+      { name: "description", content: "Interactive ontology review and editing prototype" },
+      { property: "og:title", content: "Canvas Connect Review" },
+      { property: "og:description", content: "Interactive ontology review and editing prototype" },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
-      { name: "twitter:site", content: "@Lovable" },
     ],
     links: [
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
@@ -136,8 +162,13 @@ function RootComponent() {
             at `/trash`) — mounted here, above the Outlet, so navigating between them never
             resets or forks the entities/relations/trash state. */}
         <OntologyAppProvider>
-          {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
-          <Outlet />
+          <div className="flex h-screen flex-col overflow-hidden">
+            <DevScenarioSwitcher />
+            <div className="min-h-0 flex-1">
+              {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
+              <OntologyRoutes />
+            </div>
+          </div>
         </OntologyAppProvider>
       </TooltipProvider>
     </QueryClientProvider>

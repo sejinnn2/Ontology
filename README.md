@@ -131,5 +131,3 @@ Recommended Cloudflare build settings:
 - Tailwind CSS
 - Vite
 - Nitro / Cloudflare Workers
-
-This project originated in [Lovable](https://lovable.dev) and is now developed through its GitHub repository and local worktrees.
