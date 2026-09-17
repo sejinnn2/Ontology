@@ -407,8 +407,8 @@ const IN_PROGRESS_HISTORY_LOG: HistoryLogEntry[] = [
 export type LayoutIdea = "idea1" | "idea2";
 
 export function useOntologyApp() {
-  const initialFixture = useRef(createDemoFixture("in-progress"));
-  const [demoScenario, setDemoScenario] = useState<DemoScenario>("in-progress");
+  const initialFixture = useRef(createDemoFixture("fresh"));
+  const [demoScenario, setDemoScenario] = useState<DemoScenario>("fresh");
   const [layoutIdea, setLayoutIdea] = useState<LayoutIdea>("idea1");
   const [entities, setEntities] = useState<Entity[]>(initialFixture.current.entities);
   const [relations, setRelations] = useState<Relation[]>(initialFixture.current.relations);
@@ -494,7 +494,7 @@ export function useOntologyApp() {
   // every mutator below can log through it without becoming a new function reference every time
   // `entities`/`relations` change — several of them (`updateEntity` especially) need to stay
   // referentially stable for the Overview canvas's own hot drag path.
-  const [historyLog, setHistoryLog] = useState<HistoryLogEntry[]>(IN_PROGRESS_HISTORY_LOG);
+  const [historyLog, setHistoryLog] = useState<HistoryLogEntry[]>([]);
   // Set only while `restoreHistoryChanges` below is applying its selected changes — each one goes
   // through the SAME mutators as a normal edit (`updateEntity`, `deleteEntity`, ...), which would
   // otherwise each log their own ordinary entry ("Renamed Entity") right alongside the one, single
