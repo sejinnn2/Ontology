@@ -201,6 +201,133 @@ function buildRawGridLayout<T extends { id: string; x: number; y: number }>(enti
   return entities;
 }
 
+/** Idea 3: a small hand-rolled force-directed simulation — mutual repulsion between every pair of
+ * nodes, spring attraction along each Relation edge toward a target rest length, and a light pull
+ * toward the shared centroid so the whole graph doesn't drift apart under repulsion alone. Unlike
+ * Idea 1's hub/community heuristic, a disconnected Entity (no Relations at all, e.g. "Actor") just
+ * settles wherever the repulsion from every other node leaves it — never bucketed into an
+ * unrelated hub's cluster by coincidence.
+ *
+ * Runs a fixed number of iterations from a seeded starting layout, then bakes the result to
+ * static coordinates — deterministic and one-shot, not a continuously animating simulation, the
+ * same "compute once, render fixed" contract as the other two ideas. */
+function buildForceDirectedLayout<T extends { id: string; x: number; y: number }>(
+  entities: T[],
+  relations: { from: string; to: string }[],
+): T[] {
+  if (entities.length < 2) return entities;
+
+  // mulberry32 — a tiny, deterministic PRNG so the simulation starts from the same scattered
+  // positions every time instead of a different layout on every reload.
+  let seed = 1337;
+  const rand = () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+
+  const originalCenters = entities.map(ontologyNodeCenter);
+  const graphCenter = {
+    x: originalCenters.reduce((sum, p) => sum + p.x, 0) / originalCenters.length,
+    y: originalCenters.reduce((sum, p) => sum + p.y, 0) / originalCenters.length,
+  };
+
+  const SCATTER_RADIUS = 900;
+  const positions = new Map<string, Pt>();
+  const velocities = new Map<string, Pt>();
+  entities.forEach((entity) => {
+    const angle = rand() * Math.PI * 2;
+    const dist = rand() * SCATTER_RADIUS;
+    positions.set(entity.id, {
+      x: graphCenter.x + Math.cos(angle) * dist,
+      y: graphCenter.y + Math.sin(angle) * dist,
+    });
+    velocities.set(entity.id, { x: 0, y: 0 });
+  });
+
+  const edges = relations.filter(
+    (r) => r.from !== r.to && positions.has(r.from) && positions.has(r.to),
+  );
+  const ids = entities.map((entity) => entity.id);
+
+  const REPULSION = 42000;
+  const SPRING_LENGTH = 220;
+  const SPRING_STRENGTH = 0.02;
+  const CENTER_PULL = 0.006;
+  const DAMPING = 0.85;
+  const ITERATIONS = 400;
+
+  for (let iter = 0; iter < ITERATIONS; iter++) {
+    const forces = new Map<string, Pt>(ids.map((id) => [id, { x: 0, y: 0 }]));
+
+    // Mutual repulsion between every pair — O(n^2), trivial at this node count (dozens, not
+    // thousands; a spatial index would only start paying for itself well past this scale).
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const a = positions.get(ids[i]!)!;
+        const b = positions.get(ids[j]!)!;
+        let dx = a.x - b.x;
+        let dy = a.y - b.y;
+        let distSq = dx * dx + dy * dy;
+        if (distSq < 1) {
+          dx = rand() - 0.5;
+          dy = rand() - 0.5;
+          distSq = 1;
+        }
+        const dist = Math.sqrt(distSq);
+        const force = REPULSION / distSq;
+        const fx = (dx / dist) * force;
+        const fy = (dy / dist) * force;
+        forces.get(ids[i]!)!.x += fx;
+        forces.get(ids[i]!)!.y += fy;
+        forces.get(ids[j]!)!.x -= fx;
+        forces.get(ids[j]!)!.y -= fy;
+      }
+    }
+
+    // Spring attraction along real Relation edges only.
+    edges.forEach(({ from, to }) => {
+      const a = positions.get(from)!;
+      const b = positions.get(to)!;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const dist = Math.max(1, Math.hypot(dx, dy));
+      const force = (dist - SPRING_LENGTH) * SPRING_STRENGTH;
+      const fx = (dx / dist) * force;
+      const fy = (dy / dist) * force;
+      forces.get(from)!.x += fx;
+      forces.get(from)!.y += fy;
+      forces.get(to)!.x -= fx;
+      forces.get(to)!.y -= fy;
+    });
+
+    // Gentle pull toward the shared centroid — keeps repulsion from pushing the graph apart
+    // forever instead of settling.
+    ids.forEach((id) => {
+      const p = positions.get(id)!;
+      forces.get(id)!.x -= (p.x - graphCenter.x) * CENTER_PULL;
+      forces.get(id)!.y -= (p.y - graphCenter.y) * CENTER_PULL;
+    });
+
+    // Integrate: damped velocity, then position.
+    ids.forEach((id) => {
+      const v = velocities.get(id)!;
+      const f = forces.get(id)!;
+      v.x = (v.x + f.x) * DAMPING;
+      v.y = (v.y + f.y) * DAMPING;
+      const p = positions.get(id)!;
+      p.x += v.x;
+      p.y += v.y;
+    });
+  }
+
+  return entities.map((entity) => ({
+    ...entity,
+    ...wrapperOriginForCenter(positions.get(entity.id)!),
+  }));
+}
+
 // Hidden for now per product decision (the create-Entity-Type toolbar row reads as an empty bar
 // with the design's new header above it) — `CreateEntityButton` and `handleCreateEntity` stay
 // fully wired below, just not rendered, so restoring this is a one-line flip back to `true`.
@@ -443,13 +570,11 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       ),
     [entities, relationCountByEntity],
   );
-  const layoutEntities = useMemo(
-    () =>
-      layoutIdea === "idea2"
-        ? buildRawGridLayout(entities)
-        : buildFarZoomTopologyLayout(entities, relations),
-    [entities, relations, layoutIdea],
-  );
+  const layoutEntities = useMemo(() => {
+    if (layoutIdea === "idea2") return buildRawGridLayout(entities);
+    if (layoutIdea === "idea3") return buildForceDirectedLayout(entities, relations);
+    return buildFarZoomTopologyLayout(entities, relations);
+  }, [entities, relations, layoutIdea]);
 
   // The Data Tables panel's own collapse toggle — independent of the Ontology canvas, which is
   // always shown at full width alongside it. Collapsing only hides this panel's own content; it

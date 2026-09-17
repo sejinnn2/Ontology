@@ -22,7 +22,7 @@ function DevScenarioSwitcher() {
       <span className="px-2 text-[10px] font-semibold uppercase tracking-wider text-white/55">
         Graph ideas
       </span>
-      {(["idea1", "idea2"] as const).map((idea, index) => (
+      {(["idea1", "idea2", "idea3"] as const).map((idea, index) => (
         <button
           key={idea}
           type="button"

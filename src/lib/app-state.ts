@@ -402,9 +402,9 @@ const IN_PROGRESS_HISTORY_LOG: HistoryLogEntry[] = [
 ];
 
 /** Which Overview graph layout algorithm to render with — a purely visual choice, independent of
- * `demoScenario`/the ontology data itself. See `buildFarZoomTopologyLayout`/`buildRawGridLayout`
- * in OverviewCanvas.tsx for what each idea actually does. */
-export type LayoutIdea = "idea1" | "idea2";
+ * `demoScenario`/the ontology data itself. See `buildFarZoomTopologyLayout`/`buildRawGridLayout`/
+ * `buildForceDirectedLayout` in OverviewCanvas.tsx for what each idea actually does. */
+export type LayoutIdea = "idea1" | "idea2" | "idea3";
 
 export function useOntologyApp() {
   const initialFixture = useRef(createDemoFixture("fresh"));
