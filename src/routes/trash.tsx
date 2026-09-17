@@ -4,7 +4,7 @@ import { TrashPage } from "@/components/trash/TrashPage";
 
 export const Route = createFileRoute("/trash")({
   head: () => ({
-    meta: [{ title: "Trash · Main" }],
+    meta: [{ title: "Trash · Canvas Connect Review" }],
   }),
   component: TrashRoute,
 });

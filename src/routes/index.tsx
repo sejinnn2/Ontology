@@ -11,7 +11,7 @@ import { entityErrorReason, entityStatus } from "@/lib/mock-data";
 
 export const Route = createFileRoute("/")({
   head: () => ({
-    meta: [{ title: "Main" }],
+    meta: [{ title: "Canvas Connect Review" }],
   }),
   component: Index,
 });
