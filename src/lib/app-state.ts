@@ -410,7 +410,7 @@ export type LayoutIdea = "idea1" | "idea2" | "idea3" | "idea4";
 /** Which Editing Mode experience to render with — a purely visual choice, independent of the
  * Overview `layoutIdea` above and of the ontology data itself. Idea 1 is the existing Editing Mode
  * (EntityDetailCanvas/TableDetailCanvas), preserved as-is; later ideas slot in as idea2, idea3… */
-export type EditingIdea = "idea1";
+export type EditingIdea = "idea1" | "idea2";
 
 export function useOntologyApp() {
   const initialFixture = useRef(createDemoFixture("fresh"));
