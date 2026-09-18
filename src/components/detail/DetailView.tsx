@@ -5003,7 +5003,7 @@ function EntityDetailCanvas({
               <div
                 ref={relatedColumnRef}
                 className={cn(
-                  "grid grid-cols-2 items-center gap-x-8 gap-y-6 pt-8 transition-opacity duration-[230ms] ease-out",
+                  "grid grid-cols-2 grid-flow-col items-center gap-x-8 gap-y-6 pt-8 transition-opacity duration-[230ms] ease-out",
                   // PHASE 2 of the morph transition: the related Entity Types stay hidden until
                   // the selected Entity has mostly finished its own morph, then fade in — already
                   // at their final positions, only their opacity ever animates here.
@@ -5017,7 +5017,17 @@ function EntityDetailCanvas({
                 // entities) — every extra Entity dropped into the center column reuses this same
                 // value for its own satellite column (see `mainEntities.slice(1)` below), so no
                 // row's card ever sits closer to its satellites than any other row's.
-                style={{ marginRight: Math.max(0, relationGapPx - 80), minWidth: NODE_W * 2 + 32 }}
+                // `grid-flow-col` + an explicit row count fills the grid column-major (all of the
+                // left column top-to-bottom, then the right column) instead of the CSS Grid
+                // default row-major/interleaved order — every satellite's connector line still
+                // targets the same shared card edge, so keeping each column internally contiguous
+                // (rather than alternating left/right down the list) noticeably cuts down on lines
+                // crossing over the OTHER column to get there.
+                style={{
+                  marginRight: Math.max(0, relationGapPx - 80),
+                  minWidth: NODE_W * 2 + 32,
+                  gridTemplateRows: `repeat(${Math.max(1, Math.ceil(allRelated.length / 2))}, auto)`,
+                }}
               >
                 {collapsedMainIds.has(entity.id) && (
                   <p className="col-span-2 text-center text-[10.5px] text-muted-foreground">
