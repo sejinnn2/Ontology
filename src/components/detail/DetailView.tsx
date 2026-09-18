@@ -164,6 +164,31 @@ function SortBar({
  * `isMappedGroupOpen`/`isUnmappedGroupOpen` for that distinction). Purely a display toggle, same
  * "which rows render" concern as `SortBar`/"Only Identifier" above it — collapsing a group never
  * touches the properties themselves. */
+function SelectiveRowsNotice({
+  hiddenCount,
+  noun,
+  onShowAll,
+}: {
+  hiddenCount: number;
+  noun: "Properties" | "Columns";
+  onShowAll: () => void;
+}) {
+  if (hiddenCount <= 0) return null;
+  return (
+    <button
+      type="button"
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.stopPropagation();
+        onShowAll();
+      }}
+      className="flex w-full items-center justify-center rounded-[8px] border border-dashed border-black/10 bg-white/60 px-2 py-1.5 text-[10.5px] font-medium text-muted-foreground transition-colors hover:border-[#7657ff]/40 hover:bg-white hover:text-[#6247db]"
+    >
+      +{hiddenCount} more {noun} · Show all
+    </button>
+  );
+}
+
 function PropertyGroupHeader({
   label,
   count,
@@ -3597,6 +3622,96 @@ function EntityDetailCanvas({
     },
     [suggestionSelection],
   );
+  // Editing Idea 2 keeps the current card, group, row, connector, and panel design intact and
+  // changes only how many Property/Column rows render at once. The compact subset always keeps
+  // identifiers, validation issues, the current contextual selection, and its mapping counterpart;
+  // remaining slots follow the list's existing order so sorting and alignment still mean the same
+  // thing. Idea 1 returns every row exactly as before.
+  const SELECTIVE_ROW_LIMIT = 6;
+  const [expandedSelectiveEntityIds, setExpandedSelectiveEntityIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [expandedSelectiveTableNames, setExpandedSelectiveTableNames] = useState<Set<string>>(
+    new Set(),
+  );
+  const selectivePropertyRows = useCallback(
+    (rows: Property[], ownerEntityId: string) => {
+      if (
+        app.editingIdea !== "idea2" ||
+        expandedSelectiveEntityIds.has(ownerEntityId) ||
+        rows.length <= SELECTIVE_ROW_LIMIT
+      )
+        return rows;
+      const selectedIds = selectedPropertyIdsFor(ownerEntityId);
+      const contextualPropertyId =
+        contextItem?.kind === "property" && contextItem.entity.id === ownerEntityId
+          ? contextItem.property.id
+          : null;
+      const contextualColumn =
+        contextItem?.kind === "column"
+          ? `${contextItem.tableName}.${contextItem.column.name}`
+          : null;
+      const keep = new Set(
+        rows
+          .filter((property) => {
+            const status = propertyStatus(property);
+            return (
+              isIdentifierProperty(property) ||
+              status === "warning" ||
+              status === "error" ||
+              selectedIds.has(property.id) ||
+              property.id === contextualPropertyId ||
+              (!!property.mapping &&
+                `${property.mapping.table}.${property.mapping.column}` === contextualColumn)
+            );
+          })
+          .map((property) => property.id),
+      );
+      for (const property of rows) {
+        if (keep.size >= SELECTIVE_ROW_LIMIT) break;
+        keep.add(property.id);
+      }
+      return rows.filter((property) => keep.has(property.id));
+    },
+    [app.editingIdea, contextItem, expandedSelectiveEntityIds, selectedPropertyIdsFor],
+  );
+  const selectiveColumnRows = useCallback(
+    (rows: ColGroupEntry[], tableName: string) => {
+      if (
+        app.editingIdea !== "idea2" ||
+        expandedSelectiveTableNames.has(tableName) ||
+        rows.length <= SELECTIVE_ROW_LIMIT
+      )
+        return rows;
+      const contextualColumn =
+        contextItem?.kind === "column" && contextItem.tableName === tableName
+          ? contextItem.column.name
+          : null;
+      const contextualPropertyId =
+        contextItem?.kind === "property" ? contextItem.property.id : null;
+      const keep = new Set(
+        rows
+          .filter(
+            (column) =>
+              column.column === contextualColumn ||
+              /(^|_)(id|key|uuid)$|identifier/i.test(column.column) ||
+              column.mappedBy.some(
+                ({ ownerEntityId, propertyId }) =>
+                  contextualPropertyId === propertyId ||
+                  selectedPropertyIdsFor(ownerEntityId).has(propertyId),
+              ),
+          )
+          .map((column) => column.column),
+      );
+      for (const column of rows) {
+        if (keep.size >= SELECTIVE_ROW_LIMIT) break;
+        keep.add(column.column);
+      }
+      return rows.filter((column) => keep.has(column.column));
+    },
+    [app.editingIdea, contextItem, expandedSelectiveTableNames, selectedPropertyIdsFor],
+  );
+
   const togglePropertySelected = useCallback(
     (entityId: string, propertyId: string) =>
       toggleSuggestionSelected({ kind: "property", entityId, propertyId }),
@@ -5423,7 +5538,38 @@ function EntityDetailCanvas({
                                     .filter(
                                       (p) => p.mapping && isMappedColumnGroupOpen(p.mapping.table),
                                     )
+                                    .filter((p) =>
+                                      selectivePropertyRows(mapped, entity.id).some(
+                                        (shown) => shown.id === p.id,
+                                      ),
+                                    )
+                                    .filter((p) =>
+                                      selectivePropertyRows(orderedUnmapped, entity.id).some(
+                                        (shown) => shown.id === p.id,
+                                      ),
+                                    )
+                                    .filter((p) =>
+                                      selectivePropertyRows(mapped, other.id).some(
+                                        (shown) => shown.id === p.id,
+                                      ),
+                                    )
+                                    .filter((p) =>
+                                      selectivePropertyRows(orderedUnmapped, other.id).some(
+                                        (shown) => shown.id === p.id,
+                                      ),
+                                    )
                                     .map(renderProperty)}
+                                <SelectiveRowsNotice
+                                  hiddenCount={
+                                    mapped.length - selectivePropertyRows(mapped, entity.id).length
+                                  }
+                                  noun="Properties"
+                                  onShowAll={() =>
+                                    setExpandedSelectiveEntityIds((current) =>
+                                      new Set(current).add(entity.id),
+                                    )
+                                  }
+                                />
                               </div>
                             )}
                             {unmapped.length > 0 && (
@@ -5446,6 +5592,18 @@ function EntityDetailCanvas({
                                         !p.mapping || isUnmappedColumnGroupOpen(p.mapping.table),
                                     )
                                     .map(renderProperty)}
+                                <SelectiveRowsNotice
+                                  hiddenCount={
+                                    orderedUnmapped.length -
+                                    selectivePropertyRows(orderedUnmapped, entity.id).length
+                                  }
+                                  noun="Properties"
+                                  onShowAll={() =>
+                                    setExpandedSelectiveEntityIds((current) =>
+                                      new Set(current).add(entity.id),
+                                    )
+                                  }
+                                />
                               </div>
                             )}
                           </>
@@ -5806,7 +5964,39 @@ function EntityDetailCanvas({
                                               isMappedGroupOpen(ownerEntityId),
                                             ),
                                           )
+                                          .filter((c) =>
+                                            selectiveColumnRows(mappedCols, table).some(
+                                              (shown) => shown.column === c.column,
+                                            ),
+                                          )
+                                          .filter((c) =>
+                                            selectiveColumnRows(orderedUnmappedCols, table).some(
+                                              (shown) => shown.column === c.column,
+                                            ),
+                                          )
+                                          .filter((c) =>
+                                            selectiveColumnRows(mappedCols, table).some(
+                                              (shown) => shown.column === c.column,
+                                            ),
+                                          )
+                                          .filter((c) =>
+                                            selectiveColumnRows(orderedUnmappedCols, table).some(
+                                              (shown) => shown.column === c.column,
+                                            ),
+                                          )
                                           .map(renderColumn)}
+                                      <SelectiveRowsNotice
+                                        hiddenCount={
+                                          mappedCols.length -
+                                          selectiveColumnRows(mappedCols, table).length
+                                        }
+                                        noun="Columns"
+                                        onShowAll={() =>
+                                          setExpandedSelectiveTableNames((current) =>
+                                            new Set(current).add(table),
+                                          )
+                                        }
+                                      />
                                     </div>
                                   )}
                                   {unmappedCols.length > 0 && (
@@ -5831,6 +6021,18 @@ function EntityDetailCanvas({
                                               ),
                                           )
                                           .map(renderColumn)}
+                                      <SelectiveRowsNotice
+                                        hiddenCount={
+                                          orderedUnmappedCols.length -
+                                          selectiveColumnRows(orderedUnmappedCols, table).length
+                                        }
+                                        noun="Columns"
+                                        onShowAll={() =>
+                                          setExpandedSelectiveTableNames((current) =>
+                                            new Set(current).add(table),
+                                          )
+                                        }
+                                      />
                                     </div>
                                   )}
                                 </>
@@ -6198,6 +6400,18 @@ function EntityDetailCanvas({
                                             p.mapping && isMappedColumnGroupOpen(p.mapping.table),
                                         )
                                         .map(renderProperty)}
+                                    <SelectiveRowsNotice
+                                      hiddenCount={
+                                        mapped.length -
+                                        selectivePropertyRows(mapped, other.id).length
+                                      }
+                                      noun="Properties"
+                                      onShowAll={() =>
+                                        setExpandedSelectiveEntityIds((current) =>
+                                          new Set(current).add(other.id),
+                                        )
+                                      }
+                                    />
                                   </div>
                                 )}
                                 {unmapped.length > 0 && (
@@ -6216,6 +6430,18 @@ function EntityDetailCanvas({
                                             isUnmappedColumnGroupOpen(p.mapping.table),
                                         )
                                         .map(renderProperty)}
+                                    <SelectiveRowsNotice
+                                      hiddenCount={
+                                        orderedUnmapped.length -
+                                        selectivePropertyRows(orderedUnmapped, other.id).length
+                                      }
+                                      noun="Properties"
+                                      onShowAll={() =>
+                                        setExpandedSelectiveEntityIds((current) =>
+                                          new Set(current).add(other.id),
+                                        )
+                                      }
+                                    />
                                   </div>
                                 )}
                               </>
@@ -6541,6 +6767,18 @@ function EntityDetailCanvas({
                                                 ),
                                               )
                                               .map(renderColumn)}
+                                          <SelectiveRowsNotice
+                                            hiddenCount={
+                                              mappedCols.length -
+                                              selectiveColumnRows(mappedCols, table).length
+                                            }
+                                            noun="Columns"
+                                            onShowAll={() =>
+                                              setExpandedSelectiveTableNames((current) =>
+                                                new Set(current).add(table),
+                                              )
+                                            }
+                                          />
                                         </div>
                                       )}
                                       {unmappedCols.length > 0 && (
@@ -6561,6 +6799,18 @@ function EntityDetailCanvas({
                                                   ),
                                               )
                                               .map(renderColumn)}
+                                          <SelectiveRowsNotice
+                                            hiddenCount={
+                                              orderedUnmappedCols.length -
+                                              selectiveColumnRows(orderedUnmappedCols, table).length
+                                            }
+                                            noun="Columns"
+                                            onShowAll={() =>
+                                              setExpandedSelectiveTableNames((current) =>
+                                                new Set(current).add(table),
+                                              )
+                                            }
+                                          />
                                         </div>
                                       )}
                                     </>
