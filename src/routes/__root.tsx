@@ -20,15 +20,15 @@ function DevScenarioSwitcher() {
   return (
     <div className="flex h-10 shrink-0 items-center justify-center gap-1 border-b border-white/10 bg-[#1c1c18] px-3">
       <span className="px-2 text-[10px] font-semibold uppercase tracking-wider text-white/55">
-        Graph ideas
+        Editing ideas
       </span>
-      {(["idea1", "idea2", "idea3", "idea4"] as const).map((idea, index) => (
+      {(["idea1"] as const).map((idea, index) => (
         <button
           key={idea}
           type="button"
-          onClick={() => app.setLayoutIdea(idea)}
+          onClick={() => app.setEditingIdea(idea)}
           className={`rounded-full px-3 py-1 text-[11px] font-medium transition-colors ${
-            app.layoutIdea === idea
+            app.editingIdea === idea
               ? "bg-white text-[#1c1c18]"
               : "text-white/70 hover:bg-white/10 hover:text-white"
           }`}
