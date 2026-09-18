@@ -5125,7 +5125,7 @@ function EntityDetailCanvas({
                   // those — only for a click that actually lands on empty card real estate.
                   onClick={(e) => selectOnClick({ kind: "entity", id: entity.id }, e)}
                   className={cn(
-                    "group/entitycard flex w-[268.8px] flex-col items-center justify-center gap-2 rounded-[16px] border-[1.5px] border-[rgba(28,28,24,0.08)] bg-white px-3 pb-3 pt-2 [&>div]:w-full",
+                    "group/entitycard flex h-[400px] w-[268.8px] flex-col items-center justify-center gap-2 overflow-y-auto rounded-[16px] border-[1.5px] border-[rgba(28,28,24,0.08)] bg-white px-3 pb-3 pt-2 [&>div]:w-full",
                     moveTargetId === entity.id
                       ? "shadow-[0_0_0_4px_var(--color-primary)]"
                       : // Blue is the one selection color across the whole canvas — single- and
@@ -5522,7 +5522,7 @@ function EntityDetailCanvas({
                             if (schema) setContextItem({ kind: "table", table: schema });
                           }}
                           className={cn(
-                            "flex w-[268.8px] flex-col items-center justify-center gap-2 rounded-[16px] border-[1.5px] border-[rgba(28,28,24,0.08)] bg-white px-3 pb-3 pt-2 [&>div]:w-full",
+                            "flex h-[400px] w-[268.8px] flex-col items-center justify-center gap-2 overflow-y-auto rounded-[16px] border-[1.5px] border-[rgba(28,28,24,0.08)] bg-white px-3 pb-3 pt-2 [&>div]:w-full",
                             contextItem?.kind === "table" && contextItem.table.name === table
                               ? "shadow-[0_0_0_2px_#FCFCFC,0_0_0_5px_#3b82f6,0_2px_2px_0_rgba(0,0,0,0.10)]"
                               : "shadow-[0_2px_2px_0_rgba(0,0,0,0.1)]",
@@ -5947,7 +5947,7 @@ function EntityDetailCanvas({
                         // anchor's own card above; every interactive child already stops propagation.
                         onClick={(e) => selectOnClick({ kind: "entity", id: other.id }, e)}
                         className={cn(
-                          "group/entitycard flex w-[268.8px] flex-col items-center justify-center gap-2 rounded-[16px] border-[1.5px] border-[rgba(28,28,24,0.08)] bg-white px-3 pb-3 pt-2 [&>div]:w-full",
+                          "group/entitycard flex h-[400px] w-[268.8px] flex-col items-center justify-center gap-2 overflow-y-auto rounded-[16px] border-[1.5px] border-[rgba(28,28,24,0.08)] bg-white px-3 pb-3 pt-2 [&>div]:w-full",
                           moveTargetId === other.id
                             ? "shadow-[0_0_0_4px_var(--color-primary)]"
                             : selectedMergeIds.has(other.id)
@@ -6263,7 +6263,7 @@ function EntityDetailCanvas({
                                 if (schema) setContextItem({ kind: "table", table: schema });
                               }}
                               className={cn(
-                                "flex w-[268.8px] flex-col items-center justify-center gap-2 rounded-[16px] border-[1.5px] border-[rgba(28,28,24,0.08)] bg-white px-3 pb-3 pt-2 [&>div]:w-full",
+                                "flex h-[400px] w-[268.8px] flex-col items-center justify-center gap-2 overflow-y-auto rounded-[16px] border-[1.5px] border-[rgba(28,28,24,0.08)] bg-white px-3 pb-3 pt-2 [&>div]:w-full",
                                 contextItem?.kind === "table" && contextItem.table.name === table
                                   ? "shadow-[0_0_0_2px_#FCFCFC,0_0_0_5px_#3b82f6,0_2px_2px_0_rgba(0,0,0,0.10)]"
                                   : "shadow-[0_2px_2px_0_rgba(0,0,0,0.1)]",
