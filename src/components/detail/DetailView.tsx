@@ -164,31 +164,6 @@ function SortBar({
  * `isMappedGroupOpen`/`isUnmappedGroupOpen` for that distinction). Purely a display toggle, same
  * "which rows render" concern as `SortBar`/"Only Identifier" above it — collapsing a group never
  * touches the properties themselves. */
-function SelectiveRowsNotice({
-  hiddenCount,
-  noun,
-  onShowAll,
-}: {
-  hiddenCount: number;
-  noun: "Properties" | "Columns";
-  onShowAll: () => void;
-}) {
-  if (hiddenCount <= 0) return null;
-  return (
-    <button
-      type="button"
-      onPointerDown={(event) => event.stopPropagation()}
-      onClick={(event) => {
-        event.stopPropagation();
-        onShowAll();
-      }}
-      className="flex w-full items-center justify-center rounded-[8px] border border-dashed border-black/10 bg-white/60 px-2 py-1.5 text-[10.5px] font-medium text-muted-foreground transition-colors hover:border-[#7657ff]/40 hover:bg-white hover:text-[#6247db]"
-    >
-      +{hiddenCount} more {noun} · Show all
-    </button>
-  );
-}
-
 function PropertyGroupHeader({
   label,
   count,
@@ -1807,6 +1782,7 @@ function EntityDetailCanvas({
   const mainCardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const columnsAreaRef = useRef<HTMLDivElement>(null);
   const columnGroupRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const tableCardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   // Collapsing a main entity's row (the anchor's own, or an extra's) hides everything about that
   // row except its card's own header — its related satellites, the relation lines to them, its
   // properties, its own mapped columns, and the property<->column lines between them all simply
@@ -3362,6 +3338,22 @@ function EntityDetailCanvas({
         c.mappedBy.forEach(({ propertyId, ownerEntityId }) => {
           const propEl = propertyRefs.current.get(propertyId);
           if (!propEl) return;
+          if (app.editingIdea === "idea2") {
+            const rowVisibleInCard = (row: Element, card: Element | undefined) => {
+              if (!card) return true;
+              const rowRect = row.getBoundingClientRect();
+              const cardRect = card.getBoundingClientRect();
+              // Header + section controls remain sticky at the top of the scroll viewport. Treat
+              // rows underneath that 58px chrome as hidden so connectors never draw through it.
+              const visibleTop = cardRect.top + 58;
+              return rowRect.bottom > visibleTop && rowRect.top < cardRect.bottom - 8;
+            };
+            if (
+              !rowVisibleInCard(propEl, mainCardRefs.current.get(ownerEntityId)) ||
+              !rowVisibleInCard(colEl, tableCardRefs.current.get(table))
+            )
+              return;
+          }
           // Always the Property's own right edge to the Column's own left edge — never the
           // adaptive `edgeAnchorsForRects` side-picker other connectors use — so a Property<->
           // Column mapping keeps its one semantic direction and never routes vertically through
@@ -3495,6 +3487,7 @@ function EntityDetailCanvas({
     collapsedMainIds,
     onlyIdentifierByEntity,
     collapsedTables,
+    app.editingIdea,
     // Collapsing a Mapped Properties/Mapped Columns group unmounts the rows inside it (and, for a
     // Column whose every mapper just went hidden, the Column row itself — see `mappedCols`'s own
     // filter above) — without these two in the deps, `computeLines` wouldn't rerun on that toggle
@@ -3502,6 +3495,21 @@ function EntityDetailCanvas({
     propertyGroupOpenByEntity,
     columnGroupOpenByTable,
   ]);
+
+  const cardScrollFrameRef = useRef<number | null>(null);
+  const handleScrollableCardScroll = useCallback(() => {
+    if (app.editingIdea !== "idea2" || cardScrollFrameRef.current !== null) return;
+    cardScrollFrameRef.current = requestAnimationFrame(() => {
+      cardScrollFrameRef.current = null;
+      computeLines();
+    });
+  }, [app.editingIdea, computeLines]);
+  useEffect(
+    () => () => {
+      if (cardScrollFrameRef.current !== null) cancelAnimationFrame(cardScrollFrameRef.current);
+    },
+    [],
+  );
 
   useLayoutEffect(() => computeLines(), [computeLines]);
   useLayoutEffect(() => {
@@ -3622,96 +3630,6 @@ function EntityDetailCanvas({
     },
     [suggestionSelection],
   );
-  // Editing Idea 2 keeps the current card, group, row, connector, and panel design intact and
-  // changes only how many Property/Column rows render at once. The compact subset always keeps
-  // identifiers, validation issues, the current contextual selection, and its mapping counterpart;
-  // remaining slots follow the list's existing order so sorting and alignment still mean the same
-  // thing. Idea 1 returns every row exactly as before.
-  const SELECTIVE_ROW_LIMIT = 6;
-  const [expandedSelectiveEntityIds, setExpandedSelectiveEntityIds] = useState<Set<string>>(
-    new Set(),
-  );
-  const [expandedSelectiveTableNames, setExpandedSelectiveTableNames] = useState<Set<string>>(
-    new Set(),
-  );
-  const selectivePropertyRows = useCallback(
-    (rows: Property[], ownerEntityId: string) => {
-      if (
-        app.editingIdea !== "idea2" ||
-        expandedSelectiveEntityIds.has(ownerEntityId) ||
-        rows.length <= SELECTIVE_ROW_LIMIT
-      )
-        return rows;
-      const selectedIds = selectedPropertyIdsFor(ownerEntityId);
-      const contextualPropertyId =
-        contextItem?.kind === "property" && contextItem.entity.id === ownerEntityId
-          ? contextItem.property.id
-          : null;
-      const contextualColumn =
-        contextItem?.kind === "column"
-          ? `${contextItem.tableName}.${contextItem.column.name}`
-          : null;
-      const keep = new Set(
-        rows
-          .filter((property) => {
-            const status = propertyStatus(property);
-            return (
-              isIdentifierProperty(property) ||
-              status === "warning" ||
-              status === "error" ||
-              selectedIds.has(property.id) ||
-              property.id === contextualPropertyId ||
-              (!!property.mapping &&
-                `${property.mapping.table}.${property.mapping.column}` === contextualColumn)
-            );
-          })
-          .map((property) => property.id),
-      );
-      for (const property of rows) {
-        if (keep.size >= SELECTIVE_ROW_LIMIT) break;
-        keep.add(property.id);
-      }
-      return rows.filter((property) => keep.has(property.id));
-    },
-    [app.editingIdea, contextItem, expandedSelectiveEntityIds, selectedPropertyIdsFor],
-  );
-  const selectiveColumnRows = useCallback(
-    (rows: ColGroupEntry[], tableName: string) => {
-      if (
-        app.editingIdea !== "idea2" ||
-        expandedSelectiveTableNames.has(tableName) ||
-        rows.length <= SELECTIVE_ROW_LIMIT
-      )
-        return rows;
-      const contextualColumn =
-        contextItem?.kind === "column" && contextItem.tableName === tableName
-          ? contextItem.column.name
-          : null;
-      const contextualPropertyId =
-        contextItem?.kind === "property" ? contextItem.property.id : null;
-      const keep = new Set(
-        rows
-          .filter(
-            (column) =>
-              column.column === contextualColumn ||
-              /(^|_)(id|key|uuid)$|identifier/i.test(column.column) ||
-              column.mappedBy.some(
-                ({ ownerEntityId, propertyId }) =>
-                  contextualPropertyId === propertyId ||
-                  selectedPropertyIdsFor(ownerEntityId).has(propertyId),
-              ),
-          )
-          .map((column) => column.column),
-      );
-      for (const column of rows) {
-        if (keep.size >= SELECTIVE_ROW_LIMIT) break;
-        keep.add(column.column);
-      }
-      return rows.filter((column) => keep.has(column.column));
-    },
-    [app.editingIdea, contextItem, expandedSelectiveTableNames, selectedPropertyIdsFor],
-  );
-
   const togglePropertySelected = useCallback(
     (entityId: string, propertyId: string) =>
       toggleSuggestionSelected({ kind: "property", entityId, propertyId }),
@@ -5239,8 +5157,12 @@ function EntityDetailCanvas({
                   // already stops propagation on its own click/pointerdown, so this never fires for
                   // those — only for a click that actually lands on empty card real estate.
                   onClick={(e) => selectOnClick({ kind: "entity", id: entity.id }, e)}
+                  onScroll={handleScrollableCardScroll}
                   className={cn(
                     "group/entitycard flex w-[268.8px] flex-col items-center justify-center gap-2 rounded-[16px] border-[1.5px] border-[rgba(28,28,24,0.08)] bg-white px-3 pb-3 pt-2 [&>div]:w-full",
+                    app.editingIdea === "idea2" &&
+                      !isCollapsed &&
+                      "max-h-[440px] justify-start overflow-y-auto overscroll-contain [scrollbar-gutter:stable]",
                     moveTargetId === entity.id
                       ? "shadow-[0_0_0_4px_var(--color-primary)]"
                       : // Blue is the one selection color across the whole canvas — single- and
@@ -5266,6 +5188,7 @@ function EntityDetailCanvas({
                       // resting at this exact position/style, so this is a swap between two
                       // identical-looking frames, not a second, separate reveal.
                       "flex w-full items-center gap-1 transition-opacity duration-75",
+                      app.editingIdea === "idea2" && "sticky top-0 z-20 bg-white py-0.5",
                       isMorphing && "opacity-0",
                     )}
                   >
@@ -5357,7 +5280,12 @@ function EntityDetailCanvas({
                         which side (Entity or Table) Editing Mode was entered on — not just the
                         entry point's own authoritative side. */}
                     {!collapsedMainIds.has(entity.id) && (
-                      <div className="flex w-full items-center justify-between gap-1">
+                      <div
+                        className={cn(
+                          "flex w-full items-center justify-between gap-1",
+                          app.editingIdea === "idea2" && "sticky top-8 z-10 bg-white py-1",
+                        )}
+                      >
                         <button
                           type="button"
                           onPointerDown={(e) => e.stopPropagation()}
@@ -5438,6 +5366,8 @@ function EntityDetailCanvas({
                               title="Click for name and description, or shift-click to select for Split/Delete/Accept/Reject"
                               className={cn(
                                 "group/prop relative flex w-full cursor-pointer items-center gap-1 rounded-[10px] px-3 py-2 text-[14px] leading-[16.5px] shadow-[0_0_0_1.2px_rgba(0,0,0,0.08)] transition-shadow",
+                                app.editingIdea === "idea2" &&
+                                  "rounded-[4px] px-2 py-1.5 shadow-none",
                                 p.mapping
                                   ? "bg-white font-medium text-foreground"
                                   : "bg-white font-normal text-[#555]",
@@ -5538,38 +5468,7 @@ function EntityDetailCanvas({
                                     .filter(
                                       (p) => p.mapping && isMappedColumnGroupOpen(p.mapping.table),
                                     )
-                                    .filter((p) =>
-                                      selectivePropertyRows(mapped, entity.id).some(
-                                        (shown) => shown.id === p.id,
-                                      ),
-                                    )
-                                    .filter((p) =>
-                                      selectivePropertyRows(orderedUnmapped, entity.id).some(
-                                        (shown) => shown.id === p.id,
-                                      ),
-                                    )
-                                    .filter((p) =>
-                                      selectivePropertyRows(mapped, other.id).some(
-                                        (shown) => shown.id === p.id,
-                                      ),
-                                    )
-                                    .filter((p) =>
-                                      selectivePropertyRows(orderedUnmapped, other.id).some(
-                                        (shown) => shown.id === p.id,
-                                      ),
-                                    )
                                     .map(renderProperty)}
-                                <SelectiveRowsNotice
-                                  hiddenCount={
-                                    mapped.length - selectivePropertyRows(mapped, entity.id).length
-                                  }
-                                  noun="Properties"
-                                  onShowAll={() =>
-                                    setExpandedSelectiveEntityIds((current) =>
-                                      new Set(current).add(entity.id),
-                                    )
-                                  }
-                                />
                               </div>
                             )}
                             {unmapped.length > 0 && (
@@ -5592,18 +5491,6 @@ function EntityDetailCanvas({
                                         !p.mapping || isUnmappedColumnGroupOpen(p.mapping.table),
                                     )
                                     .map(renderProperty)}
-                                <SelectiveRowsNotice
-                                  hiddenCount={
-                                    orderedUnmapped.length -
-                                    selectivePropertyRows(orderedUnmapped, entity.id).length
-                                  }
-                                  noun="Properties"
-                                  onShowAll={() =>
-                                    setExpandedSelectiveEntityIds((current) =>
-                                      new Set(current).add(entity.id),
-                                    )
-                                  }
-                                />
                               </div>
                             )}
                           </>
@@ -5669,8 +5556,13 @@ function EntityDetailCanvas({
                         {tableInsertIndex === i && <DropInsertionPlaceholder variant="card" />}
                         <div
                           ref={(el) => {
-                            if (el) columnGroupRefs.current.set(table, el);
-                            else columnGroupRefs.current.delete(table);
+                            if (el) {
+                              columnGroupRefs.current.set(table, el);
+                              tableCardRefs.current.set(table, el);
+                            } else {
+                              columnGroupRefs.current.delete(table);
+                              tableCardRefs.current.delete(table);
+                            }
                           }}
                           style={nodeTransform(nodeId)}
                           // Selects the whole Table — same "click anywhere on the card body" as the
@@ -5679,15 +5571,24 @@ function EntityDetailCanvas({
                             const schema = tableByName(table);
                             if (schema) setContextItem({ kind: "table", table: schema });
                           }}
+                          onScroll={handleScrollableCardScroll}
                           className={cn(
                             "flex w-[268.8px] flex-col items-center justify-center gap-2 rounded-[16px] border-[1.5px] border-[rgba(28,28,24,0.08)] bg-white px-3 pb-3 pt-2 [&>div]:w-full",
+                            app.editingIdea === "idea2" &&
+                              !collapsedTables.has(table) &&
+                              "max-h-[440px] justify-start overflow-y-auto overscroll-contain [scrollbar-gutter:stable]",
                             contextItem?.kind === "table" && contextItem.table.name === table
                               ? "shadow-[0_0_0_2px_#FCFCFC,0_0_0_5px_#3b82f6,0_2px_2px_0_rgba(0,0,0,0.10)]"
                               : "shadow-[0_2px_2px_0_rgba(0,0,0,0.1)]",
                             !tableInScope && "opacity-40",
                           )}
                         >
-                          <div className="flex w-full items-center gap-1">
+                          <div
+                            className={cn(
+                              "flex w-full items-center gap-1",
+                              app.editingIdea === "idea2" && "sticky top-0 z-20 bg-white py-0.5",
+                            )}
+                          >
                             <button
                               onPointerDown={(e) => {
                                 if (e.button !== 0) return;
@@ -5744,7 +5645,12 @@ function EntityDetailCanvas({
                               of which side (Entity or Table) Editing Mode was entered on — not
                               just the entry point's own authoritative side. */}
                           {!collapsedTables.has(table) && (
-                            <div className="flex w-full items-center justify-between gap-1">
+                            <div
+                              className={cn(
+                                "flex w-full items-center justify-between gap-1",
+                                app.editingIdea === "idea2" && "sticky top-8 z-10 bg-white py-1",
+                              )}
+                            >
                               <button
                                 type="button"
                                 onPointerDown={(e) => e.stopPropagation()}
@@ -5843,6 +5749,8 @@ function EntityDetailCanvas({
                                     title="Click for name and description"
                                     className={cn(
                                       "group/col relative flex w-full cursor-pointer items-center gap-1 rounded-[10px] px-3 py-2 text-[14px] leading-[16.5px] shadow-[0_0_0_1.2px_rgba(0,0,0,0.08)] transition-shadow",
+                                      app.editingIdea === "idea2" &&
+                                        "rounded-[4px] px-2 py-1.5 shadow-none",
                                       c.mappedBy.length > 0
                                         ? "bg-white font-medium text-foreground"
                                         : "bg-white font-normal text-[#555]",
@@ -5964,39 +5872,7 @@ function EntityDetailCanvas({
                                               isMappedGroupOpen(ownerEntityId),
                                             ),
                                           )
-                                          .filter((c) =>
-                                            selectiveColumnRows(mappedCols, table).some(
-                                              (shown) => shown.column === c.column,
-                                            ),
-                                          )
-                                          .filter((c) =>
-                                            selectiveColumnRows(orderedUnmappedCols, table).some(
-                                              (shown) => shown.column === c.column,
-                                            ),
-                                          )
-                                          .filter((c) =>
-                                            selectiveColumnRows(mappedCols, table).some(
-                                              (shown) => shown.column === c.column,
-                                            ),
-                                          )
-                                          .filter((c) =>
-                                            selectiveColumnRows(orderedUnmappedCols, table).some(
-                                              (shown) => shown.column === c.column,
-                                            ),
-                                          )
                                           .map(renderColumn)}
-                                      <SelectiveRowsNotice
-                                        hiddenCount={
-                                          mappedCols.length -
-                                          selectiveColumnRows(mappedCols, table).length
-                                        }
-                                        noun="Columns"
-                                        onShowAll={() =>
-                                          setExpandedSelectiveTableNames((current) =>
-                                            new Set(current).add(table),
-                                          )
-                                        }
-                                      />
                                     </div>
                                   )}
                                   {unmappedCols.length > 0 && (
@@ -6021,18 +5897,6 @@ function EntityDetailCanvas({
                                               ),
                                           )
                                           .map(renderColumn)}
-                                      <SelectiveRowsNotice
-                                        hiddenCount={
-                                          orderedUnmappedCols.length -
-                                          selectiveColumnRows(orderedUnmappedCols, table).length
-                                        }
-                                        noun="Columns"
-                                        onShowAll={() =>
-                                          setExpandedSelectiveTableNames((current) =>
-                                            new Set(current).add(table),
-                                          )
-                                        }
-                                      />
                                     </div>
                                   )}
                                 </>
@@ -6148,8 +6012,12 @@ function EntityDetailCanvas({
                         // Selects the whole Entity — same "click anywhere on the card body" as the
                         // anchor's own card above; every interactive child already stops propagation.
                         onClick={(e) => selectOnClick({ kind: "entity", id: other.id }, e)}
+                        onScroll={handleScrollableCardScroll}
                         className={cn(
                           "group/entitycard flex w-[268.8px] flex-col items-center justify-center gap-2 rounded-[16px] border-[1.5px] border-[rgba(28,28,24,0.08)] bg-white px-3 pb-3 pt-2 [&>div]:w-full",
+                          app.editingIdea === "idea2" &&
+                            !isCollapsed &&
+                            "max-h-[440px] justify-start overflow-y-auto overscroll-contain [scrollbar-gutter:stable]",
                           moveTargetId === other.id
                             ? "shadow-[0_0_0_4px_var(--color-primary)]"
                             : selectedMergeIds.has(other.id)
@@ -6163,7 +6031,12 @@ function EntityDetailCanvas({
                           ) && "opacity-40",
                         )}
                       >
-                        <div className="flex w-full items-center gap-1">
+                        <div
+                          className={cn(
+                            "flex w-full items-center gap-1",
+                            app.editingIdea === "idea2" && "sticky top-0 z-20 bg-white py-0.5",
+                          )}
+                        >
                           <button
                             type="button"
                             onPointerDown={(e) => {
@@ -6225,7 +6098,12 @@ function EntityDetailCanvas({
                             Mode was entered on — see the anchor's own Properties list above for
                             the same change. */}
                         {!isCollapsed && (
-                          <div className="flex w-full items-center justify-between gap-1">
+                          <div
+                            className={cn(
+                              "flex w-full items-center justify-between gap-1",
+                              app.editingIdea === "idea2" && "sticky top-8 z-10 bg-white py-1",
+                            )}
+                          >
                             <button
                               type="button"
                               onPointerDown={(e) => e.stopPropagation()}
@@ -6300,6 +6178,8 @@ function EntityDetailCanvas({
                                   title="Click for name and description, or shift-click to select for Split/Delete/Accept/Reject"
                                   className={cn(
                                     "group/prop relative flex cursor-pointer items-center gap-1 rounded-[10px] px-3 py-2 text-[14px] shadow-[0_0_0_1.2px_rgba(0,0,0,0.08)] transition-shadow",
+                                    app.editingIdea === "idea2" &&
+                                      "rounded-[4px] px-2 py-1.5 shadow-none",
                                     p.mapping
                                       ? "bg-white font-medium text-foreground"
                                       : "bg-white font-normal text-[#555]",
@@ -6400,18 +6280,6 @@ function EntityDetailCanvas({
                                             p.mapping && isMappedColumnGroupOpen(p.mapping.table),
                                         )
                                         .map(renderProperty)}
-                                    <SelectiveRowsNotice
-                                      hiddenCount={
-                                        mapped.length -
-                                        selectivePropertyRows(mapped, other.id).length
-                                      }
-                                      noun="Properties"
-                                      onShowAll={() =>
-                                        setExpandedSelectiveEntityIds((current) =>
-                                          new Set(current).add(other.id),
-                                        )
-                                      }
-                                    />
                                   </div>
                                 )}
                                 {unmapped.length > 0 && (
@@ -6430,18 +6298,6 @@ function EntityDetailCanvas({
                                             isUnmappedColumnGroupOpen(p.mapping.table),
                                         )
                                         .map(renderProperty)}
-                                    <SelectiveRowsNotice
-                                      hiddenCount={
-                                        orderedUnmapped.length -
-                                        selectivePropertyRows(orderedUnmapped, other.id).length
-                                      }
-                                      noun="Properties"
-                                      onShowAll={() =>
-                                        setExpandedSelectiveEntityIds((current) =>
-                                          new Set(current).add(other.id),
-                                        )
-                                      }
-                                    />
                                   </div>
                                 )}
                               </>
@@ -6488,15 +6344,29 @@ function EntityDetailCanvas({
                                 const schema = tableByName(table);
                                 if (schema) setContextItem({ kind: "table", table: schema });
                               }}
+                              onScroll={handleScrollableCardScroll}
+                              ref={(el) => {
+                                if (el) tableCardRefs.current.set(table, el);
+                                else tableCardRefs.current.delete(table);
+                              }}
                               className={cn(
                                 "flex w-[268.8px] flex-col items-center justify-center gap-2 rounded-[16px] border-[1.5px] border-[rgba(28,28,24,0.08)] bg-white px-3 pb-3 pt-2 [&>div]:w-full",
+                                app.editingIdea === "idea2" &&
+                                  !collapsedTables.has(table) &&
+                                  "max-h-[440px] justify-start overflow-y-auto overscroll-contain [scrollbar-gutter:stable]",
                                 contextItem?.kind === "table" && contextItem.table.name === table
                                   ? "shadow-[0_0_0_2px_#FCFCFC,0_0_0_5px_#3b82f6,0_2px_2px_0_rgba(0,0,0,0.10)]"
                                   : "shadow-[0_2px_2px_0_rgba(0,0,0,0.1)]",
                                 !tableInScope && "opacity-40",
                               )}
                             >
-                              <div className="flex w-full items-center gap-1">
+                              <div
+                                className={cn(
+                                  "flex w-full items-center gap-1",
+                                  app.editingIdea === "idea2" &&
+                                    "sticky top-0 z-20 bg-white py-0.5",
+                                )}
+                              >
                                 <button
                                   type="button"
                                   onPointerDown={(e) => e.stopPropagation()}
@@ -6545,7 +6415,13 @@ function EntityDetailCanvas({
                                 </p>
                               )}
                               {!collapsedTables.has(table) && (
-                                <div className="flex w-full items-center justify-between gap-1">
+                                <div
+                                  className={cn(
+                                    "flex w-full items-center justify-between gap-1",
+                                    app.editingIdea === "idea2" &&
+                                      "sticky top-8 z-10 bg-white py-1",
+                                  )}
+                                >
                                   <button
                                     type="button"
                                     onPointerDown={(e) => e.stopPropagation()}
@@ -6644,6 +6520,8 @@ function EntityDetailCanvas({
                                         title="Click for name and description"
                                         className={cn(
                                           "group/col relative flex w-full cursor-pointer items-center gap-1 rounded-[10px] px-3 py-2 text-[14px] leading-[16.5px] shadow-[0_0_0_1.2px_rgba(0,0,0,0.08)] transition-shadow",
+                                          app.editingIdea === "idea2" &&
+                                            "rounded-[4px] px-2 py-1.5 shadow-none",
                                           c.mappedBy.length > 0
                                             ? "bg-white font-medium text-foreground"
                                             : "bg-white font-normal text-[#555]",
@@ -6767,18 +6645,6 @@ function EntityDetailCanvas({
                                                 ),
                                               )
                                               .map(renderColumn)}
-                                          <SelectiveRowsNotice
-                                            hiddenCount={
-                                              mappedCols.length -
-                                              selectiveColumnRows(mappedCols, table).length
-                                            }
-                                            noun="Columns"
-                                            onShowAll={() =>
-                                              setExpandedSelectiveTableNames((current) =>
-                                                new Set(current).add(table),
-                                              )
-                                            }
-                                          />
                                         </div>
                                       )}
                                       {unmappedCols.length > 0 && (
@@ -6799,18 +6665,6 @@ function EntityDetailCanvas({
                                                   ),
                                               )
                                               .map(renderColumn)}
-                                          <SelectiveRowsNotice
-                                            hiddenCount={
-                                              orderedUnmappedCols.length -
-                                              selectiveColumnRows(orderedUnmappedCols, table).length
-                                            }
-                                            noun="Columns"
-                                            onShowAll={() =>
-                                              setExpandedSelectiveTableNames((current) =>
-                                                new Set(current).add(table),
-                                              )
-                                            }
-                                          />
                                         </div>
                                       )}
                                     </>
