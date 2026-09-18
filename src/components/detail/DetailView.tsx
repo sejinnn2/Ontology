@@ -5003,7 +5003,7 @@ function EntityDetailCanvas({
               <div
                 ref={relatedColumnRef}
                 className={cn(
-                  "flex flex-col items-center gap-6 pt-8 transition-opacity duration-[230ms] ease-out",
+                  "grid grid-cols-2 items-center gap-x-8 gap-y-6 pt-8 transition-opacity duration-[230ms] ease-out",
                   // PHASE 2 of the morph transition: the related Entity Types stay hidden until
                   // the selected Entity has mostly finished its own morph, then fade in — already
                   // at their final positions, only their opacity ever animates here.
@@ -5012,28 +5012,22 @@ function EntityDetailCanvas({
                 // The base gap-20 (80px) above already covers the card<->Columns-area pair; this
                 // adds only whatever extra room the widest relation label actually needs beyond
                 // that, so the satellites<->card gap grows independently of the other one.
-                // `minWidth: NODE_W` keeps this column exactly as wide as a real satellite pill
+                // `minWidth` reserves two real satellite-pill widths plus the grid's own gap-x-8
                 // even when nothing is rendered inside it (collapsed, or genuinely no related
                 // entities) — every extra Entity dropped into the center column reuses this same
                 // value for its own satellite column (see `mainEntities.slice(1)` below), so no
                 // row's card ever sits closer to its satellites than any other row's.
-                style={{ marginRight: Math.max(0, relationGapPx - 80), minWidth: NODE_W }}
+                style={{ marginRight: Math.max(0, relationGapPx - 80), minWidth: NODE_W * 2 + 32 }}
               >
                 {collapsedMainIds.has(entity.id) && (
-                  <p
-                    style={{ width: NODE_W }}
-                    className="text-center text-[10.5px] text-muted-foreground"
-                  >
+                  <p className="col-span-2 text-center text-[10.5px] text-muted-foreground">
                     {allRelated.length} related (collapsed)
                   </p>
                 )}
                 {!collapsedMainIds.has(entity.id) &&
                   allRelated.length === 0 &&
                   relatedInsertIndex === null && (
-                    <p
-                      style={{ width: NODE_W }}
-                      className="text-center text-[10.5px] text-muted-foreground"
-                    >
+                    <p className="col-span-2 text-center text-[10.5px] text-muted-foreground">
                       Drop an Entity Type here to add it.
                     </p>
                   )}
