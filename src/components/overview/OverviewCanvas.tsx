@@ -251,8 +251,8 @@ function buildForceDirectedLayout<T extends { id: string; x: number; y: number }
   );
   const ids = entities.map((entity) => entity.id);
 
-  const REPULSION = 140000;
-  const SPRING_LENGTH = 180;
+  const REPULSION = 45000;
+  const SPRING_LENGTH = 100;
   const SPRING_STRENGTH = 0.03;
   const CENTER_PULL = 0.0015;
   const DAMPING = 0.85;
@@ -472,7 +472,7 @@ function graphEdgePath(
   others: { id: string; x: number; y: number }[],
   excludeIds: readonly [string, string],
   nodeScaleById: ReadonlyMap<string, number>,
-): { d: string; mid: Pt } {
+): { d: string; mid: Pt; p1: Pt; p2: Pt } {
   const { point: p1, dir: dir1 } = edgeEndAnchor(fromEnd);
   const { point: p2, dir: dir2 } = edgeEndAnchor(toEnd);
   const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
@@ -547,6 +547,8 @@ function graphEdgePath(
   return {
     d: `M ${p1.x} ${p1.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${p2.x} ${p2.y}`,
     mid: cubicPointAt(p1, c1, c2, p2, 0.5),
+    p1,
+    p2,
   };
 }
 
@@ -1449,7 +1451,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       };
     };
 
-    const map = new Map<string, { d: string; mid: Pt }>();
+    const map = new Map<string, { d: string; mid: Pt; p1: Pt; p2: Pt }>();
     relations.forEach((r) => {
       const fromEnd = resolveEnd(r.id, "from");
       const toEnd = resolveEnd(r.id, "to");
@@ -1458,6 +1460,212 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     });
     return map;
   }, [relations, layoutEntities, nodeScaleById]);
+
+  // Zoomed-out edge bundling: instead of drawing every Relation as its own thin connector (which,
+  // zoomed out, just reads as visual clutter — or worse, several stacked lines that LOOK like one),
+  // group connectors that are effectively "the same line" into a single thicker one. Two things
+  // bundle together: (1) any two Relations between the exact same pair of Entities (different
+  // Relation types on the same edge — those always merge, unconditionally), and (2) Relations
+  // between DIFFERENT pairs whose connectors run close together and nearly parallel for a real
+  // stretch of their length (a lightweight approximation of force-directed edge bundling — compare
+  // each connector's straight start-to-end chord rather than its curved path, since the chord is
+  // what "runs alongside" actually means visually). Only used while `farRelationZoom` is active —
+  // see the render site below; zoomed in, every Relation still draws (and remains hoverable/
+  // selectable) individually, unaffected by any of this.
+  const BUNDLE_ANGLE_THRESHOLD = (14 * Math.PI) / 180;
+  const BUNDLE_PERP_THRESHOLD = 16;
+  const BUNDLE_MIN_OVERLAP_FRACTION = 0.35;
+  const relationBundles = useMemo(() => {
+    const ids = relations.map((r) => r.id).filter((id) => relationGeometry.has(id));
+    const parent = new Map<string, string>(ids.map((id) => [id, id]));
+    const find = (x: string): string => {
+      let root = x;
+      while (parent.get(root) !== root) root = parent.get(root)!;
+      while (parent.get(x) !== root) {
+        const next = parent.get(x)!;
+        parent.set(x, root);
+        x = next;
+      }
+      return root;
+    };
+    const union = (a: string, b: string) => {
+      const ra = find(a);
+      const rb = find(b);
+      if (ra !== rb) parent.set(ra, rb);
+    };
+
+    // Any two Relations sharing the same unordered Entity pair always bundle.
+    const byPair = new Map<string, string[]>();
+    relations.forEach((r) => {
+      if (!relationGeometry.has(r.id)) return;
+      const key = [r.from, r.to].sort().join("|");
+      byPair.set(key, [...(byPair.get(key) ?? []), r.id]);
+    });
+    byPair.forEach((memberIds) => {
+      for (let i = 1; i < memberIds.length; i++) union(memberIds[0]!, memberIds[i]!);
+    });
+
+    // Different-pair Relations whose chords run close together and roughly parallel bundle too.
+    const angleOf = (p1: Pt, p2: Pt) => Math.atan2(p2.y - p1.y, p2.x - p1.x);
+    const angleDiff = (a: number, b: number) => {
+      const d = Math.abs(a - b) % Math.PI;
+      return Math.min(d, Math.PI - d);
+    };
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const idA = ids[i]!;
+        const idB = ids[j]!;
+        if (find(idA) === find(idB)) continue;
+        const a = relationGeometry.get(idA)!;
+        const b = relationGeometry.get(idB)!;
+        const angA = angleOf(a.p1, a.p2);
+        const angB = angleOf(b.p1, b.p2);
+        if (angleDiff(angA, angB) > BUNDLE_ANGLE_THRESHOLD) continue;
+        const dirA = { x: Math.cos(angA), y: Math.sin(angA) };
+        let bp1 = b.p1;
+        let bp2 = b.p2;
+        const rawDirBx = bp2.x - bp1.x;
+        const rawDirBy = bp2.y - bp1.y;
+        if (dirA.x * rawDirBx + dirA.y * rawDirBy < 0) {
+          const tmp = bp1;
+          bp1 = bp2;
+          bp2 = tmp;
+        }
+        const nx = -dirA.y;
+        const ny = dirA.x;
+        const midB = { x: (bp1.x + bp2.x) / 2, y: (bp1.y + bp2.y) / 2 };
+        const perp = Math.abs((midB.x - a.p1.x) * nx + (midB.y - a.p1.y) * ny);
+        if (perp > BUNDLE_PERP_THRESHOLD) continue;
+        const lenA = Math.hypot(a.p2.x - a.p1.x, a.p2.y - a.p1.y) || 1;
+        const proj = (p: Pt) => (p.x - a.p1.x) * dirA.x + (p.y - a.p1.y) * dirA.y;
+        const projB1 = proj(bp1);
+        const projB2 = proj(bp2);
+        const overlapStart = Math.max(0, Math.min(projB1, projB2));
+        const overlapEnd = Math.min(lenA, Math.max(projB1, projB2));
+        const overlapLen = Math.max(0, overlapEnd - overlapStart);
+        const shorterLen = Math.min(lenA, Math.abs(projB2 - projB1) || 1);
+        if (overlapLen / shorterLen < BUNDLE_MIN_OVERLAP_FRACTION) continue;
+        union(idA, idB);
+      }
+    }
+
+    const groups = new Map<string, string[]>();
+    ids.forEach((id) => {
+      const root = find(id);
+      groups.set(root, [...(groups.get(root) ?? []), id]);
+    });
+
+    const bundles = new Map<string, { memberIds: string[]; d: string; mid: Pt; count: number }>();
+    groups.forEach((memberIds, root) => {
+      if (memberIds.length === 1) {
+        const geo = relationGeometry.get(memberIds[0]!)!;
+        bundles.set(root, { memberIds, d: geo.d, mid: geo.mid, count: 1 });
+        return;
+      }
+      // The union's own chord: the two member endpoints furthest apart along the group's shared
+      // direction — spans the full extent of the bundle rather than any one member's own length.
+      const first = relationGeometry.get(memberIds[0]!)!;
+      const firstDx = first.p2.x - first.p1.x;
+      const firstDy = first.p2.y - first.p1.y;
+      let dirSumX = 0;
+      let dirSumY = 0;
+      memberIds.forEach((id) => {
+        const g = relationGeometry.get(id)!;
+        let dx = g.p2.x - g.p1.x;
+        let dy = g.p2.y - g.p1.y;
+        const len = Math.hypot(dx, dy) || 1;
+        dx /= len;
+        dy /= len;
+        if (dx * firstDx + dy * firstDy < 0) {
+          dx = -dx;
+          dy = -dy;
+        }
+        dirSumX += dx;
+        dirSumY += dy;
+      });
+      const dirLen = Math.hypot(dirSumX, dirSumY) || 1;
+      const dir = { x: dirSumX / dirLen, y: dirSumY / dirLen };
+      const origin = first.p1;
+      let minProj = Infinity;
+      let maxProj = -Infinity;
+      let minPt = origin;
+      let maxPt = origin;
+      memberIds.forEach((id) => {
+        const g = relationGeometry.get(id)!;
+        [g.p1, g.p2].forEach((p) => {
+          const projection = (p.x - origin.x) * dir.x + (p.y - origin.y) * dir.y;
+          if (projection < minProj) {
+            minProj = projection;
+            minPt = p;
+          }
+          if (projection > maxProj) {
+            maxProj = projection;
+            maxPt = p;
+          }
+        });
+      });
+      bundles.set(root, {
+        memberIds,
+        d: `M ${minPt.x} ${minPt.y} L ${maxPt.x} ${maxPt.y}`,
+        mid: { x: (minPt.x + maxPt.x) / 2, y: (minPt.y + maxPt.y) / 2 },
+        count: memberIds.length,
+      });
+    });
+
+    return bundles;
+  }, [relations, relationGeometry]);
+
+  // Shared per-Relation visual state (hover/selection emphasis, search/entity focus, out-of-scope
+  // muting) — used both by the normal per-Relation connector render and, zoomed out, to decide how
+  // a whole bundle should read (emphasized/focused if ANY member is, muted only if EVERY member is
+  // — see the bundle render site below).
+  const getRelationVisualState = useCallback(
+    (r: (typeof relations)[number]) => {
+      const isSelected =
+        (selection?.kind === "relation" && selection.id === r.id) ||
+        suggestionSelection.has(suggestionKey({ kind: "relation", id: r.id }));
+      const isHovered = hoveredRelationId === r.id;
+      const isZoomEmphasized = isSelected || isHovered;
+      const bothSearchConnected = searchContext
+        ? searchContext.connectedEntityIds.has(r.from) &&
+          searchContext.connectedEntityIds.has(r.to)
+        : false;
+      const propertySuggestionFocusEdge =
+        propertySuggestionsHighlightActive &&
+        (suggestedPropertyEntityIds.has(r.from) || suggestedPropertyEntityIds.has(r.to));
+      const isFocusEdge = propertySuggestionsHighlightActive
+        ? propertySuggestionFocusEdge
+        : suggestionSelection.size > 0
+          ? false
+          : searchContext
+            ? bothSearchConnected
+            : activeEntityIds && !hoveredTableName
+              ? activeEntityIds.has(r.from) || activeEntityIds.has(r.to)
+              : false;
+      const outOfScope =
+        !bothSearchConnected &&
+        !isReviewItemInScope(r.status, r.confidence, confidenceRange, statusFilter);
+      const isMuted =
+        outOfScope ||
+        (propertySuggestionsHighlightActive
+          ? !propertySuggestionFocusEdge
+          : activeEntityIds !== null && !isFocusEdge && !entityNeighborhoodActive);
+      return { isZoomEmphasized, isFocusEdge, isMuted };
+    },
+    [
+      selection,
+      suggestionSelection,
+      hoveredRelationId,
+      searchContext,
+      propertySuggestionsHighlightActive,
+      suggestedPropertyEntityIds,
+      activeEntityIds,
+      hoveredTableName,
+      confidenceRange,
+      statusFilter,
+      entityNeighborhoodActive,
+    ],
+  );
 
   // Resolves any of the History/Search `ref` kinds this canvas can actually place to a world-space
   // point — shared by the numbered inspection markers and the post-restore highlight below. A
@@ -1869,82 +2077,72 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                   />
                 </marker>
               </defs>
-              {relations.map((r) => {
-                const a = entities.find((e) => e.id === r.from);
-                const b = entities.find((e) => e.id === r.to);
-                const geo = relationGeometry.get(r.id);
-                if (!a || !b || !geo) return null;
-                const isSelected =
-                  (selection?.kind === "relation" && selection.id === r.id) ||
-                  suggestionSelection.has(suggestionKey({ kind: "relation", id: r.id }));
-                const isHovered = hoveredRelationId === r.id;
-                const isZoomEmphasized = isSelected || isHovered;
-                // Only genuinely relevant while a search is active — both endpoints in the
-                // connected set, not just one, so a Relation search result highlights exactly
-                // that relation (and any other directly connecting two connected entities)
-                // rather than every edge merely touching the primary entity.
-                const bothSearchConnected = searchContext
-                  ? searchContext.connectedEntityIds.has(r.from) &&
-                    searchContext.connectedEntityIds.has(r.to)
-                  : false;
-                const propertySuggestionFocusEdge =
-                  propertySuggestionsHighlightActive &&
-                  (suggestedPropertyEntityIds.has(r.from) || suggestedPropertyEntityIds.has(r.to));
-                // Table-hover's own `activeEntityIds` (the entities using that table) highlights
-                // those Entity Types only — relations never light up for it, only for an actual
-                // Entity hover/search focus, hence the `!hoveredTableName` guard here.
-                const isFocusEdge = propertySuggestionsHighlightActive
-                  ? propertySuggestionFocusEdge
-                  : suggestionSelection.size > 0
-                    ? false
-                    : searchContext
-                      ? bothSearchConnected
-                      : activeEntityIds && !hoveredTableName
-                        ? activeEntityIds.has(r.from) || activeEntityIds.has(r.to)
-                        : false;
-                // A Relation's own review-scope uses ITS OWN status/confidence (Relations →
-                // Relation suggestion confidence), not either connected Entity's — same
-                // `isReviewItemInScope` predicate Confidence/Filter apply to every other object
-                // type with. Dims the line, never removes it — the graph's shape stays intact so
-                // users can still see how everything connects outside the active review scope.
-                const outOfScope =
-                  !bothSearchConnected &&
-                  !isReviewItemInScope(r.status, r.confidence, confidenceRange, statusFilter);
-                const isMuted =
-                  outOfScope ||
-                  (propertySuggestionsHighlightActive
-                    ? !propertySuggestionFocusEdge
-                    : activeEntityIds !== null && !isFocusEdge && !entityNeighborhoodActive);
-                return (
-                  <path
-                    key={r.id}
-                    d={geo.d}
-                    fill="none"
-                    strokeLinecap="round"
-                    className={cn(
-                      "transition-opacity",
-                      isZoomEmphasized
-                        ? "stroke-[#3b82f6]"
-                        : isFocusEdge && !propertySuggestionsHighlightActive
-                          ? "stroke-[#3b82f6]"
-                          : "stroke-zinc-400",
-                    )}
-                    opacity={
-                      isZoomEmphasized || isFocusEdge
-                        ? 1
-                        : isMuted
-                          ? 0.2
-                          : farRelationZoom
-                            ? 0.14
-                            : 0.55
-                    }
-                    strokeWidth={
-                      isZoomEmphasized ? 2.6 : isFocusEdge ? 2 : farRelationZoom ? 1 : 1.25
-                    }
-                    markerEnd="url(#relation-arrow)"
-                  />
-                );
-              })}
+              {farRelationZoom
+                ? Array.from(relationBundles.entries()).map(([bundleId, bundle]) => {
+                    const members = bundle.memberIds
+                      .map((id) => relations.find((r) => r.id === id))
+                      .filter((r): r is (typeof relations)[number] => !!r);
+                    if (members.length === 0) return null;
+                    const states = members.map(getRelationVisualState);
+                    // A bundle reads as emphasized/focused the moment ANY member does (so hovering
+                    // or search-focusing one of several bundled Relations still lights up the
+                    // shared line), but only mutes once EVERY member is out of scope — otherwise an
+                    // in-scope Relation bundled with an out-of-scope one would fade along with it.
+                    const isZoomEmphasized = states.some((s) => s.isZoomEmphasized);
+                    const isFocusEdge = states.some((s) => s.isFocusEdge);
+                    const isMuted = states.every((s) => s.isMuted);
+                    return (
+                      <path
+                        key={bundleId}
+                        d={bundle.d}
+                        fill="none"
+                        strokeLinecap="round"
+                        className={cn(
+                          "transition-opacity",
+                          isZoomEmphasized
+                            ? "stroke-[#3b82f6]"
+                            : isFocusEdge && !propertySuggestionsHighlightActive
+                              ? "stroke-[#3b82f6]"
+                              : "stroke-zinc-400",
+                        )}
+                        opacity={isZoomEmphasized || isFocusEdge ? 1 : isMuted ? 0.2 : 0.55}
+                        strokeWidth={
+                          isZoomEmphasized
+                            ? 2.6
+                            : isFocusEdge
+                              ? 2
+                              : Math.min(1 + (bundle.count - 1) * 0.8, 5)
+                        }
+                        markerEnd={bundle.count === 1 ? "url(#relation-arrow)" : undefined}
+                      />
+                    );
+                  })
+                : relations.map((r) => {
+                    const a = entities.find((e) => e.id === r.from);
+                    const b = entities.find((e) => e.id === r.to);
+                    const geo = relationGeometry.get(r.id);
+                    if (!a || !b || !geo) return null;
+                    const { isZoomEmphasized, isFocusEdge, isMuted } = getRelationVisualState(r);
+                    return (
+                      <path
+                        key={r.id}
+                        d={geo.d}
+                        fill="none"
+                        strokeLinecap="round"
+                        className={cn(
+                          "transition-opacity",
+                          isZoomEmphasized
+                            ? "stroke-[#3b82f6]"
+                            : isFocusEdge && !propertySuggestionsHighlightActive
+                              ? "stroke-[#3b82f6]"
+                              : "stroke-zinc-400",
+                        )}
+                        opacity={isZoomEmphasized || isFocusEdge ? 1 : isMuted ? 0.2 : 0.55}
+                        strokeWidth={isZoomEmphasized ? 2.6 : isFocusEdge ? 2 : 1.25}
+                        markerEnd="url(#relation-arrow)"
+                      />
+                    );
+                  })}
               {/* live preview line while dragging a connector out to a new entity — stays anchored
                   to the exact handle that was grabbed, rather than sliding around the node to
                   chase the pointer. */}
@@ -2011,7 +2209,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                     style={{
                       left: mid.x,
                       top: mid.y,
-                      opacity: isZoomEmphasized ? 1 : isMuted ? 0.2 : farRelationZoom ? 0.22 : 1,
+                      opacity: isZoomEmphasized ? 1 : isMuted ? 0.2 : 1,
                     }}
                     onMouseEnter={() => setHoveredRelationId(r.id)}
                     onMouseLeave={() => setHoveredRelationId(null)}
