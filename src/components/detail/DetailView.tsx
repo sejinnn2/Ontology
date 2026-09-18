@@ -5228,11 +5228,10 @@ function EntityDetailCanvas({
                       bodyVisible ? "opacity-100" : "opacity-0",
                     )}
                   >
-                    {/* Both Only Identifier and Sort are only ever meaningful on the entry
-                        point's own (authoritative) side — see the matching gate on the Columns
-                        side's own `SortBar` below for why a Table-entry view's Properties list
-                        has neither control here at all, not just an inert Sort. */}
-                    {!collapsedMainIds.has(entity.id) && anchorKind === "entity" && (
+                    {/* Only Identifier and Sort are shown on every Properties list regardless of
+                        which side (Entity or Table) Editing Mode was entered on — not just the
+                        entry point's own authoritative side. */}
+                    {!collapsedMainIds.has(entity.id) && (
                       <div className="flex w-full items-center justify-between gap-1">
                         <button
                           type="button"
@@ -5573,12 +5572,10 @@ function EntityDetailCanvas({
                               {cols.length} column{cols.length === 1 ? "" : "s"} (collapsed)
                             </p>
                           )}
-                          {/* Sorting is only ever possible on the entry point's own side — a
-                              Table entry names the anchor's Columns list as the one whose order
-                              is authoritative (see `anchorKind`'s own doc comment above), so an
-                              Entity-entry view's Columns lists here have no sort control of their
-                              own; they just follow whichever Property maps into them. */}
-                          {!collapsedTables.has(table) && anchorKind === "table" && (
+                          {/* Only Identifier and Sort are shown on every Columns list regardless
+                              of which side (Entity or Table) Editing Mode was entered on — not
+                              just the entry point's own authoritative side. */}
+                          {!collapsedTables.has(table) && (
                             <div className="flex w-full items-center justify-between gap-1">
                               <button
                                 type="button"
@@ -5597,12 +5594,10 @@ function EntityDetailCanvas({
                               >
                                 Only Identifier
                               </button>
-                              {anchorKind === "table" && (
-                                <SortBar
-                                  sort={columnSortFor(table)}
-                                  onChange={(k) => setColumnSortForTable(table, k)}
-                                />
-                              )}
+                              <SortBar
+                                sort={columnSortFor(table)}
+                                onChange={(k) => setColumnSortForTable(table, k)}
+                              />
                             </div>
                           )}
                           {!collapsedTables.has(table) &&
@@ -6014,10 +6009,10 @@ function EntityDetailCanvas({
                             )}
                           </button>
                         </div>
-                        {/* Both Only Identifier and Sort are only ever meaningful on the entry
-                            point's own (authoritative) side — see the anchor's own Properties
-                            list above for the same gate. */}
-                        {!isCollapsed && anchorKind === "entity" && (
+                        {/* Only Identifier and Sort are shown regardless of which side Editing
+                            Mode was entered on — see the anchor's own Properties list above for
+                            the same change. */}
+                        {!isCollapsed && (
                           <div className="flex w-full items-center justify-between gap-1">
                             <button
                               type="button"
@@ -6313,7 +6308,7 @@ function EntityDetailCanvas({
                                   {cols.length} column{cols.length === 1 ? "" : "s"} (collapsed)
                                 </p>
                               )}
-                              {!collapsedTables.has(table) && anchorKind === "table" && (
+                              {!collapsedTables.has(table) && (
                                 <div className="flex w-full items-center justify-between gap-1">
                                   <button
                                     type="button"
@@ -6332,12 +6327,10 @@ function EntityDetailCanvas({
                                   >
                                     Only Identifier
                                   </button>
-                                  {anchorKind === "table" && (
-                                    <SortBar
-                                      sort={columnSortFor(table)}
-                                      onChange={(k) => setColumnSortForTable(table, k)}
-                                    />
-                                  )}
+                                  <SortBar
+                                    sort={columnSortFor(table)}
+                                    onChange={(k) => setColumnSortForTable(table, k)}
+                                  />
                                 </div>
                               )}
                               {!collapsedTables.has(table) &&
