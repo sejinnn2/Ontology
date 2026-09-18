@@ -5161,7 +5161,7 @@ function EntityDetailCanvas({
                   className={cn(
                     "group/entitycard flex w-[268.8px] flex-col items-center justify-center gap-2 rounded-[16px] border-[1.5px] border-[rgba(28,28,24,0.08)] bg-white px-3 pb-3 pt-2 [&>div]:w-full",
                     app.editingIdea === "idea2" &&
-                      !isCollapsed &&
+                      !collapsedMainIds.has(entity.id) &&
                       "max-h-[440px] justify-start overflow-y-auto overscroll-contain [scrollbar-gutter:stable]",
                     moveTargetId === entity.id
                       ? "shadow-[0_0_0_4px_var(--color-primary)]"
