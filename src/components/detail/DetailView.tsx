@@ -5031,8 +5031,51 @@ function EntityDetailCanvas({
             card — no separate anchor circle. Every extra Entity dropped into the center column
             gets an identical row of its own (its own related satellites, its own card, its own
             mapped columns) stacked below this one — see `mainEntities.slice(1)` further down. */}
-          <div ref={mainStackRef} className="flex flex-col gap-16">
-            <div className="relative z-10 flex items-start gap-20">
+          <div
+            ref={mainStackRef}
+            className={cn(
+              "flex flex-col gap-16",
+              app.editingIdea === "idea1" && "relative isolate px-10 pb-20 pt-24",
+            )}
+          >
+            {app.editingIdea === "idea1" && (
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute -inset-x-12 -inset-y-8 z-0 grid grid-cols-[0.72fr_1.35fr_1.1fr]"
+              >
+                <div className="relative border-r border-black/[0.06] bg-slate-50/70">
+                  <span className="absolute left-5 top-5 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+                    Related Context
+                  </span>
+                </div>
+                <div
+                  className={cn(
+                    "relative border-r border-black/[0.06] bg-white/55",
+                    anchorKind === "entity" && "bg-blue-50/80",
+                  )}
+                >
+                  <span className="absolute left-6 top-5 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">
+                    Main Entity
+                  </span>
+                </div>
+                <div
+                  className={cn(
+                    "relative bg-slate-50/55",
+                    anchorKind === "table" && "bg-emerald-50/80",
+                  )}
+                >
+                  <span className="absolute left-6 top-5 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">
+                    Data Tables
+                  </span>
+                </div>
+              </div>
+            )}
+            <div
+              className={cn(
+                "relative z-10 flex items-start gap-20",
+                app.editingIdea === "idea1" && "gap-12",
+              )}
+            >
               <div
                 ref={relatedColumnRef}
                 className={cn(
@@ -5160,6 +5203,8 @@ function EntityDetailCanvas({
                   onScroll={handleScrollableCardScroll}
                   className={cn(
                     "group/entitycard flex w-[268.8px] flex-col items-center justify-center gap-2 rounded-[16px] border-[1.5px] border-[rgba(28,28,24,0.08)] bg-white px-3 pb-3 pt-2 [&>div]:w-full",
+                    app.editingIdea === "idea1" &&
+                      "w-[320px] rounded-none border-transparent bg-transparent px-4",
                     app.editingIdea === "idea2" &&
                       !collapsedMainIds.has(entity.id) &&
                       "max-h-[440px] justify-start overflow-y-auto overscroll-contain [scrollbar-gutter:stable]",
@@ -5172,6 +5217,10 @@ function EntityDetailCanvas({
                         selectedMergeIds.has(entity.id)
                         ? "shadow-[0_0_0_2px_#FCFCFC,0_0_0_4px_#3b82f6,0_2px_2px_0_rgba(0,0,0,0.10)]"
                         : "shadow-[0_2px_2px_0_rgba(0,0,0,0.1)]",
+                    app.editingIdea === "idea1" &&
+                      moveTargetId !== entity.id &&
+                      !selectedMergeIds.has(entity.id) &&
+                      "shadow-none",
                     !isReviewItemInScope(
                       entityStatus(entity),
                       entity.confidence,
@@ -5456,7 +5505,12 @@ function EntityDetailCanvas({
                         return (
                           <>
                             {mapped.length > 0 && (
-                              <div className="flex flex-col gap-1 rounded-[10px] bg-[#eff6ff] p-1">
+                              <div
+                                className={cn(
+                                  "flex flex-col gap-1 rounded-[10px] bg-[#eff6ff] p-1",
+                                  app.editingIdea === "idea1" && "rounded-none bg-transparent p-0",
+                                )}
+                              >
                                 <PropertyGroupHeader
                                   label="Mapped"
                                   count={mapped.length}
@@ -5472,7 +5526,12 @@ function EntityDetailCanvas({
                               </div>
                             )}
                             {unmapped.length > 0 && (
-                              <div className="flex flex-col gap-1 rounded-[10px] bg-[#f4f4f4] p-1">
+                              <div
+                                className={cn(
+                                  "flex flex-col gap-1 rounded-[10px] bg-[#f4f4f4] p-1",
+                                  app.editingIdea === "idea1" && "rounded-none bg-transparent p-0",
+                                )}
+                              >
                                 <PropertyGroupHeader
                                   label="Unmapped"
                                   count={unmapped.length}
@@ -5574,12 +5633,19 @@ function EntityDetailCanvas({
                           onScroll={handleScrollableCardScroll}
                           className={cn(
                             "flex w-[268.8px] flex-col items-center justify-center gap-2 rounded-[16px] border-[1.5px] border-[rgba(28,28,24,0.08)] bg-white px-3 pb-3 pt-2 [&>div]:w-full",
+                            app.editingIdea === "idea1" &&
+                              "w-[320px] rounded-none border-transparent bg-transparent px-4",
                             app.editingIdea === "idea2" &&
                               !collapsedTables.has(table) &&
                               "max-h-[440px] justify-start overflow-y-auto overscroll-contain [scrollbar-gutter:stable]",
                             contextItem?.kind === "table" && contextItem.table.name === table
                               ? "shadow-[0_0_0_2px_#FCFCFC,0_0_0_5px_#3b82f6,0_2px_2px_0_rgba(0,0,0,0.10)]"
                               : "shadow-[0_2px_2px_0_rgba(0,0,0,0.1)]",
+                            app.editingIdea === "idea1" &&
+                              !(
+                                contextItem?.kind === "table" && contextItem.table.name === table
+                              ) &&
+                              "shadow-none",
                             !tableInScope && "opacity-40",
                           )}
                         >
@@ -5858,7 +5924,13 @@ function EntityDetailCanvas({
                               return (
                                 <>
                                   {mappedCols.length > 0 && (
-                                    <div className="flex flex-col gap-1 rounded-[10px] bg-[#eff6ff] p-1">
+                                    <div
+                                      className={cn(
+                                        "flex flex-col gap-1 rounded-[10px] bg-[#eff6ff] p-1",
+                                        app.editingIdea === "idea1" &&
+                                          "rounded-none bg-transparent p-0",
+                                      )}
+                                    >
                                       <PropertyGroupHeader
                                         label="Mapped"
                                         count={mappedCols.length}
@@ -5876,7 +5948,13 @@ function EntityDetailCanvas({
                                     </div>
                                   )}
                                   {unmappedCols.length > 0 && (
-                                    <div className="flex flex-col gap-1 rounded-[10px] bg-[#f4f4f4] p-1">
+                                    <div
+                                      className={cn(
+                                        "flex flex-col gap-1 rounded-[10px] bg-[#f4f4f4] p-1",
+                                        app.editingIdea === "idea1" &&
+                                          "rounded-none bg-transparent p-0",
+                                      )}
+                                    >
                                       <PropertyGroupHeader
                                         label="Unmapped"
                                         count={unmappedCols.length}
@@ -6015,6 +6093,8 @@ function EntityDetailCanvas({
                         onScroll={handleScrollableCardScroll}
                         className={cn(
                           "group/entitycard flex w-[268.8px] flex-col items-center justify-center gap-2 rounded-[16px] border-[1.5px] border-[rgba(28,28,24,0.08)] bg-white px-3 pb-3 pt-2 [&>div]:w-full",
+                          app.editingIdea === "idea1" &&
+                            "w-[320px] rounded-none border-transparent bg-transparent px-4",
                           app.editingIdea === "idea2" &&
                             !isCollapsed &&
                             "max-h-[440px] justify-start overflow-y-auto overscroll-contain [scrollbar-gutter:stable]",
@@ -6023,6 +6103,10 @@ function EntityDetailCanvas({
                             : selectedMergeIds.has(other.id)
                               ? "shadow-[0_0_0_2px_#FCFCFC,0_0_0_4px_#3b82f6,0_2px_2px_0_rgba(0,0,0,0.10)]"
                               : "shadow-[0_2px_2px_0_rgba(0,0,0,0.1)]",
+                          app.editingIdea === "idea1" &&
+                            moveTargetId !== other.id &&
+                            !selectedMergeIds.has(other.id) &&
+                            "shadow-none",
                           !isReviewItemInScope(
                             entityStatus(other),
                             other.confidence,
@@ -6266,7 +6350,13 @@ function EntityDetailCanvas({
                             return (
                               <>
                                 {mapped.length > 0 && (
-                                  <div className="flex flex-col gap-1 rounded-[10px] bg-[#eff6ff] p-1">
+                                  <div
+                                    className={cn(
+                                      "flex flex-col gap-1 rounded-[10px] bg-[#eff6ff] p-1",
+                                      app.editingIdea === "idea1" &&
+                                        "rounded-none bg-transparent p-0",
+                                    )}
+                                  >
                                     <PropertyGroupHeader
                                       label="Mapped"
                                       count={mapped.length}
@@ -6283,7 +6373,13 @@ function EntityDetailCanvas({
                                   </div>
                                 )}
                                 {unmapped.length > 0 && (
-                                  <div className="flex flex-col gap-1 rounded-[10px] bg-[#f4f4f4] p-1">
+                                  <div
+                                    className={cn(
+                                      "flex flex-col gap-1 rounded-[10px] bg-[#f4f4f4] p-1",
+                                      app.editingIdea === "idea1" &&
+                                        "rounded-none bg-transparent p-0",
+                                    )}
+                                  >
                                     <PropertyGroupHeader
                                       label="Unmapped"
                                       count={unmapped.length}
@@ -6351,12 +6447,20 @@ function EntityDetailCanvas({
                               }}
                               className={cn(
                                 "flex w-[268.8px] flex-col items-center justify-center gap-2 rounded-[16px] border-[1.5px] border-[rgba(28,28,24,0.08)] bg-white px-3 pb-3 pt-2 [&>div]:w-full",
+                                app.editingIdea === "idea1" &&
+                                  "w-[320px] rounded-none border-transparent bg-transparent px-4",
                                 app.editingIdea === "idea2" &&
                                   !collapsedTables.has(table) &&
                                   "max-h-[440px] justify-start overflow-y-auto overscroll-contain [scrollbar-gutter:stable]",
                                 contextItem?.kind === "table" && contextItem.table.name === table
                                   ? "shadow-[0_0_0_2px_#FCFCFC,0_0_0_5px_#3b82f6,0_2px_2px_0_rgba(0,0,0,0.10)]"
                                   : "shadow-[0_2px_2px_0_rgba(0,0,0,0.1)]",
+                                app.editingIdea === "idea1" &&
+                                  !(
+                                    contextItem?.kind === "table" &&
+                                    contextItem.table.name === table
+                                  ) &&
+                                  "shadow-none",
                                 !tableInScope && "opacity-40",
                               )}
                             >
@@ -6630,7 +6734,13 @@ function EntityDetailCanvas({
                                   return (
                                     <>
                                       {mappedCols.length > 0 && (
-                                        <div className="flex flex-col gap-1 rounded-[10px] bg-[#eff6ff] p-1">
+                                        <div
+                                          className={cn(
+                                            "flex flex-col gap-1 rounded-[10px] bg-[#eff6ff] p-1",
+                                            app.editingIdea === "idea1" &&
+                                              "rounded-none bg-transparent p-0",
+                                          )}
+                                        >
                                           <PropertyGroupHeader
                                             label="Mapped"
                                             count={mappedCols.length}
@@ -6648,7 +6758,13 @@ function EntityDetailCanvas({
                                         </div>
                                       )}
                                       {unmappedCols.length > 0 && (
-                                        <div className="flex flex-col gap-1 rounded-[10px] bg-[#f4f4f4] p-1">
+                                        <div
+                                          className={cn(
+                                            "flex flex-col gap-1 rounded-[10px] bg-[#f4f4f4] p-1",
+                                            app.editingIdea === "idea1" &&
+                                              "rounded-none bg-transparent p-0",
+                                          )}
+                                        >
                                           <PropertyGroupHeader
                                             label="Unmapped"
                                             count={unmappedCols.length}
