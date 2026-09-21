@@ -3199,6 +3199,25 @@ function EntityDetailCanvas({
     if (!highlightedMapLines) return null;
     return new Set(highlightedMapLines.map((l) => l.columnKey).filter((k): k is string => !!k));
   }, [highlightedMapLines]);
+  // Idea 1's on-demand connector visibility ("Connections are available on demand, not permanently
+  // visible") needs one more input beyond the single hover/selected endpoint above: a MULTI-select
+  // of several Properties (the existing shift-click `suggestionSelection`) or several suggested
+  // Mappings queued for bulk accept (`mappingSelection`) should reveal every one of their own
+  // connectors at once, not just the single most-recent endpoint. Idea 2 (and any future idea)
+  // keeps reading only `highlightedMapLines`/`activeMapEndpoint` above, unaffected by this.
+  const multiSelectedMappingPropertyIds = useMemo(() => {
+    const ids = new Set<string>();
+    suggestionSelection.forEach((key) => {
+      const ref = parseSuggestionKey(key);
+      if (ref?.kind === "property") ids.add(ref.propertyId);
+    });
+    mappingSelection.forEach((key) => {
+      const separator = key.indexOf("");
+      const propertyId = separator === -1 ? "" : key.slice(separator + 1);
+      if (propertyId) ids.add(propertyId);
+    });
+    return ids;
+  }, [suggestionSelection, mappingSelection]);
   const [relatedLines, setRelatedLines] = useState<Line[]>([]);
   // Same idea as `relatedLines`, but for the satellites of an extra main entity (not the anchor) —
   // kept separate since each entry needs its own relation lookup (`relationId`), rather than the
@@ -4647,30 +4666,86 @@ function EntityDetailCanvas({
               const isHighlighted = !!highlightedMapLines?.includes(l);
               const isFaded = !!activeMapEndpoint && !isHighlighted;
               const isLiveHover = !!hoveredMapEndpoint;
+              // Idea 1 ONLY: "Connections are available on demand, not permanently visible" — every
+              // Mapping connector starts fully hidden (opacity 0, no reserved visual weight) and
+              // only draws once its own Property or Column is hovered/selected (isHighlighted,
+              // already covers both — see activeMapEndpoint's own comment) or is part of the
+              // current multi-selection. Idea 2 (and the un-gated default below) keeps the original
+              // always-visible-at-low-opacity treatment untouched.
+              const isIdeaOneContextual = app.editingIdea === "idea1";
+              const isMultiSelectedMapping =
+                !!l.propertyId && multiSelectedMappingPropertyIds.has(l.propertyId);
+              const ideaOneVisible = isHighlighted || isMultiSelectedMapping;
               return (
                 <g key={l.id}>
                   <path
                     d={mappingCurve(l)}
                     fill="none"
                     strokeLinecap="round"
-                    className={isHighlighted ? "stroke-[#3b82f6]" : "stroke-zinc-400"}
-                    style={
-                      !isHighlighted && isSuggested
-                        ? { stroke: MAPPING_SUGGESTED_COLOR }
-                        : undefined
+                    className={
+                      isIdeaOneContextual
+                        ? isSuggested
+                          ? undefined
+                          : "stroke-zinc-400"
+                        : isHighlighted
+                          ? "stroke-[#3b82f6]"
+                          : "stroke-zinc-400"
                     }
-                    strokeWidth={isHighlighted ? (isLiveHover ? 2.2 : 1.9) : 1.2}
-                    // A still-Suggested Mapping reads as provisional — a dashed line, same low
-                    // resting opacity as everything else — never overwhelming even with 15-20+ of
-                    // them on screen at once; hovering/selecting still takes over completely (solid
-                    // blue), same as an already-Mapped connector.
-                    strokeDasharray={!isHighlighted && isSuggested ? "4 3" : undefined}
-                    // Default state is deliberately low-emphasis (a fainter, thinner line than
-                    // before) — with 15-20+ mappings on screen, no connector should read as
-                    // dominant until the user actually hovers or selects one; the real "let me
-                    // trace this" experience is the hover/selection states above, not the resting
-                    // one. See the "reduce visual noise" requirement this all satisfies.
-                    opacity={isHighlighted ? 1 : isFaded ? 0.08 : dimmed ? 0.2 : 0.45}
+                    style={
+                      isIdeaOneContextual
+                        ? isSuggested
+                          ? { stroke: MAPPING_SUGGESTED_COLOR }
+                          : undefined
+                        : !isHighlighted && isSuggested
+                          ? { stroke: MAPPING_SUGGESTED_COLOR }
+                          : undefined
+                    }
+                    strokeWidth={
+                      isIdeaOneContextual
+                        ? ideaOneVisible
+                          ? isLiveHover
+                            ? 2.2
+                            : 1.9
+                          : 1.2
+                        : isHighlighted
+                          ? isLiveHover
+                            ? 2.2
+                            : 1.9
+                          : 1.2
+                    }
+                    // A still-Suggested Mapping reads as provisional — a dashed line — never
+                    // overwhelming even with 15-20+ of them on screen at once. Idea 1 keeps this
+                    // Suggested/Mapped distinction even once revealed (see the className/style
+                    // above); Idea 2's original behavior collapses to solid blue once highlighted,
+                    // unchanged here.
+                    strokeDasharray={
+                      isIdeaOneContextual
+                        ? isSuggested
+                          ? "4 3"
+                          : undefined
+                        : !isHighlighted && isSuggested
+                          ? "4 3"
+                          : undefined
+                    }
+                    // Idea 1: fully hidden (0) until its own Property/Column is hovered, selected,
+                    // or part of the current multi-selection — no reserved baseline visibility at
+                    // all, per "Do not reserve visual emphasis for hidden connectors." Idea 2 keeps
+                    // the original always-visible-at-low-opacity default untouched.
+                    opacity={
+                      isIdeaOneContextual
+                        ? ideaOneVisible
+                          ? dimmed
+                            ? 0.35
+                            : 1
+                          : 0
+                        : isHighlighted
+                          ? 1
+                          : isFaded
+                            ? 0.08
+                            : dimmed
+                              ? 0.2
+                              : 0.45
+                    }
                   />
                   {/* Invisible, much wider duplicate of the same path — hovering a 1.4px line
                     precisely isn't realistic, so this is the actual hover hit-target for the
