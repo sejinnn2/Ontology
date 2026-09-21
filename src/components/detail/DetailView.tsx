@@ -534,6 +534,7 @@ function DetailShell({
   anchorTableNames,
   onClose,
   contextRevealed,
+  fixedSectionWorkspace = false,
   children,
 }: {
   entityItems: Entity[];
@@ -653,6 +654,8 @@ function DetailShell({
    * ever starts `false` right after a morph-triggered entry, briefly hiding/sliding-out both side
    * panels below until the selected Entity has mostly finished its own morph. */
   contextRevealed: boolean;
+  /** Idea 1 uses fixed spatial sections instead of the legacy pannable canvas transform. */
+  fixedSectionWorkspace?: boolean;
   children: React.ReactNode;
 }) {
   const [entityPanelOpen, setEntityPanelOpen] = useState(true);
@@ -746,6 +749,10 @@ function DetailShell({
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
+    if (fixedSectionWorkspace) {
+      if (e.target === e.currentTarget) onCanvasPointerDown?.();
+      return;
+    }
     // Only the canvas itself is "empty space". Let clicks that bubble from cards, rows, relation
     // badges, and other canvas objects preserve the current selection so a second plain click can
     // extend it into a multi-selection.
@@ -810,7 +817,7 @@ function DetailShell({
   // match every other pan/zoom-capable canvas app's convention).
   useEffect(() => {
     const el = canvasRef.current;
-    if (!el) return;
+    if (!el || fixedSectionWorkspace) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       const rect = el.getBoundingClientRect();
@@ -828,7 +835,7 @@ function DetailShell({
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [zoomAtPoint, setPan]);
+  }, [zoomAtPoint, setPan, fixedSectionWorkspace]);
 
   // Dragging a toolbox item: a plain click still navigates (see the pointerup handling below) —
   // it only becomes a "drop onto the canvas" placement once the pointer has actually moved past
@@ -865,6 +872,11 @@ function DetailShell({
     setPan(() => ({ x: 0, y: 0 }));
   }, [entityPanelOpen, tablePanelOpen, entityPanelWidth, tablePanelWidth, zoom, setZoom, setPan]);
   useLayoutEffect(() => {
+    if (fixedSectionWorkspace) {
+      setZoom(() => 1);
+      setPan(() => ({ x: 0, y: 0 }));
+      return;
+    }
     fitToContent();
     // Mount-only: re-fitting every time a panel toggles or content changes would fight the
     // user's own pan/zoom while they're actively working the graph.
@@ -980,8 +992,20 @@ function DetailShell({
       >
         <div
           ref={contentRef}
-          className="absolute left-1/2 top-1/2 origin-center"
-          style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}
+          className={cn(
+            "absolute",
+            fixedSectionWorkspace
+              ? "bottom-0 top-0 overflow-hidden"
+              : "left-1/2 top-1/2 origin-center",
+          )}
+          style={
+            fixedSectionWorkspace
+              ? {
+                  left: entityPanelOpen ? entityPanelWidth : PANEL_COLLAPSED_W,
+                  right: tablePanelOpen ? tablePanelWidth : PANEL_COLLAPSED_W,
+                }
+              : { transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }
+          }
         >
           {children}
         </div>
@@ -1219,23 +1243,25 @@ function DetailShell({
             docked flush to the canvas's own edge (see its own comment below), so this needs to sit
             past its actual current (open/collapsed, independently resizable) width instead of
             overlapping it. */}
-        <CanvasToolStack
-          className="absolute top-3 z-20"
-          style={{ right: (tablePanelOpen ? tablePanelWidth : PANEL_COLLAPSED_W) + 16 }}
-          orientation="horizontal"
-          compact
-          tool={tool}
-          onToolChange={setTool}
-          zoomPercent={Math.round(zoom * 100)}
-          onZoomOut={() => zoomBy(1 / 1.2)}
-          onZoomIn={() => zoomBy(1.2)}
-          onFitToContent={fitToContent}
-          onSetZoomPercent={setZoomPercent}
-          onUndo={onUndo}
-          onRedo={onRedo}
-          canUndo={canUndo}
-          canRedo={canRedo}
-        />
+        {!fixedSectionWorkspace && (
+          <CanvasToolStack
+            className="absolute top-3 z-20"
+            style={{ right: (tablePanelOpen ? tablePanelWidth : PANEL_COLLAPSED_W) + 16 }}
+            orientation="horizontal"
+            compact
+            tool={tool}
+            onToolChange={setTool}
+            zoomPercent={Math.round(zoom * 100)}
+            onZoomOut={() => zoomBy(1 / 1.2)}
+            onZoomIn={() => zoomBy(1.2)}
+            onFitToContent={fitToContent}
+            onSetZoomPercent={setZoomPercent}
+            onUndo={onUndo}
+            onRedo={onRedo}
+            canUndo={canUndo}
+            canRedo={canRedo}
+          />
+        )}
 
         {/* RIGHT — Data Tables toolbox: jump the whole Detail view onto a different table.
             Collapsible independently of the left panel. Docked flush to the canvas's own right
@@ -3498,12 +3524,12 @@ function EntityDetailCanvas({
 
   const cardScrollFrameRef = useRef<number | null>(null);
   const handleScrollableCardScroll = useCallback(() => {
-    if (app.editingIdea !== "idea2" || cardScrollFrameRef.current !== null) return;
+    if (cardScrollFrameRef.current !== null) return;
     cardScrollFrameRef.current = requestAnimationFrame(() => {
       cardScrollFrameRef.current = null;
       computeLines();
     });
-  }, [app.editingIdea, computeLines]);
+  }, [computeLines]);
   useEffect(
     () => () => {
       if (cardScrollFrameRef.current !== null) cancelAnimationFrame(cardScrollFrameRef.current);
@@ -4296,6 +4322,7 @@ function EntityDetailCanvas({
       <DetailShell
         onClose={app.closeDetail}
         contextRevealed={contextRevealed}
+        fixedSectionWorkspace={app.editingIdea === "idea1"}
         canvasEntityIds={canvasEntityIds}
         anchorEntityIds={mainEntityIds}
         canvasTableNames={usedTableNames}
@@ -4499,7 +4526,12 @@ function EntityDetailCanvas({
             setMappingSelection(new Set());
             setContextItem(null);
           }}
-          className="relative flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-10 whitespace-nowrap"
+          className={cn(
+            "relative flex flex-col whitespace-nowrap",
+            app.editingIdea === "idea1"
+              ? "h-full w-full overflow-hidden"
+              : "-translate-x-1/2 -translate-y-1/2 items-center gap-10",
+          )}
         >
           {/* PHASE 2 of the morph transition: every connector line here (Relation lines to related
               satellites, Property<->Column mapping lines into the tables area below) stays
@@ -5035,13 +5067,14 @@ function EntityDetailCanvas({
             ref={mainStackRef}
             className={cn(
               "flex flex-col gap-16",
-              app.editingIdea === "idea1" && "relative isolate px-10 pb-20 pt-24",
+              app.editingIdea === "idea1" &&
+                "relative isolate h-full min-h-0 w-full overflow-hidden pt-12",
             )}
           >
             {app.editingIdea === "idea1" && (
               <div
                 aria-hidden="true"
-                className="pointer-events-none absolute -inset-x-12 -inset-y-8 z-0 grid grid-cols-[0.72fr_1.35fr_1.1fr]"
+                className="pointer-events-none absolute inset-0 z-0 grid grid-cols-[0.72fr_1.35fr_1.1fr]"
               >
                 <div className="relative border-r border-black/[0.06] bg-slate-50/70">
                   <span className="absolute left-5 top-5 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
@@ -5073,13 +5106,17 @@ function EntityDetailCanvas({
             <div
               className={cn(
                 "relative z-10 flex items-start gap-20",
-                app.editingIdea === "idea1" && "gap-12",
+                app.editingIdea === "idea1" &&
+                  "grid h-full min-h-0 w-full grid-cols-[0.72fr_1.35fr_1.1fr] items-stretch gap-0",
               )}
             >
               <div
                 ref={relatedColumnRef}
+                onScroll={handleScrollableCardScroll}
                 className={cn(
                   "grid grid-cols-2 grid-flow-col items-center gap-x-8 gap-y-6 pt-8 transition-opacity duration-[230ms] ease-out",
+                  app.editingIdea === "idea1" &&
+                    "min-h-0 min-w-0 content-start overflow-y-auto overscroll-contain px-6 pb-12 pt-14 [scrollbar-gutter:stable]",
                   // PHASE 2 of the morph transition: the related Entity Types stay hidden until
                   // the selected Entity has mostly finished its own morph, then fade in — already
                   // at their final positions, only their opacity ever animates here.
@@ -5183,7 +5220,14 @@ function EntityDetailCanvas({
                   ))}
               </div>
 
-              <div className="flex flex-col gap-4">
+              <div
+                onScroll={handleScrollableCardScroll}
+                className={cn(
+                  "flex flex-col gap-4",
+                  app.editingIdea === "idea1" &&
+                    "min-h-0 min-w-0 items-center overflow-y-auto overscroll-contain px-8 pb-12 pt-14 [scrollbar-gutter:stable]",
+                )}
+              >
                 <div
                   ref={(el) => {
                     propsCardRef.current = el;
@@ -5572,8 +5616,11 @@ function EntityDetailCanvas({
 
               <div
                 ref={columnsAreaRef}
+                onScroll={handleScrollableCardScroll}
                 className={cn(
                   "flex flex-col gap-4 transition-opacity duration-[230ms] ease-out",
+                  app.editingIdea === "idea1" &&
+                    "min-h-0 min-w-0 items-center overflow-y-auto overscroll-contain px-8 pb-12 pt-14 [scrollbar-gutter:stable]",
                   // PHASE 2 of the morph transition: mapped Data Tables/columns stay hidden until
                   // the selected Entity has mostly finished its own morph, then fade in — already
                   // at their final positions, only their opacity ever animates here.
