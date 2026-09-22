@@ -53561,8 +53561,8 @@ export function tablesUsedByEntity(entity: Entity): string[] {
 }
 
 // --- Confidence reasoning (per object-kind, grounded in live data) -----------------------------
-// The "Why this confidence score?" panel (see ContextPanel.tsx) needs a genuinely different
-// explanation depending on what's being scored — an Entity suggestion, a Property suggestion, a
+// A "Why this confidence score?" explanation needs to say something genuinely different
+// depending on what's being scored — an Entity suggestion, a Property suggestion, a
 // Relation suggestion, and a Property<->Column Mapping are all different questions, so they get
 // different evidence shapes rather than one generic bucketed sentence (that's still `aiReasoning`
 // in ConfidenceChip.tsx, kept as the fallback for spots with no object context to reason from, e.g.

@@ -65,6 +65,22 @@ export type EntityMorphOrigin = {
   labelRect: MorphRect;
 } | null;
 
+/** The anchor card's own sub-element positions, reported once via `onAnchorMorphTarget` — see
+ * that prop's own doc comment on `EntityDetailCanvas`. `cardRect` is the whole card's own outer
+ * bounds (border included) at the moment of measurement — the card's body is never collapsed
+ * (only its opacity is, via `bodyVisible`), so this is already the card's TRUE final size, and
+ * the morph overlay's shell grows directly to it in one continuous motion instead of arriving at
+ * a smaller "header-only" stop first; the other 4 are where its individual header pieces
+ * (icon/name/confidence/chevron) sit within it. */
+export type AnchorMorphRects = {
+  cardRect: MorphRect;
+  headerRect: MorphRect;
+  iconRect: MorphRect;
+  nameRect: MorphRect;
+  confidenceRect: MorphRect;
+  chevronRect: MorphRect;
+};
+
 export type CanvasView = { x: number; y: number; z: number };
 
 /** The Header's Confidence score range filter — 0-100 (a percent, not the raw 0-1 `confidence`

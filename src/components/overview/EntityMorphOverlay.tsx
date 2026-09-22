@@ -2,8 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { StatusBadge, statusBorderColor } from "@/components/ontology/StatusBadge";
 import { ConfidenceChip } from "@/components/ontology/ConfidenceChip";
 import type { ReviewStatus } from "@/lib/mock-data";
-import type { MorphRect } from "@/lib/app-state";
-import type { AnchorMorphRects } from "@/components/detail/DetailView";
+import type { AnchorMorphRects, MorphRect } from "@/lib/app-state";
 import { ChevronDown } from "lucide-react";
 
 const DURATION_MS = 280;

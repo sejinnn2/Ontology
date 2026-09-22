@@ -32,9 +32,9 @@ export function aiReasoning(confidence: number): string {
  * `reasoning`, when supplied, replaces the generic bucketed sentence with the actual per-kind
  * evidence (see `ReasoningContent`/`entityReasoningContent`/etc. in mock-data.ts) computed by
  * whichever caller has the real Entity/Property/Relation/Mapping context to derive it from — the
- * short single-line summary here (`reasoning`/`matchSummary`) is the same sentence the full "Why
- * this confidence score?" panel opens with (see ContextPanel.tsx), just without its own evidence
- * table, which doesn't fit this chip's small hover tooltip. Omitted entirely wherever only a bare
+ * short single-line summary here (`reasoning`/`matchSummary`) is the same sentence a full "Why
+ * this confidence score?" panel would open with, just without its own evidence table, which
+ * doesn't fit this chip's small hover tooltip. Omitted entirely wherever only a bare
  * `confidence` number is in scope (e.g. the Overview<->Detail morph transition), which keeps the
  * original generic-but-honest `aiReasoning` text as a graceful fallback.
  */
