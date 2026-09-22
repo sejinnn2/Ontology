@@ -515,18 +515,20 @@ export function Header({
           Overview or a contained Editing session — no Entity/Table name and no "Editing" label
           here at all: the Editing workspace's own containment (the rounded, inset boundary it
           transforms into, see routes/index.tsx) is what communicates the mode change. */}
-      <div className="flex h-14 w-full shrink-0 items-center justify-between border-b border-[rgba(28,28,24,0.08)] px-4">
+      <div className="flex h-10 w-full shrink-0 items-center justify-between border-b border-[rgba(28,28,24,0.08)] px-4">
         <div className="flex shrink-0 items-center gap-4">
           <button
             type="button"
             tabIndex={-1}
             aria-hidden="true"
-            className="flex h-8 shrink-0 items-center gap-0.5 rounded border border-input bg-white pl-2.5 pr-1.5 text-[14px] text-[#161919]"
+            className="flex h-8 shrink-0 items-center gap-0.5 rounded border border-input bg-white pl-2.5 pr-1.5 text-[14px] font-medium leading-none text-[#161919]"
           >
             Product
             <ChevronDown className="size-4 text-muted-foreground" />
           </button>
-          <span className="whitespace-nowrap text-[14px] text-muted-foreground">Ontology</span>
+          <span className="whitespace-nowrap text-[14px] font-medium leading-none text-muted-foreground">
+            Ontology
+          </span>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <CountPills counts={counts} keys={ALL_COUNT_KEYS} />

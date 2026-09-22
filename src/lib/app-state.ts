@@ -408,8 +408,11 @@ const IN_PROGRESS_HISTORY_LOG: HistoryLogEntry[] = [
 export type LayoutIdea = "idea1" | "idea2" | "idea3" | "idea4";
 
 /** Which Editing Mode experience to render with — a purely visual choice, independent of the
- * Overview `layoutIdea` above and of the ontology data itself. Idea 1 is the existing Editing Mode
- * (EntityDetailCanvas/TableDetailCanvas), preserved as-is; later ideas slot in as idea2, idea3… */
+ * Overview `layoutIdea` above and of the ontology data itself. The original baseline ("Idea 1")
+ * was deleted; its slot now points at what used to be Idea 4 (the lane-based workspace with its
+ * own connector systems, Merge/Split/Move-properties, and Table-entry mode — see
+ * `DetailViewIdea4.tsx`). Idea 2 is `DetailView.tsx`'s own remaining (and now only) behavior;
+ * Idea 3 is `DetailViewIdea3.tsx`. */
 export type EditingIdea = "idea1" | "idea2" | "idea3";
 
 export function useOntologyApp() {

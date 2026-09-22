@@ -534,7 +534,6 @@ function DetailShell({
   anchorTableNames,
   onClose,
   contextRevealed,
-  fixedSectionWorkspace = false,
   children,
 }: {
   entityItems: Entity[];
@@ -654,8 +653,6 @@ function DetailShell({
    * ever starts `false` right after a morph-triggered entry, briefly hiding/sliding-out both side
    * panels below until the selected Entity has mostly finished its own morph. */
   contextRevealed: boolean;
-  /** Idea 1 uses fixed spatial sections instead of the legacy pannable canvas transform. */
-  fixedSectionWorkspace?: boolean;
   children: React.ReactNode;
 }) {
   const [entityPanelOpen, setEntityPanelOpen] = useState(true);
@@ -749,10 +746,6 @@ function DetailShell({
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
-    if (fixedSectionWorkspace) {
-      if (e.target === e.currentTarget) onCanvasPointerDown?.();
-      return;
-    }
     // Only the canvas itself is "empty space". Let clicks that bubble from cards, rows, relation
     // badges, and other canvas objects preserve the current selection so a second plain click can
     // extend it into a multi-selection.
@@ -817,7 +810,7 @@ function DetailShell({
   // match every other pan/zoom-capable canvas app's convention).
   useEffect(() => {
     const el = canvasRef.current;
-    if (!el || fixedSectionWorkspace) return;
+    if (!el) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       const rect = el.getBoundingClientRect();
@@ -835,7 +828,7 @@ function DetailShell({
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [zoomAtPoint, setPan, fixedSectionWorkspace]);
+  }, [zoomAtPoint, setPan]);
 
   // Dragging a toolbox item: a plain click still navigates (see the pointerup handling below) —
   // it only becomes a "drop onto the canvas" placement once the pointer has actually moved past
@@ -872,11 +865,6 @@ function DetailShell({
     setPan(() => ({ x: 0, y: 0 }));
   }, [entityPanelOpen, tablePanelOpen, entityPanelWidth, tablePanelWidth, zoom, setZoom, setPan]);
   useLayoutEffect(() => {
-    if (fixedSectionWorkspace) {
-      setZoom(() => 1);
-      setPan(() => ({ x: 0, y: 0 }));
-      return;
-    }
     fitToContent();
     // Mount-only: re-fitting every time a panel toggles or content changes would fight the
     // user's own pan/zoom while they're actively working the graph.
@@ -992,20 +980,8 @@ function DetailShell({
       >
         <div
           ref={contentRef}
-          className={cn(
-            "absolute",
-            fixedSectionWorkspace
-              ? "bottom-0 top-0 overflow-hidden"
-              : "left-1/2 top-1/2 origin-center",
-          )}
-          style={
-            fixedSectionWorkspace
-              ? {
-                  left: entityPanelOpen ? entityPanelWidth : PANEL_COLLAPSED_W,
-                  right: tablePanelOpen ? tablePanelWidth : PANEL_COLLAPSED_W,
-                }
-              : { transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }
-          }
+          className="absolute left-1/2 top-1/2 origin-center"
+          style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}
         >
           {children}
         </div>
@@ -1243,25 +1219,23 @@ function DetailShell({
             docked flush to the canvas's own edge (see its own comment below), so this needs to sit
             past its actual current (open/collapsed, independently resizable) width instead of
             overlapping it. */}
-        {!fixedSectionWorkspace && (
-          <CanvasToolStack
-            className="absolute top-3 z-20"
-            style={{ right: (tablePanelOpen ? tablePanelWidth : PANEL_COLLAPSED_W) + 16 }}
-            orientation="horizontal"
-            compact
-            tool={tool}
-            onToolChange={setTool}
-            zoomPercent={Math.round(zoom * 100)}
-            onZoomOut={() => zoomBy(1 / 1.2)}
-            onZoomIn={() => zoomBy(1.2)}
-            onFitToContent={fitToContent}
-            onSetZoomPercent={setZoomPercent}
-            onUndo={onUndo}
-            onRedo={onRedo}
-            canUndo={canUndo}
-            canRedo={canRedo}
-          />
-        )}
+        <CanvasToolStack
+          className="absolute top-3 z-20"
+          style={{ right: (tablePanelOpen ? tablePanelWidth : PANEL_COLLAPSED_W) + 16 }}
+          orientation="horizontal"
+          compact
+          tool={tool}
+          onToolChange={setTool}
+          zoomPercent={Math.round(zoom * 100)}
+          onZoomOut={() => zoomBy(1 / 1.2)}
+          onZoomIn={() => zoomBy(1.2)}
+          onFitToContent={fitToContent}
+          onSetZoomPercent={setZoomPercent}
+          onUndo={onUndo}
+          onRedo={onRedo}
+          canUndo={canUndo}
+          canRedo={canRedo}
+        />
 
         {/* RIGHT — Data Tables toolbox: jump the whole Detail view onto a different table.
             Collapsible independently of the left panel. Docked flush to the canvas's own right
@@ -3199,25 +3173,6 @@ function EntityDetailCanvas({
     if (!highlightedMapLines) return null;
     return new Set(highlightedMapLines.map((l) => l.columnKey).filter((k): k is string => !!k));
   }, [highlightedMapLines]);
-  // Idea 1's on-demand connector visibility ("Connections are available on demand, not permanently
-  // visible") needs one more input beyond the single hover/selected endpoint above: a MULTI-select
-  // of several Properties (the existing shift-click `suggestionSelection`) or several suggested
-  // Mappings queued for bulk accept (`mappingSelection`) should reveal every one of their own
-  // connectors at once, not just the single most-recent endpoint. Idea 2 (and any future idea)
-  // keeps reading only `highlightedMapLines`/`activeMapEndpoint` above, unaffected by this.
-  const multiSelectedMappingPropertyIds = useMemo(() => {
-    const ids = new Set<string>();
-    suggestionSelection.forEach((key) => {
-      const ref = parseSuggestionKey(key);
-      if (ref?.kind === "property") ids.add(ref.propertyId);
-    });
-    mappingSelection.forEach((key) => {
-      const separator = key.indexOf("");
-      const propertyId = separator === -1 ? "" : key.slice(separator + 1);
-      if (propertyId) ids.add(propertyId);
-    });
-    return ids;
-  }, [suggestionSelection, mappingSelection]);
   const [relatedLines, setRelatedLines] = useState<Line[]>([]);
   // Same idea as `relatedLines`, but for the satellites of an extra main entity (not the anchor) —
   // kept separate since each entry needs its own relation lookup (`relationId`), rather than the
@@ -3383,22 +3338,20 @@ function EntityDetailCanvas({
         c.mappedBy.forEach(({ propertyId, ownerEntityId }) => {
           const propEl = propertyRefs.current.get(propertyId);
           if (!propEl) return;
-          if (app.editingIdea === "idea2") {
-            const rowVisibleInCard = (row: Element, card: Element | undefined) => {
-              if (!card) return true;
-              const rowRect = row.getBoundingClientRect();
-              const cardRect = card.getBoundingClientRect();
-              // Header + section controls remain sticky at the top of the scroll viewport. Treat
-              // rows underneath that 58px chrome as hidden so connectors never draw through it.
-              const visibleTop = cardRect.top + 58;
-              return rowRect.bottom > visibleTop && rowRect.top < cardRect.bottom - 8;
-            };
-            if (
-              !rowVisibleInCard(propEl, mainCardRefs.current.get(ownerEntityId)) ||
-              !rowVisibleInCard(colEl, tableCardRefs.current.get(table))
-            )
-              return;
-          }
+          const rowVisibleInCard = (row: Element, card: Element | undefined) => {
+            if (!card) return true;
+            const rowRect = row.getBoundingClientRect();
+            const cardRect = card.getBoundingClientRect();
+            // Header + section controls remain sticky at the top of the scroll viewport. Treat
+            // rows underneath that 58px chrome as hidden so connectors never draw through it.
+            const visibleTop = cardRect.top + 58;
+            return rowRect.bottom > visibleTop && rowRect.top < cardRect.bottom - 8;
+          };
+          if (
+            !rowVisibleInCard(propEl, mainCardRefs.current.get(ownerEntityId)) ||
+            !rowVisibleInCard(colEl, tableCardRefs.current.get(table))
+          )
+            return;
           // Always the Property's own right edge to the Column's own left edge — never the
           // adaptive `edgeAnchorsForRects` side-picker other connectors use — so a Property<->
           // Column mapping keeps its one semantic direction and never routes vertically through
@@ -3532,7 +3485,6 @@ function EntityDetailCanvas({
     collapsedMainIds,
     onlyIdentifierByEntity,
     collapsedTables,
-    app.editingIdea,
     // Collapsing a Mapped Properties/Mapped Columns group unmounts the rows inside it (and, for a
     // Column whose every mapper just went hidden, the Column row itself — see `mappedCols`'s own
     // filter above) — without these two in the deps, `computeLines` wouldn't rerun on that toggle
@@ -4341,7 +4293,6 @@ function EntityDetailCanvas({
       <DetailShell
         onClose={app.closeDetail}
         contextRevealed={contextRevealed}
-        fixedSectionWorkspace={app.editingIdea === "idea1"}
         canvasEntityIds={canvasEntityIds}
         anchorEntityIds={mainEntityIds}
         canvasTableNames={usedTableNames}
@@ -4547,9 +4498,7 @@ function EntityDetailCanvas({
           }}
           className={cn(
             "relative flex flex-col whitespace-nowrap",
-            app.editingIdea === "idea1"
-              ? "h-full w-full overflow-hidden"
-              : "-translate-x-1/2 -translate-y-1/2 items-center gap-10",
+            "-translate-x-1/2 -translate-y-1/2 items-center gap-10",
           )}
         >
           {/* PHASE 2 of the morph transition: every connector line here (Relation lines to related
@@ -4666,86 +4615,21 @@ function EntityDetailCanvas({
               const isHighlighted = !!highlightedMapLines?.includes(l);
               const isFaded = !!activeMapEndpoint && !isHighlighted;
               const isLiveHover = !!hoveredMapEndpoint;
-              // Idea 1 ONLY: "Connections are available on demand, not permanently visible" — every
-              // Mapping connector starts fully hidden (opacity 0, no reserved visual weight) and
-              // only draws once its own Property or Column is hovered/selected (isHighlighted,
-              // already covers both — see activeMapEndpoint's own comment) or is part of the
-              // current multi-selection. Idea 2 (and the un-gated default below) keeps the original
-              // always-visible-at-low-opacity treatment untouched.
-              const isIdeaOneContextual = app.editingIdea === "idea1";
-              const isMultiSelectedMapping =
-                !!l.propertyId && multiSelectedMappingPropertyIds.has(l.propertyId);
-              const ideaOneVisible = isHighlighted || isMultiSelectedMapping;
               return (
                 <g key={l.id}>
                   <path
                     d={mappingCurve(l)}
                     fill="none"
                     strokeLinecap="round"
-                    className={
-                      isIdeaOneContextual
-                        ? isSuggested
-                          ? undefined
-                          : "stroke-zinc-400"
-                        : isHighlighted
-                          ? "stroke-[#3b82f6]"
-                          : "stroke-zinc-400"
-                    }
+                    className={isHighlighted ? "stroke-[#3b82f6]" : "stroke-zinc-400"}
                     style={
-                      isIdeaOneContextual
-                        ? isSuggested
-                          ? { stroke: MAPPING_SUGGESTED_COLOR }
-                          : undefined
-                        : !isHighlighted && isSuggested
-                          ? { stroke: MAPPING_SUGGESTED_COLOR }
-                          : undefined
+                      !isHighlighted && isSuggested
+                        ? { stroke: MAPPING_SUGGESTED_COLOR }
+                        : undefined
                     }
-                    strokeWidth={
-                      isIdeaOneContextual
-                        ? ideaOneVisible
-                          ? isLiveHover
-                            ? 2.2
-                            : 1.9
-                          : 1.2
-                        : isHighlighted
-                          ? isLiveHover
-                            ? 2.2
-                            : 1.9
-                          : 1.2
-                    }
-                    // A still-Suggested Mapping reads as provisional — a dashed line — never
-                    // overwhelming even with 15-20+ of them on screen at once. Idea 1 keeps this
-                    // Suggested/Mapped distinction even once revealed (see the className/style
-                    // above); Idea 2's original behavior collapses to solid blue once highlighted,
-                    // unchanged here.
-                    strokeDasharray={
-                      isIdeaOneContextual
-                        ? isSuggested
-                          ? "4 3"
-                          : undefined
-                        : !isHighlighted && isSuggested
-                          ? "4 3"
-                          : undefined
-                    }
-                    // Idea 1: fully hidden (0) until its own Property/Column is hovered, selected,
-                    // or part of the current multi-selection — no reserved baseline visibility at
-                    // all, per "Do not reserve visual emphasis for hidden connectors." Idea 2 keeps
-                    // the original always-visible-at-low-opacity default untouched.
-                    opacity={
-                      isIdeaOneContextual
-                        ? ideaOneVisible
-                          ? dimmed
-                            ? 0.35
-                            : 1
-                          : 0
-                        : isHighlighted
-                          ? 1
-                          : isFaded
-                            ? 0.08
-                            : dimmed
-                              ? 0.2
-                              : 0.45
-                    }
+                    strokeWidth={isHighlighted ? (isLiveHover ? 2.2 : 1.9) : 1.2}
+                    strokeDasharray={!isHighlighted && isSuggested ? "4 3" : undefined}
+                    opacity={isHighlighted ? 1 : isFaded ? 0.08 : dimmed ? 0.2 : 0.45}
                   />
                   {/* Invisible, much wider duplicate of the same path — hovering a 1.4px line
                     precisely isn't realistic, so this is the actual hover hit-target for the
@@ -5138,60 +5022,13 @@ function EntityDetailCanvas({
             card — no separate anchor circle. Every extra Entity dropped into the center column
             gets an identical row of its own (its own related satellites, its own card, its own
             mapped columns) stacked below this one — see `mainEntities.slice(1)` further down. */}
-          <div
-            ref={mainStackRef}
-            className={cn(
-              "flex flex-col gap-16",
-              app.editingIdea === "idea1" &&
-                "relative isolate h-full min-h-0 w-full overflow-hidden pt-12",
-            )}
-          >
-            {app.editingIdea === "idea1" && (
-              <div
-                aria-hidden="true"
-                className="pointer-events-none absolute inset-0 z-0 grid grid-cols-[0.72fr_1.35fr_1.1fr]"
-              >
-                <div className="relative border-r border-black/[0.06] bg-slate-50/70">
-                  <span className="absolute left-5 top-5 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
-                    Related Context
-                  </span>
-                </div>
-                <div
-                  className={cn(
-                    "relative border-r border-black/[0.06] bg-white/55",
-                    anchorKind === "entity" && "bg-blue-50/80",
-                  )}
-                >
-                  <span className="absolute left-6 top-5 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">
-                    Main Entity
-                  </span>
-                </div>
-                <div
-                  className={cn(
-                    "relative bg-slate-50/55",
-                    anchorKind === "table" && "bg-emerald-50/80",
-                  )}
-                >
-                  <span className="absolute left-6 top-5 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">
-                    Data Tables
-                  </span>
-                </div>
-              </div>
-            )}
-            <div
-              className={cn(
-                "relative z-10 flex items-start gap-20",
-                app.editingIdea === "idea1" &&
-                  "grid h-full min-h-0 w-full grid-cols-[0.72fr_1.35fr_1.1fr] items-stretch gap-0",
-              )}
-            >
+          <div ref={mainStackRef} className="flex flex-col gap-16">
+            <div className="relative z-10 flex items-start gap-20">
               <div
                 ref={relatedColumnRef}
                 onScroll={handleScrollableCardScroll}
                 className={cn(
                   "grid grid-cols-2 grid-flow-col items-center gap-x-8 gap-y-6 pt-8 transition-opacity duration-[230ms] ease-out",
-                  app.editingIdea === "idea1" &&
-                    "min-h-0 min-w-0 content-start overflow-y-auto overscroll-contain px-6 pb-12 pt-14 [scrollbar-gutter:stable]",
                   // PHASE 2 of the morph transition: the related Entity Types stay hidden until
                   // the selected Entity has mostly finished its own morph, then fade in — already
                   // at their final positions, only their opacity ever animates here.
@@ -5295,14 +5132,7 @@ function EntityDetailCanvas({
                   ))}
               </div>
 
-              <div
-                onScroll={handleScrollableCardScroll}
-                className={cn(
-                  "flex flex-col gap-4",
-                  app.editingIdea === "idea1" &&
-                    "min-h-0 min-w-0 items-center overflow-y-auto overscroll-contain px-8 pb-12 pt-14 [scrollbar-gutter:stable]",
-                )}
-              >
+              <div onScroll={handleScrollableCardScroll} className="flex flex-col gap-4">
                 <div
                   ref={(el) => {
                     propsCardRef.current = el;
@@ -5322,10 +5152,7 @@ function EntityDetailCanvas({
                   onScroll={handleScrollableCardScroll}
                   className={cn(
                     "group/entitycard flex w-[268.8px] flex-col items-center justify-center gap-2 rounded-[16px] border-[1.5px] border-[rgba(28,28,24,0.08)] bg-white px-3 pb-3 pt-2 [&>div]:w-full",
-                    app.editingIdea === "idea1" &&
-                      "w-[320px] rounded-none border-transparent bg-transparent px-4",
-                    app.editingIdea === "idea2" &&
-                      !collapsedMainIds.has(entity.id) &&
+                    !collapsedMainIds.has(entity.id) &&
                       "max-h-[440px] justify-start overflow-y-auto overscroll-contain [scrollbar-gutter:stable]",
                     moveTargetId === entity.id
                       ? "shadow-[0_0_0_4px_var(--color-primary)]"
@@ -5336,10 +5163,6 @@ function EntityDetailCanvas({
                         selectedMergeIds.has(entity.id)
                         ? "shadow-[0_0_0_2px_#FCFCFC,0_0_0_4px_#3b82f6,0_2px_2px_0_rgba(0,0,0,0.10)]"
                         : "shadow-[0_2px_2px_0_rgba(0,0,0,0.1)]",
-                    app.editingIdea === "idea1" &&
-                      moveTargetId !== entity.id &&
-                      !selectedMergeIds.has(entity.id) &&
-                      "shadow-none",
                     !isReviewItemInScope(
                       entityStatus(entity),
                       entity.confidence,
@@ -5356,7 +5179,7 @@ function EntityDetailCanvas({
                       // resting at this exact position/style, so this is a swap between two
                       // identical-looking frames, not a second, separate reveal.
                       "flex w-full items-center gap-1 transition-opacity duration-75",
-                      app.editingIdea === "idea2" && "sticky top-0 z-20 bg-white py-0.5",
+                      "sticky top-0 z-20 bg-white py-0.5",
                       isMorphing && "opacity-0",
                     )}
                   >
@@ -5448,12 +5271,7 @@ function EntityDetailCanvas({
                         which side (Entity or Table) Editing Mode was entered on — not just the
                         entry point's own authoritative side. */}
                     {!collapsedMainIds.has(entity.id) && (
-                      <div
-                        className={cn(
-                          "flex w-full items-center justify-between gap-1",
-                          app.editingIdea === "idea2" && "sticky top-8 z-10 bg-white py-1",
-                        )}
-                      >
+                      <div className="flex w-full items-center justify-between gap-1 sticky top-8 z-10 bg-white py-1">
                         <button
                           type="button"
                           onPointerDown={(e) => e.stopPropagation()}
@@ -5533,9 +5351,7 @@ function EntityDetailCanvas({
                               }
                               title="Click for name and description, or shift-click to select for Split/Delete/Accept/Reject"
                               className={cn(
-                                "group/prop relative flex w-full cursor-pointer items-center gap-1 rounded-[10px] px-3 py-2 text-[14px] leading-[16.5px] shadow-[0_0_0_1.2px_rgba(0,0,0,0.08)] transition-shadow",
-                                app.editingIdea === "idea2" &&
-                                  "rounded-[4px] px-2 py-1.5 shadow-none",
+                                "group/prop relative flex w-full cursor-pointer items-center gap-1 rounded-[4px] px-2 py-1.5 text-[14px] leading-[16.5px] shadow-none transition-shadow",
                                 p.mapping
                                   ? "bg-white font-medium text-foreground"
                                   : "bg-white font-normal text-[#555]",
@@ -5624,12 +5440,7 @@ function EntityDetailCanvas({
                         return (
                           <>
                             {mapped.length > 0 && (
-                              <div
-                                className={cn(
-                                  "flex flex-col gap-1 rounded-[10px] bg-[#eff6ff] p-1",
-                                  app.editingIdea === "idea1" && "rounded-none bg-transparent p-0",
-                                )}
-                              >
+                              <div className="flex flex-col gap-1 rounded-[10px] bg-[#eff6ff] p-1">
                                 <PropertyGroupHeader
                                   label="Mapped"
                                   count={mapped.length}
@@ -5645,12 +5456,7 @@ function EntityDetailCanvas({
                               </div>
                             )}
                             {unmapped.length > 0 && (
-                              <div
-                                className={cn(
-                                  "flex flex-col gap-1 rounded-[10px] bg-[#f4f4f4] p-1",
-                                  app.editingIdea === "idea1" && "rounded-none bg-transparent p-0",
-                                )}
-                              >
+                              <div className="flex flex-col gap-1 rounded-[10px] bg-[#f4f4f4] p-1">
                                 <PropertyGroupHeader
                                   label="Unmapped"
                                   count={unmapped.length}
@@ -5694,8 +5500,6 @@ function EntityDetailCanvas({
                 onScroll={handleScrollableCardScroll}
                 className={cn(
                   "flex flex-col gap-4 transition-opacity duration-[230ms] ease-out",
-                  app.editingIdea === "idea1" &&
-                    "min-h-0 min-w-0 items-center overflow-y-auto overscroll-contain px-8 pb-12 pt-14 [scrollbar-gutter:stable]",
                   // PHASE 2 of the morph transition: mapped Data Tables/columns stay hidden until
                   // the selected Entity has mostly finished its own morph, then fade in — already
                   // at their final positions, only their opacity ever animates here.
@@ -5755,28 +5559,15 @@ function EntityDetailCanvas({
                           onScroll={handleScrollableCardScroll}
                           className={cn(
                             "flex w-[268.8px] flex-col items-center justify-center gap-2 rounded-[16px] border-[1.5px] border-[rgba(28,28,24,0.08)] bg-white px-3 pb-3 pt-2 [&>div]:w-full",
-                            app.editingIdea === "idea1" &&
-                              "w-[320px] rounded-none border-transparent bg-transparent px-4",
-                            app.editingIdea === "idea2" &&
-                              !collapsedTables.has(table) &&
+                            !collapsedTables.has(table) &&
                               "max-h-[440px] justify-start overflow-y-auto overscroll-contain [scrollbar-gutter:stable]",
                             contextItem?.kind === "table" && contextItem.table.name === table
                               ? "shadow-[0_0_0_2px_#FCFCFC,0_0_0_5px_#3b82f6,0_2px_2px_0_rgba(0,0,0,0.10)]"
                               : "shadow-[0_2px_2px_0_rgba(0,0,0,0.1)]",
-                            app.editingIdea === "idea1" &&
-                              !(
-                                contextItem?.kind === "table" && contextItem.table.name === table
-                              ) &&
-                              "shadow-none",
                             !tableInScope && "opacity-40",
                           )}
                         >
-                          <div
-                            className={cn(
-                              "flex w-full items-center gap-1",
-                              app.editingIdea === "idea2" && "sticky top-0 z-20 bg-white py-0.5",
-                            )}
-                          >
+                          <div className="flex w-full items-center gap-1 sticky top-0 z-20 bg-white py-0.5">
                             <button
                               onPointerDown={(e) => {
                                 if (e.button !== 0) return;
@@ -5833,12 +5624,7 @@ function EntityDetailCanvas({
                               of which side (Entity or Table) Editing Mode was entered on — not
                               just the entry point's own authoritative side. */}
                           {!collapsedTables.has(table) && (
-                            <div
-                              className={cn(
-                                "flex w-full items-center justify-between gap-1",
-                                app.editingIdea === "idea2" && "sticky top-8 z-10 bg-white py-1",
-                              )}
-                            >
+                            <div className="flex w-full items-center justify-between gap-1 sticky top-8 z-10 bg-white py-1">
                               <button
                                 type="button"
                                 onPointerDown={(e) => e.stopPropagation()}
@@ -5936,9 +5722,7 @@ function EntityDetailCanvas({
                                     }
                                     title="Click for name and description"
                                     className={cn(
-                                      "group/col relative flex w-full cursor-pointer items-center gap-1 rounded-[10px] px-3 py-2 text-[14px] leading-[16.5px] shadow-[0_0_0_1.2px_rgba(0,0,0,0.08)] transition-shadow",
-                                      app.editingIdea === "idea2" &&
-                                        "rounded-[4px] px-2 py-1.5 shadow-none",
+                                      "group/col relative flex w-full cursor-pointer items-center gap-1 rounded-[4px] px-2 py-1.5 text-[14px] leading-[16.5px] shadow-none transition-shadow",
                                       c.mappedBy.length > 0
                                         ? "bg-white font-medium text-foreground"
                                         : "bg-white font-normal text-[#555]",
@@ -6046,13 +5830,7 @@ function EntityDetailCanvas({
                               return (
                                 <>
                                   {mappedCols.length > 0 && (
-                                    <div
-                                      className={cn(
-                                        "flex flex-col gap-1 rounded-[10px] bg-[#eff6ff] p-1",
-                                        app.editingIdea === "idea1" &&
-                                          "rounded-none bg-transparent p-0",
-                                      )}
-                                    >
+                                    <div className="flex flex-col gap-1 rounded-[10px] bg-[#eff6ff] p-1">
                                       <PropertyGroupHeader
                                         label="Mapped"
                                         count={mappedCols.length}
@@ -6070,13 +5848,7 @@ function EntityDetailCanvas({
                                     </div>
                                   )}
                                   {unmappedCols.length > 0 && (
-                                    <div
-                                      className={cn(
-                                        "flex flex-col gap-1 rounded-[10px] bg-[#f4f4f4] p-1",
-                                        app.editingIdea === "idea1" &&
-                                          "rounded-none bg-transparent p-0",
-                                      )}
-                                    >
+                                    <div className="flex flex-col gap-1 rounded-[10px] bg-[#f4f4f4] p-1">
                                       <PropertyGroupHeader
                                         label="Unmapped"
                                         count={unmappedCols.length}
@@ -6215,20 +5987,13 @@ function EntityDetailCanvas({
                         onScroll={handleScrollableCardScroll}
                         className={cn(
                           "group/entitycard flex w-[268.8px] flex-col items-center justify-center gap-2 rounded-[16px] border-[1.5px] border-[rgba(28,28,24,0.08)] bg-white px-3 pb-3 pt-2 [&>div]:w-full",
-                          app.editingIdea === "idea1" &&
-                            "w-[320px] rounded-none border-transparent bg-transparent px-4",
-                          app.editingIdea === "idea2" &&
-                            !isCollapsed &&
+                          !isCollapsed &&
                             "max-h-[440px] justify-start overflow-y-auto overscroll-contain [scrollbar-gutter:stable]",
                           moveTargetId === other.id
                             ? "shadow-[0_0_0_4px_var(--color-primary)]"
                             : selectedMergeIds.has(other.id)
                               ? "shadow-[0_0_0_2px_#FCFCFC,0_0_0_4px_#3b82f6,0_2px_2px_0_rgba(0,0,0,0.10)]"
                               : "shadow-[0_2px_2px_0_rgba(0,0,0,0.1)]",
-                          app.editingIdea === "idea1" &&
-                            moveTargetId !== other.id &&
-                            !selectedMergeIds.has(other.id) &&
-                            "shadow-none",
                           !isReviewItemInScope(
                             entityStatus(other),
                             other.confidence,
@@ -6237,12 +6002,7 @@ function EntityDetailCanvas({
                           ) && "opacity-40",
                         )}
                       >
-                        <div
-                          className={cn(
-                            "flex w-full items-center gap-1",
-                            app.editingIdea === "idea2" && "sticky top-0 z-20 bg-white py-0.5",
-                          )}
-                        >
+                        <div className="flex w-full items-center gap-1 sticky top-0 z-20 bg-white py-0.5">
                           <button
                             type="button"
                             onPointerDown={(e) => {
@@ -6304,12 +6064,7 @@ function EntityDetailCanvas({
                             Mode was entered on — see the anchor's own Properties list above for
                             the same change. */}
                         {!isCollapsed && (
-                          <div
-                            className={cn(
-                              "flex w-full items-center justify-between gap-1",
-                              app.editingIdea === "idea2" && "sticky top-8 z-10 bg-white py-1",
-                            )}
-                          >
+                          <div className="flex w-full items-center justify-between gap-1 sticky top-8 z-10 bg-white py-1">
                             <button
                               type="button"
                               onPointerDown={(e) => e.stopPropagation()}
@@ -6383,9 +6138,7 @@ function EntityDetailCanvas({
                                   }
                                   title="Click for name and description, or shift-click to select for Split/Delete/Accept/Reject"
                                   className={cn(
-                                    "group/prop relative flex cursor-pointer items-center gap-1 rounded-[10px] px-3 py-2 text-[14px] shadow-[0_0_0_1.2px_rgba(0,0,0,0.08)] transition-shadow",
-                                    app.editingIdea === "idea2" &&
-                                      "rounded-[4px] px-2 py-1.5 shadow-none",
+                                    "group/prop relative flex cursor-pointer items-center gap-1 rounded-[4px] px-2 py-1.5 text-[14px] shadow-none transition-shadow",
                                     p.mapping
                                       ? "bg-white font-medium text-foreground"
                                       : "bg-white font-normal text-[#555]",
@@ -6472,13 +6225,7 @@ function EntityDetailCanvas({
                             return (
                               <>
                                 {mapped.length > 0 && (
-                                  <div
-                                    className={cn(
-                                      "flex flex-col gap-1 rounded-[10px] bg-[#eff6ff] p-1",
-                                      app.editingIdea === "idea1" &&
-                                        "rounded-none bg-transparent p-0",
-                                    )}
-                                  >
+                                  <div className="flex flex-col gap-1 rounded-[10px] bg-[#eff6ff] p-1">
                                     <PropertyGroupHeader
                                       label="Mapped"
                                       count={mapped.length}
@@ -6495,13 +6242,7 @@ function EntityDetailCanvas({
                                   </div>
                                 )}
                                 {unmapped.length > 0 && (
-                                  <div
-                                    className={cn(
-                                      "flex flex-col gap-1 rounded-[10px] bg-[#f4f4f4] p-1",
-                                      app.editingIdea === "idea1" &&
-                                        "rounded-none bg-transparent p-0",
-                                    )}
-                                  >
+                                  <div className="flex flex-col gap-1 rounded-[10px] bg-[#f4f4f4] p-1">
                                     <PropertyGroupHeader
                                       label="Unmapped"
                                       count={unmapped.length}
@@ -6569,30 +6310,15 @@ function EntityDetailCanvas({
                               }}
                               className={cn(
                                 "flex w-[268.8px] flex-col items-center justify-center gap-2 rounded-[16px] border-[1.5px] border-[rgba(28,28,24,0.08)] bg-white px-3 pb-3 pt-2 [&>div]:w-full",
-                                app.editingIdea === "idea1" &&
-                                  "w-[320px] rounded-none border-transparent bg-transparent px-4",
-                                app.editingIdea === "idea2" &&
-                                  !collapsedTables.has(table) &&
+                                !collapsedTables.has(table) &&
                                   "max-h-[440px] justify-start overflow-y-auto overscroll-contain [scrollbar-gutter:stable]",
                                 contextItem?.kind === "table" && contextItem.table.name === table
                                   ? "shadow-[0_0_0_2px_#FCFCFC,0_0_0_5px_#3b82f6,0_2px_2px_0_rgba(0,0,0,0.10)]"
                                   : "shadow-[0_2px_2px_0_rgba(0,0,0,0.1)]",
-                                app.editingIdea === "idea1" &&
-                                  !(
-                                    contextItem?.kind === "table" &&
-                                    contextItem.table.name === table
-                                  ) &&
-                                  "shadow-none",
                                 !tableInScope && "opacity-40",
                               )}
                             >
-                              <div
-                                className={cn(
-                                  "flex w-full items-center gap-1",
-                                  app.editingIdea === "idea2" &&
-                                    "sticky top-0 z-20 bg-white py-0.5",
-                                )}
-                              >
+                              <div className="flex w-full items-center gap-1 sticky top-0 z-20 bg-white py-0.5">
                                 <button
                                   type="button"
                                   onPointerDown={(e) => e.stopPropagation()}
@@ -6641,13 +6367,7 @@ function EntityDetailCanvas({
                                 </p>
                               )}
                               {!collapsedTables.has(table) && (
-                                <div
-                                  className={cn(
-                                    "flex w-full items-center justify-between gap-1",
-                                    app.editingIdea === "idea2" &&
-                                      "sticky top-8 z-10 bg-white py-1",
-                                  )}
-                                >
+                                <div className="flex w-full items-center justify-between gap-1 sticky top-8 z-10 bg-white py-1">
                                   <button
                                     type="button"
                                     onPointerDown={(e) => e.stopPropagation()}
@@ -6745,9 +6465,7 @@ function EntityDetailCanvas({
                                         }
                                         title="Click for name and description"
                                         className={cn(
-                                          "group/col relative flex w-full cursor-pointer items-center gap-1 rounded-[10px] px-3 py-2 text-[14px] leading-[16.5px] shadow-[0_0_0_1.2px_rgba(0,0,0,0.08)] transition-shadow",
-                                          app.editingIdea === "idea2" &&
-                                            "rounded-[4px] px-2 py-1.5 shadow-none",
+                                          "group/col relative flex w-full cursor-pointer items-center gap-1 rounded-[4px] px-2 py-1.5 text-[14px] leading-[16.5px] shadow-none transition-shadow",
                                           c.mappedBy.length > 0
                                             ? "bg-white font-medium text-foreground"
                                             : "bg-white font-normal text-[#555]",
@@ -6856,13 +6574,7 @@ function EntityDetailCanvas({
                                   return (
                                     <>
                                       {mappedCols.length > 0 && (
-                                        <div
-                                          className={cn(
-                                            "flex flex-col gap-1 rounded-[10px] bg-[#eff6ff] p-1",
-                                            app.editingIdea === "idea1" &&
-                                              "rounded-none bg-transparent p-0",
-                                          )}
-                                        >
+                                        <div className="flex flex-col gap-1 rounded-[10px] bg-[#eff6ff] p-1">
                                           <PropertyGroupHeader
                                             label="Mapped"
                                             count={mappedCols.length}
@@ -6880,13 +6592,7 @@ function EntityDetailCanvas({
                                         </div>
                                       )}
                                       {unmappedCols.length > 0 && (
-                                        <div
-                                          className={cn(
-                                            "flex flex-col gap-1 rounded-[10px] bg-[#f4f4f4] p-1",
-                                            app.editingIdea === "idea1" &&
-                                              "rounded-none bg-transparent p-0",
-                                          )}
-                                        >
+                                        <div className="flex flex-col gap-1 rounded-[10px] bg-[#f4f4f4] p-1">
                                           <PropertyGroupHeader
                                             label="Unmapped"
                                             count={unmappedCols.length}
