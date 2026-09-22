@@ -401,16 +401,9 @@ const IN_PROGRESS_HISTORY_LOG: HistoryLogEntry[] = [
   },
 ];
 
-/** Which Overview graph layout algorithm to render with — a purely visual choice, independent of
- * `demoScenario`/the ontology data itself. See `buildFarZoomTopologyLayout`/`buildRawGridLayout`/
- * `buildForceDirectedLayout`/`buildRadialPlacementLayout` in OverviewCanvas.tsx for what each idea
- * actually does. */
-export type LayoutIdea = "idea1" | "idea2" | "idea3" | "idea4";
-
 export function useOntologyApp() {
   const initialFixture = useRef(createDemoFixture("fresh"));
   const [demoScenario, setDemoScenario] = useState<DemoScenario>("fresh");
-  const [layoutIdea, setLayoutIdea] = useState<LayoutIdea>("idea1");
   const [entities, setEntities] = useState<Entity[]>(initialFixture.current.entities);
   const [relations, setRelations] = useState<Relation[]>(initialFixture.current.relations);
   // Mirrors `entities`/`relations` for the handful of mutators below (`updateEntity` especially)
@@ -2505,8 +2498,6 @@ export function useOntologyApp() {
   return {
     demoScenario,
     resetDemoScenario,
-    layoutIdea,
-    setLayoutIdea,
     entities,
     relations,
     tables,

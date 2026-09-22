@@ -80,127 +80,6 @@ const wrapperOriginForCenter = (center: Pt) => ({
   y: center.y - ONTOLOGY_NODE_SIZE / 2,
 });
 
-/** A deterministic, topology-only Overview projection. The highest-degree Entities become hubs;
- * a multi-source graph walk assigns every other Entity to its nearest hub, then each community is
- * drawn as compact radial rings. Returned objects are visual copies: stored coordinates remain
- * untouched while the same layout stays stable at every zoom level. */
-function buildFarZoomTopologyLayout<T extends { id: string; x: number; y: number }>(
-  entities: T[],
-  relations: { from: string; to: string }[],
-): T[] {
-  if (entities.length < 2) return entities;
-  const byId = new Map(entities.map((entity) => [entity.id, entity]));
-  const indexById = new Map(entities.map((entity, index) => [entity.id, index]));
-  const neighbors = new Map(entities.map((entity) => [entity.id, new Set<string>()]));
-  relations.forEach((relation) => {
-    if (!byId.has(relation.from) || !byId.has(relation.to)) return;
-    neighbors.get(relation.from)!.add(relation.to);
-    neighbors.get(relation.to)!.add(relation.from);
-  });
-
-  // Three primary communities make the far view read as a small set of strong hub systems rather
-  // than dozens of loose mini-groups, matching the dense radial reference direction.
-  const hubCount = Math.min(3, entities.length);
-  const hubs = [...entities]
-    .sort(
-      (a, b) =>
-        (neighbors.get(b.id)?.size ?? 0) - (neighbors.get(a.id)?.size ?? 0) ||
-        (indexById.get(a.id) ?? 0) - (indexById.get(b.id) ?? 0),
-    )
-    .slice(0, Math.min(hubCount, entities.length));
-
-  const owner = new Map<string, string>();
-  const queue = hubs.map((hub) => hub.id);
-  hubs.forEach((hub) => owner.set(hub.id, hub.id));
-  for (let cursor = 0; cursor < queue.length; cursor++) {
-    const current = queue[cursor]!;
-    const currentOwner = owner.get(current)!;
-    [...(neighbors.get(current) ?? [])]
-      .sort((a, b) => (indexById.get(a) ?? 0) - (indexById.get(b) ?? 0))
-      .forEach((neighbor) => {
-        if (owner.has(neighbor)) return;
-        owner.set(neighbor, currentOwner);
-        queue.push(neighbor);
-      });
-  }
-
-  // Disconnected islands join the spatially closest hub, keeping the projection total without
-  // inventing graph links.
-  entities.forEach((entity) => {
-    if (owner.has(entity.id)) return;
-    const center = ontologyNodeCenter(entity);
-    const nearestHub = hubs.reduce(
-      (best, hub) => {
-        const hubCenter = ontologyNodeCenter(hub);
-        const distance = Math.hypot(center.x - hubCenter.x, center.y - hubCenter.y);
-        return !best || distance < best.distance ? { id: hub.id, distance } : best;
-      },
-      null as { id: string; distance: number } | null,
-    );
-    if (nearestHub) owner.set(entity.id, nearestHub.id);
-  });
-
-  const originalCenters = entities.map(ontologyNodeCenter);
-  const minX = Math.min(...originalCenters.map((point) => point.x));
-  const maxX = Math.max(...originalCenters.map((point) => point.x));
-  const minY = Math.min(...originalCenters.map((point) => point.y));
-  const maxY = Math.max(...originalCenters.map((point) => point.y));
-  const graphCenter = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
-  const orbitX = Math.max(520, Math.min(820, (maxX - minX) * 0.3));
-  const orbitY = Math.max(380, Math.min(620, (maxY - minY) * 0.3));
-  const projectedCenter = new Map<string, Pt>();
-
-  hubs.forEach((hub, hubIndex) => {
-    const hubAngle = -Math.PI / 2 + (hubIndex / hubs.length) * Math.PI * 2;
-    const hubCenter = {
-      x: graphCenter.x + Math.cos(hubAngle) * orbitX,
-      y: graphCenter.y + Math.sin(hubAngle) * orbitY,
-    };
-    projectedCenter.set(hub.id, hubCenter);
-
-    const members = entities
-      .filter((entity) => entity.id !== hub.id && owner.get(entity.id) === hub.id)
-      .sort((a, b) => {
-        const aCenter = ontologyNodeCenter(a);
-        const bCenter = ontologyNodeCenter(b);
-        const originalHubCenter = ontologyNodeCenter(hub);
-        return (
-          Math.atan2(aCenter.y - originalHubCenter.y, aCenter.x - originalHubCenter.x) -
-            Math.atan2(bCenter.y - originalHubCenter.y, bCenter.x - originalHubCenter.x) ||
-          (indexById.get(a.id) ?? 0) - (indexById.get(b.id) ?? 0)
-        );
-      });
-    let memberCursor = 0;
-    let ring = 0;
-    while (memberCursor < members.length) {
-      const capacity = 10 + ring * 6;
-      const ringMembers = members.slice(memberCursor, memberCursor + capacity);
-      const radius = 150 + ring * 105;
-      ringMembers.forEach((member, index) => {
-        const angle = -Math.PI / 2 + (index / ringMembers.length) * Math.PI * 2;
-        projectedCenter.set(member.id, {
-          x: hubCenter.x + Math.cos(angle) * radius,
-          y: hubCenter.y + Math.sin(angle) * radius,
-        });
-      });
-      memberCursor += ringMembers.length;
-      ring += 1;
-    }
-  });
-
-  return entities.map((entity) => {
-    const center = projectedCenter.get(entity.id);
-    return center ? { ...entity, ...wrapperOriginForCenter(center) } : entity;
-  });
-}
-
-/** Idea 2: no computed layout at all — every Entity renders at its own stored x/y exactly as
- * authored in the fixture data, with no hub/topology clustering layered on top. A deliberately
- * plain baseline to compare against Idea 1's (`buildFarZoomTopologyLayout`) inferred clustering. */
-function buildRawGridLayout<T extends { id: string; x: number; y: number }>(entities: T[]): T[] {
-  return entities;
-}
-
 /** Idea 3: a small hand-rolled force-directed simulation — mutual repulsion between every pair of
  * nodes, spring attraction along each Relation edge toward a target rest length, and a light pull
  * toward the shared centroid so the whole graph doesn't drift apart under repulsion alone. Unlike
@@ -320,73 +199,6 @@ function buildForceDirectedLayout<T extends { id: string; x: number; y: number }
       p.x += v.x;
       p.y += v.y;
     });
-  }
-
-  return entities.map((entity) => ({
-    ...entity,
-    ...wrapperOriginForCenter(positions.get(entity.id)!),
-  }));
-}
-
-/** Idea 4: a two-ring radial placement — the most-connected Entities (by Relation degree) fill an
- * inner ring at a fixed angular step, and everything else fills a wider outer ring spaced evenly
- * around it. Unlike Idea 1's hub/community heuristic or Idea 3's physics simulation, this is pure
- * geometry: no simulation, no per-pair distance math, just "rank by degree, place on a circle." */
-function buildRadialPlacementLayout<T extends { id: string; x: number; y: number }>(
-  entities: T[],
-  relations: { from: string; to: string }[],
-): T[] {
-  if (entities.length < 2) return entities;
-
-  const degree = new Map(entities.map((entity) => [entity.id, 0]));
-  relations.forEach((relation) => {
-    if (!degree.has(relation.from) || !degree.has(relation.to)) return;
-    degree.set(relation.from, (degree.get(relation.from) ?? 0) + 1);
-    if (relation.to !== relation.from) {
-      degree.set(relation.to, (degree.get(relation.to) ?? 0) + 1);
-    }
-  });
-  const indexById = new Map(entities.map((entity, index) => [entity.id, index]));
-  const ranked = [...entities].sort(
-    (a, b) =>
-      (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0) ||
-      (indexById.get(a.id) ?? 0) - (indexById.get(b.id) ?? 0),
-  );
-
-  const originalCenters = entities.map(ontologyNodeCenter);
-  const center = {
-    x: originalCenters.reduce((sum, p) => sum + p.x, 0) / originalCenters.length,
-    y: originalCenters.reduce((sum, p) => sum + p.y, 0) / originalCenters.length,
-  };
-
-  const STEP_DEGREES = 20;
-  const INNER_RADIUS = 420;
-  const OUTER_RADIUS = INNER_RADIUS + INNER_RADIUS / 1.8;
-  const START_ANGLE = -120;
-  const toXY = (angleDeg: number, radius: number) => ({
-    x: center.x + radius * Math.cos((angleDeg * Math.PI) / 180),
-    y: center.y + radius * Math.sin((angleDeg * Math.PI) / 180),
-  });
-
-  const positions = new Map<string, Pt>();
-  const innerCapacity = Math.floor(360 / STEP_DEGREES);
-  if (ranked.length <= innerCapacity) {
-    // Too few Entities to need a second ring — space them all evenly around one circle.
-    const step = 360 / ranked.length;
-    ranked.forEach((entity, i) =>
-      positions.set(entity.id, toXY(START_ANGLE + i * step, INNER_RADIUS)),
-    );
-  } else {
-    const innerKeys = ranked.slice(0, innerCapacity);
-    const outerKeys = ranked.slice(innerCapacity);
-    innerKeys.forEach((entity, i) =>
-      positions.set(entity.id, toXY(START_ANGLE + i * STEP_DEGREES, INNER_RADIUS)),
-    );
-    const outerStep = 360 / outerKeys.length;
-    const outerStartAngle = START_ANGLE + innerKeys.length * STEP_DEGREES;
-    outerKeys.forEach((entity, i) =>
-      positions.set(entity.id, toXY(outerStartAngle + i * outerStep, OUTER_RADIUS)),
-    );
   }
 
   return entities.map((entity) => ({
@@ -565,7 +377,6 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     entities,
     relations,
     tables,
-    layoutIdea,
     selection,
     select,
     openDetail,
@@ -639,12 +450,10 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       ),
     [entities, relationCountByEntity],
   );
-  const layoutEntities = useMemo(() => {
-    if (layoutIdea === "idea2") return buildRawGridLayout(entities);
-    if (layoutIdea === "idea3") return buildForceDirectedLayout(entities, relations);
-    if (layoutIdea === "idea4") return buildRadialPlacementLayout(entities, relations);
-    return buildFarZoomTopologyLayout(entities, relations);
-  }, [entities, relations, layoutIdea]);
+  const layoutEntities = useMemo(
+    () => buildForceDirectedLayout(entities, relations),
+    [entities, relations],
+  );
 
   // The Data Tables panel's own collapse toggle — independent of the Ontology canvas, which is
   // always shown at full width alongside it. Collapsing only hides this panel's own content; it
@@ -1627,8 +1436,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       const isHovered = hoveredRelationId === r.id;
       const isZoomEmphasized = isSelected || isHovered;
       const bothSearchConnected = searchContext
-        ? searchContext.connectedEntityIds.has(r.from) &&
-          searchContext.connectedEntityIds.has(r.to)
+        ? searchContext.connectedEntityIds.has(r.from) && searchContext.connectedEntityIds.has(r.to)
         : false;
       const propertySuggestionFocusEdge =
         propertySuggestionsHighlightActive &&
