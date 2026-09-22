@@ -15,7 +15,7 @@ const ZOOM_PRESETS = [50, 100, 150, 200];
 
 export type CanvasTool = "select" | "pan";
 
-const isTypingTarget = (target: EventTarget | null) =>
+export const isTypingTarget = (target: EventTarget | null) =>
   target instanceof HTMLElement &&
   (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
 

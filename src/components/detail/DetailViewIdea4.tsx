@@ -6,7 +6,10 @@ import {
   ChevronRight,
   GitMerge,
   Link2,
+  Plus,
+  Redo2,
   Search,
+  Undo2,
   X,
 } from "lucide-react";
 import type { DetailAnchor, OntologyApp } from "@/lib/app-state";
@@ -21,6 +24,8 @@ import {
   relationLabel,
   relationStatus,
   tableByName,
+  tableMappingCompleteness,
+  tableMappingStatus,
   tablesUsedByEntity,
   type Entity,
   type Property,
@@ -28,6 +33,7 @@ import {
   type TableSchema,
 } from "@/lib/mock-data";
 import { StatusBadge } from "@/components/ontology/StatusBadge";
+import { MappingStatusBadge } from "@/components/overview/MappingStatusBadge";
 import { ConfidenceChip } from "@/components/ontology/ConfidenceChip";
 import { AiReviewBar } from "@/components/ontology/AiReviewBar";
 import {
@@ -43,6 +49,7 @@ import {
   type SortState,
 } from "@/components/ontology/SortDropdown";
 import { SelectionControlBar } from "@/components/detail/SelectionControlBar";
+import { isTypingTarget } from "@/components/ontology/CanvasControls";
 import { EntitiesIcon, TablesIcon } from "@/components/nav/nav-icons";
 import { orthogonalPath, rightToLeftAnchors, type Rect } from "@/lib/geometry";
 import { cn } from "@/lib/utils";
@@ -84,12 +91,38 @@ function orderByExpanded<T>(items: T[], isExpanded: (item: T) => boolean): T[] {
   return [...expanded, ...collapsed];
 }
 
+// The one Filter control every Property/Column list in this workspace shares — "All" (no-op),
+// "Mapped"/"Unmapped" (has vs. lacks a Property<->Column mapping at all, regardless of its own
+// Suggested/Mapped review state), and "Only Identifier" (isIdentifierProperty). A single enum
+// rather than 3 separate booleans since exactly one of them applies at a time.
+type ListFilter = "all" | "mapped" | "unmapped" | "identifier";
+const LIST_FILTER_LABEL: Record<ListFilter, string> = {
+  all: "Filter",
+  mapped: "Mapped",
+  unmapped: "Unmapped",
+  identifier: "Only Identifier",
+};
+
 // A Property<->Column mapping line's own color: purple while it's still a Suggested mapping
 // (nobody has reviewed it yet — same purple as the "Suggested" review status elsewhere), fading to
 // this plain default gray once it's Mapped/confirmed — a mapping that's already settled shouldn't
 // keep drawing the eye the way an outstanding suggestion should.
 const MAPPING_SUGGESTED_COLOR = "#7c5eff";
 const MAPPING_DEFAULT_COLOR = "#a1a1aa";
+
+// A Column row's own status dot — same 3 states as the mapping line above, just as a small dot
+// instead of a connector: unmapped columns get a hollow neutral dot (nothing to say about them
+// yet), a confirmed/settled mapping gets the same plain gray as its line, and only a still-
+// Suggested mapping gets purple. Previously every Column row's dot was hardcoded to this same
+// purple regardless of its actual state, which read as "every column has an outstanding
+// suggestion" even for an Unmapped-filtered list — purple is reserved for Suggested everywhere
+// else in the app (see `propertyDot` below), so this brings the Column dot in line with that.
+type ColumnMapState = "unmapped" | "mapped" | "suggested";
+const COLUMN_DOT_COLOR: Record<ColumnMapState, string> = {
+  unmapped: "#d4d4d8",
+  mapped: MAPPING_DEFAULT_COLOR,
+  suggested: MAPPING_SUGGESTED_COLOR,
+};
 
 // A Table-entry (clicking a Data Table rather than an Entity Type) is a genuinely different
 // workspace shape — the Table itself becomes the prominent card, not an Entity — so it's its own
@@ -112,7 +145,75 @@ export function DetailViewIdea4({ app, anchor }: { app: OntologyApp; anchor: Det
   return <Idea4EntityMode app={app} anchor={anchor} />;
 }
 
+// Cmd/Ctrl+Z / Cmd/Ctrl+Shift+Z for the app-wide undo/redo stack (see `useOntologyApp`'s own
+// `undo`/`redo`) — Idea 1 has no canvas tool-switch or zoom of its own, so this only borrows
+// `CanvasToolStack`'s own "not while typing" guard (`isTypingTarget`) rather than the whole
+// `useCanvasToolShortcuts` hook, which also carries Select/Pan-tool shortcuts this lane workspace
+// doesn't have a use for.
+function useUndoRedoShortcuts(onUndo: () => void, onRedo: () => void) {
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target)) return;
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) onRedo();
+        else onUndo();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onUndo, onRedo]);
+}
+
+// The header bar's own compact Undo/Redo pill — same visual language as `CanvasToolStack`
+// (`rounded-[6px] border border-node-border bg-node shadow-[var(--shadow-node)]`, `size-7`
+// buttons, `opacity-30` when that direction's stack is empty), just without the tool-switch/zoom
+// groups a lane workspace has no equivalent for.
+function UndoRedoPill({
+  onUndo,
+  onRedo,
+  canUndo,
+  canRedo,
+}: {
+  onUndo: () => void;
+  onRedo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-1 rounded-[6px] border border-node-border bg-node p-[3px] shadow-[var(--shadow-node)]">
+      <button
+        type="button"
+        onClick={onUndo}
+        disabled={!canUndo}
+        aria-label="Undo"
+        title="Undo"
+        className={cn(
+          "flex size-7 shrink-0 items-center justify-center rounded-[4px] text-foreground hover:bg-accent",
+          !canUndo && "pointer-events-none opacity-30",
+        )}
+      >
+        <Undo2 className="size-3.5" />
+      </button>
+      <button
+        type="button"
+        onClick={onRedo}
+        disabled={!canRedo}
+        aria-label="Redo"
+        title="Redo"
+        className={cn(
+          "flex size-7 shrink-0 items-center justify-center rounded-[4px] text-foreground hover:bg-accent",
+          !canRedo && "pointer-events-none opacity-30",
+        )}
+      >
+        <Redo2 className="size-3.5" />
+      </button>
+    </div>
+  );
+}
+
 function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnchor }) {
+  useUndoRedoShortcuts(app.undo, app.redo);
   const [expandedContext, setExpandedContext] = useState<
     { kind: "entity"; id: string } | { kind: "table"; name: string } | null
   >(null);
@@ -134,6 +235,35 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
     return app.entities.filter((entity) => ids.has(entity.id));
   }, [app.entities, app.relations, focusEntity]);
 
+  // Whichever ONE Connected Entity is currently expanded, if any — the Connected Entities lane
+  // below uses this to render just that one `ExpandedEntity` plus a single collapsed "N more"
+  // stack for the rest, instead of a full compact row per remaining Entity (see
+  // `CollapsedCardsStack`'s own doc comment for why: with a dozen-plus Connected Entities, a
+  // full stack of compact rows below the expanded card meant scrolling past all of them just to
+  // get back to the top).
+  const expandedConnectedEntity = useMemo(() => {
+    if (expandedContext?.kind !== "entity") return null;
+    return relatedEntities.find((entity) => entity.id === expandedContext.id) ?? null;
+  }, [relatedEntities, expandedContext]);
+
+  // Every Relation touching Focus Entity, as its own browsable row — a different job from the
+  // connector pill floating over its line above (that pill is the line's own on-canvas label;
+  // this is a plain list to scan/accept/reject/jump from, same as Connected Entities is to the
+  // relation lines themselves). `outgoing` is whether Focus Entity is the Relation's own `from`
+  // side, purely for which arrow direction to draw — never mutated.
+  const focusRelations = useMemo(() => {
+    if (!focusEntity) return [];
+    return app.relations
+      .filter((relation) => relation.from === focusEntity.id || relation.to === focusEntity.id)
+      .map((relation) => {
+        const outgoing = relation.from === focusEntity.id;
+        const counterpartId = outgoing ? relation.to : relation.from;
+        const counterpart = app.entities.find((entity) => entity.id === counterpartId);
+        return counterpart ? { relation, counterpart, outgoing } : null;
+      })
+      .filter((v): v is { relation: Relation; counterpart: Entity; outgoing: boolean } => !!v);
+  }, [focusEntity, app.relations, app.entities]);
+
   // Data Tables has no Relation-like fact to drive "is this Table showing" the way Connected
   // Entities does — a Table only ever appears once a Property actually maps into it. Dragging one
   // in from the toolbox ahead of any mapping needs its own small bit of state to keep it visible
@@ -152,13 +282,24 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
       .filter((table): table is TableSchema => !!table);
   }, [focusEntity, manuallyAddedTableNames]);
 
+  // Whichever ONE Data Table is currently expanded, if any — same "one expanded card + a single
+  // collapsed 'N more' stack for the rest" restructuring as `expandedConnectedEntity` above, for
+  // the same reason: a dozen-plus compact Table rows below the expanded one meant scrolling past
+  // all of them just to get back to the top of Data Tables too.
+  const expandedMappedTable = useMemo(() => {
+    if (expandedContext?.kind !== "table") return null;
+    return mappedTables.find((table) => table.name === expandedContext.name) ?? null;
+  }, [mappedTables, expandedContext]);
+
   // --- Filter/Sort/Search for every Property list (Current Entity's own, and each Connected
   // Entity's own expanded one) and every Column list (each expanded Table's own) — one Record
   // entry per Entity/Table id, exactly the same "keyed by whichever card it belongs to" shape
   // `DetailView.tsx`'s own `propertySortByEntity`/`columnSortByTable` already use, so switching
   // which card is expanded never resets another card's own settings. -----------------------------
   const [propertySortByEntity, setPropertySortByEntity] = useState<Record<string, SortState>>({});
-  const [onlyIdentifierByEntity, setOnlyIdentifierByEntity] = useState<Record<string, boolean>>({});
+  const [propertyFilterByEntity, setPropertyFilterByEntity] = useState<Record<string, ListFilter>>(
+    {},
+  );
   const [propertySearchByEntity, setPropertySearchByEntity] = useState<Record<string, string>>({});
   const propertySortFor = useCallback(
     (entityId: string) => propertySortByEntity[entityId] ?? DEFAULT_SORT,
@@ -170,8 +311,12 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
       [entityId]: nextSortState(prev[entityId] ?? DEFAULT_SORT, key),
     }));
   }, []);
-  const toggleOnlyIdentifierForEntity = useCallback((entityId: string) => {
-    setOnlyIdentifierByEntity((prev) => ({ ...prev, [entityId]: !prev[entityId] }));
+  const propertyFilterFor = useCallback(
+    (entityId: string) => propertyFilterByEntity[entityId] ?? "all",
+    [propertyFilterByEntity],
+  );
+  const setPropertyFilterFor = useCallback((entityId: string, next: ListFilter) => {
+    setPropertyFilterByEntity((prev) => ({ ...prev, [entityId]: next }));
   }, []);
   const propertySearchFor = useCallback(
     (entityId: string) => propertySearchByEntity[entityId] ?? "",
@@ -180,13 +325,30 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
   const setPropertySearchFor = useCallback((entityId: string, value: string) => {
     setPropertySearchByEntity((prev) => ({ ...prev, [entityId]: value }));
   }, []);
+
+  // "+ Add property" — at most one Entity's own list has its input open at a time, matching
+  // `DetailView.tsx`'s own single `addingPropertyEntityId`, since only one Property list can
+  // plausibly be mid-edit at once.
+  const [addingPropertyEntityId, setAddingPropertyEntityId] = useState<string | null>(null);
+  const handleCreateProperty = useCallback(
+    (entityId: string, name: string) => {
+      const trimmed = name.trim();
+      if (trimmed) app.createProperty(entityId, trimmed);
+      setAddingPropertyEntityId(null);
+    },
+    [app],
+  );
+
   // Original property order is kept until the reviewer explicitly picks a Sort — same
   // "never touched" vs. "explicitly set" distinction `hasExplicitPropertySort` draws in
   // DetailView.tsx, just folded directly into this one lookup instead of a separate check.
   const visiblePropertiesFor = useCallback(
     (entity: Entity) => {
       let list = entity.properties;
-      if (onlyIdentifierByEntity[entity.id]) list = list.filter((p) => isIdentifierProperty(p));
+      const filter = propertyFilterByEntity[entity.id] ?? "all";
+      if (filter === "mapped") list = list.filter((p) => !!p.mapping);
+      else if (filter === "unmapped") list = list.filter((p) => !p.mapping);
+      else if (filter === "identifier") list = list.filter((p) => isIdentifierProperty(p));
       const search = propertySearchByEntity[entity.id]?.trim().toLowerCase();
       if (search) list = list.filter((p) => p.name.toLowerCase().includes(search));
       if (entity.id in propertySortByEntity) {
@@ -199,11 +361,11 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
       }
       return list;
     },
-    [onlyIdentifierByEntity, propertySearchByEntity, propertySortByEntity],
+    [propertyFilterByEntity, propertySearchByEntity, propertySortByEntity],
   );
 
   const [columnSortByTable, setColumnSortByTable] = useState<Record<string, SortState>>({});
-  const [onlyIdentifierByTable, setOnlyIdentifierByTable] = useState<Record<string, boolean>>({});
+  const [columnFilterByTable, setColumnFilterByTable] = useState<Record<string, ListFilter>>({});
   const [columnSearchByTable, setColumnSearchByTable] = useState<Record<string, string>>({});
   const columnSortFor = useCallback(
     (tableName: string) => columnSortByTable[tableName] ?? DEFAULT_SORT,
@@ -215,8 +377,12 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
       [tableName]: nextSortState(prev[tableName] ?? DEFAULT_SORT, key),
     }));
   }, []);
-  const toggleOnlyIdentifierForTable = useCallback((tableName: string) => {
-    setOnlyIdentifierByTable((prev) => ({ ...prev, [tableName]: !prev[tableName] }));
+  const columnFilterFor = useCallback(
+    (tableName: string) => columnFilterByTable[tableName] ?? "all",
+    [columnFilterByTable],
+  );
+  const setColumnFilterFor = useCallback((tableName: string, next: ListFilter) => {
+    setColumnFilterByTable((prev) => ({ ...prev, [tableName]: next }));
   }, []);
   const columnSearchFor = useCallback(
     (tableName: string) => columnSearchByTable[tableName] ?? "",
@@ -249,18 +415,6 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
     });
     return map;
   }, [focusEntity, expandedContext]);
-
-  const relationBetween = useCallback(
-    (otherId: string) =>
-      focusEntity
-        ? (app.relations.find(
-            (r) =>
-              (r.from === focusEntity.id && r.to === otherId) ||
-              (r.to === focusEntity.id && r.from === otherId),
-          ) ?? null)
-        : null,
-    [app.relations, focusEntity],
-  );
 
   // --- Unified selection, ported from Idea 3 / DetailView.tsx (Idea 1/2): one Set spanning
   // Entity/Property, shift/cmd-click toggles membership, the action bar appears once 2+ are
@@ -503,9 +657,11 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
   // point rather than spreading across its full height. ---------------------------------------
   const workspaceRef = useRef<HTMLDivElement>(null);
   const connectedBodyRef = useRef<HTMLDivElement>(null);
+  const relationsBodyRef = useRef<HTMLDivElement>(null);
   const currentBodyRef = useRef<HTMLDivElement>(null);
   const dataBodyRef = useRef<HTMLDivElement>(null);
   const entityTitleRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const relationCardRefs = useRef<Map<string, HTMLElement>>(new Map());
   const currentTitleRef = useRef<HTMLButtonElement>(null);
   const currentFooterRef = useRef<HTMLElement | null>(null);
   const propertyRefs = useRef<Map<string, HTMLElement>>(new Map());
@@ -513,10 +669,16 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
   const tableFooterRefs = useRef<Map<string, HTMLElement>>(new Map());
   const columnRefs = useRef<Map<string, HTMLElement>>(new Map());
 
-  const [relationLines, setRelationLines] = useState<
-    { id: string; path: string; mid: { x: number; y: number }; relation: Relation }[]
-  >([]);
+  // Each line is now two elbow segments concatenated into one `d` (Connected Entity row -> its
+  // own Relations-lane pill, then that same pill -> Current Entity's title) — the pill itself is
+  // a real row in the Relations lane, not a floating label, so the connector visibly threads
+  // through it instead of just pointing near it.
+  const [relationLines, setRelationLines] = useState<{ id: string; path: string }[]>([]);
   const [hoveredPropertyId, setHoveredPropertyId] = useState<string | null>(null);
+  // The Column-side mirror of `hoveredPropertyId` — keyed `${table}.${column}` (same key shape as
+  // `columnRefs`) since a Column, unlike a Property, has no ID of its own. Hovering EITHER end of
+  // a mapping now reveals its line, not just the Property side.
+  const [hoveredColumnKey, setHoveredColumnKey] = useState<string | null>(null);
   const [mappingLines, setMappingLines] = useState<
     { id: string; path: string; suggested: boolean }[]
   >([]);
@@ -526,6 +688,76 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
   // is already visible).
   const [morePropsDirection, setMorePropsDirection] = useState<"up" | "down" | null>(null);
   const [mappedColumnsDirection, setMappedColumnsDirection] = useState<"up" | "down" | null>(null);
+
+  // --- Drag a Property's own connection handle onto a Column to (re)map it — same pointer-drag
+  // gesture `DetailView.tsx` already has (`dragOrigin`/`mapDropTarget`), scoped here to just
+  // Current Entity's own Properties and whichever ONE Table is currently expanded, matching the
+  // existing hover-ladder's own scope. ---------------------------------------------------------
+  const [mapDragOrigin, setMapDragOrigin] = useState<{
+    propertyId: string;
+    x1: number;
+    y1: number;
+  } | null>(null);
+  const [mapDragPos, setMapDragPos] = useState<{ x: number; y: number } | null>(null);
+  const [mapDropTarget, setMapDropTarget] = useState<{ table: string; column: string } | null>(
+    null,
+  );
+  const startMapDrag = useCallback((propertyId: string, clientX: number, clientY: number) => {
+    const container = workspaceRef.current;
+    const r = container?.getBoundingClientRect();
+    const pos = { x: clientX - (r?.left ?? 0), y: clientY - (r?.top ?? 0) };
+    setMapDragOrigin({ propertyId, x1: pos.x, y1: pos.y });
+    setMapDragPos(pos);
+  }, []);
+  useEffect(() => {
+    if (!mapDragOrigin) return;
+    const container = workspaceRef.current;
+    const toContainerPos = (clientX: number, clientY: number) => {
+      const r = container?.getBoundingClientRect();
+      return { x: clientX - (r?.left ?? 0), y: clientY - (r?.top ?? 0) };
+    };
+    const findColumnAt = (
+      clientX: number,
+      clientY: number,
+    ): { table: string; column: string } | null => {
+      for (const [key, el] of columnRefs.current) {
+        const rect = el.getBoundingClientRect();
+        if (
+          clientX >= rect.left &&
+          clientX <= rect.right &&
+          clientY >= rect.top &&
+          clientY <= rect.bottom
+        ) {
+          const sep = key.indexOf(".");
+          return { table: key.slice(0, sep), column: key.slice(sep + 1) };
+        }
+      }
+      return null;
+    };
+    const onMove = (e: PointerEvent) => {
+      setMapDragPos(toContainerPos(e.clientX, e.clientY));
+      setMapDropTarget(findColumnAt(e.clientX, e.clientY));
+    };
+    const onUp = (e: PointerEvent) => {
+      const hit = findColumnAt(e.clientX, e.clientY);
+      if (hit && focusEntity) {
+        app.updateMapping(focusEntity.id, mapDragOrigin.propertyId, {
+          table: hit.table,
+          column: hit.column,
+          status: "mapped",
+        });
+      }
+      setMapDragOrigin(null);
+      setMapDragPos(null);
+      setMapDropTarget(null);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [mapDragOrigin, app, focusEntity]);
 
   const withinViewport = (el: HTMLElement, lane: HTMLElement) => {
     const r = el.getBoundingClientRect();
@@ -546,7 +778,8 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
     const container = workspaceRef.current;
     const title = currentTitleRef.current;
     const connectedBody = connectedBodyRef.current;
-    if (!container || !title || !connectedBody || !focusEntity) {
+    const relationsBody = relationsBodyRef.current;
+    if (!container || !title || !connectedBody || !relationsBody || !focusEntity) {
       setRelationLines([]);
       return;
     }
@@ -556,51 +789,52 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
       return { x: r.left - cRect.left, y: r.top - cRect.top, width: r.width, height: r.height };
     };
     const titleRect = rectOf(title);
-    const next: { id: string; path: string; mid: { x: number; y: number }; relation: Relation }[] =
-      [];
-    // Once a Connected Entity is expanded, its own relation is the only one still worth drawing —
-    // the rest are already legible from their own (collapsed) rows, and keeping every one of them
-    // on screen while the user is focused on just one just adds noise.
-    const visibleRelatedEntities =
+    const next: { id: string; path: string }[] = [];
+    // No line at all until a Connected Entity is actually expanded — with every Relation drawn at
+    // once (the old default), the shared trunk reads as visual noise rather than pointing at
+    // anything in particular. Expanding one (by clicking its own card, or its own Relations-lane
+    // pill) is what makes its one relation worth drawing.
+    const visibleFocusRelations =
       expandedContext?.kind === "entity"
-        ? relatedEntities.filter((entity) => entity.id === expandedContext.id)
-        : relatedEntities;
-    visibleRelatedEntities.forEach((entity) => {
-      const row = entityTitleRefs.current.get(entity.id);
-      const relation = relationBetween(entity.id);
-      if (!row || !relation) return;
-      if (!withinViewport(row, connectedBody)) return;
-      // Always the row's own RIGHT edge -> the title's own LEFT edge — never the adaptive
-      // top/bottom anchoring `edgeAnchorsForRects` falls back to for a row far above/below the
-      // title, which made a line look like it emerged from underneath its row instead of its side.
+        ? focusRelations.filter(({ counterpart }) => counterpart.id === expandedContext.id)
+        : [];
+    visibleFocusRelations.forEach(({ relation, counterpart }) => {
+      const row = entityTitleRefs.current.get(counterpart.id);
+      const pill = relationCardRefs.current.get(relation.id);
+      if (!row || !pill) return;
+      if (!withinViewport(row, connectedBody) || !withinViewport(pill, relationsBody)) return;
+      // Always the row's own RIGHT edge -> the pill's own LEFT edge, and the pill's own RIGHT
+      // edge -> the title's own LEFT edge — never the adaptive top/bottom anchoring
+      // `edgeAnchorsForRects` falls back to for a row far above/below its target, which made a
+      // line look like it emerged from underneath its row instead of its side.
       const rowRect = rectOf(row);
-      const { p1, p2 } = rightToLeftAnchors(rowRect, titleRect, 6);
-      // The pill sits right next to its own root Connected Entity row, not at the connector's
-      // literal geometric midpoint — that midpoint averages every row's own Y against Current
-      // Entity's single, fixed title Y, which drags every pill toward that one Y and collapses rows
-      // far from it into an overlapping cluster instead of each one reading as "this entity's own
-      // relation". Biased mostly toward p1 on X too, so it reads as attached to the row it names.
-      const mid = { x: p1.x + (p2.x - p1.x) * 0.2, y: p1.y };
-      // An angular elbow (one rounded 90-degree bend at a shared X), not a smooth curve — every
-      // row's own anchor sits at nearly the same X (all Connected Entities cards share one width,
-      // and Current Entity's title is one fixed point), so every line bends at that same shared X
-      // by design: it reads as a clean bus feeding into Current Entity, exactly the "parallel
-      // connections share a bend" case `orthogonalPath` documents itself for.
-      next.push({ id: entity.id, path: orthogonalPath(p1, p2, 10, "horizontal"), mid, relation });
+      const pillRect = rectOf(pill);
+      const toPill = rightToLeftAnchors(rowRect, pillRect, 6);
+      const fromPill = rightToLeftAnchors(pillRect, titleRect, 6);
+      // Two angular elbows (one rounded 90-degree bend at a shared X, not a smooth curve) joined
+      // into one path — the connector now visibly threads straight through the Relations lane's
+      // own pill instead of just floating near it, same "parallel connections share a bend" case
+      // `orthogonalPath` documents itself for.
+      const path = [
+        orthogonalPath(toPill.p1, toPill.p2, 10, "horizontal"),
+        orthogonalPath(fromPill.p1, fromPill.p2, 10, "horizontal"),
+      ].join(" ");
+      next.push({ id: relation.id, path });
     });
     setRelationLines(next);
-  }, [relatedEntities, relationBetween, focusEntity, expandedContext]);
+  }, [focusRelations, focusEntity, expandedContext]);
 
   useEffect(() => {
     recomputeRelationLines();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [relatedEntities, mappedTables, expandedContext]);
+  }, [focusRelations, mappedTables, expandedContext]);
 
-  // Property <-> Column ladder: every one of Current Entity's own mapped Properties whose Table is
-  // currently the one expanded in Data Tables gets its own persistent line — not just whichever
-  // Property happens to be hovered — so the 1:1 shape of the mapping is visible at a glance. A
-  // Property whose Column has scrolled outside the expanded Table's own (660px-capped) visible
-  // area redirects to that Table's "Mapped columns" footer instead of pointing at nothing.
+  // Property <-> Column ladder: same "nothing selected, nothing drawn" rule the Relations lane's
+  // own connector follows — only the Property currently being hovered gets its own line, not
+  // every mapped Property in the expanded Table at once (which just reads as noise once a Table
+  // has more than a couple of mappings). A Property whose Column has scrolled outside the
+  // expanded Table's own (660px-capped) visible area redirects to that Table's "Mapped columns"
+  // footer instead of pointing at nothing.
   const recomputeMappingLines = useCallback(() => {
     const container = workspaceRef.current;
     const currentBody = currentBodyRef.current;
@@ -637,16 +871,21 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
       if (!propVisible && propEl && morePropsDir === null) {
         morePropsDir = directionOf(propEl, currentBody);
       }
-      // Same off-screen redirect as the Column side below, just mirrored: a Property that's
-      // scrolled outside Current Entity's own visible list redirects to Current Entity's own
-      // "More props" footer instead of vanishing — see that footer's own doc comment.
-      const source = propVisible ? propEl! : currentFooterRef.current;
-      if (!source) return;
-      const colEl = columnRefs.current.get(`${prop.mapping.table}.${prop.mapping.column}`);
+      const mappingKey = `${prop.mapping.table}.${prop.mapping.column}`;
+      const colEl = columnRefs.current.get(mappingKey);
       const colVisible = !!colEl && withinViewport(colEl, tableCard);
       if (!colVisible && colEl && mappedColumnsDir === null) {
         mappedColumnsDir = directionOf(colEl, tableCard);
       }
+      // The footer arrows above still scan every mapped Property regardless of hover — they're a
+      // "there's more, come look" prompt, not a per-item highlight — but the line itself only
+      // draws for whichever one Property OR Column end of it is actually hovered right now.
+      if (prop.id !== hoveredPropertyId && mappingKey !== hoveredColumnKey) return;
+      // Same off-screen redirect as the Column side above, just mirrored: a Property that's
+      // scrolled outside Current Entity's own visible list redirects to Current Entity's own
+      // "More props" footer instead of vanishing — see that footer's own doc comment.
+      const source = propVisible ? propEl! : currentFooterRef.current;
+      if (!source) return;
       const target = colVisible ? colEl! : footer;
       if (!target) return;
       const { p1, p2 } = rightToLeftAnchors(rectOf(source), rectOf(target), 6);
@@ -659,14 +898,14 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
     setMappingLines(next);
     setMorePropsDirection(morePropsDir);
     setMappedColumnsDirection(mappedColumnsDir);
-  }, [focusEntity, expandedContext]);
+  }, [focusEntity, expandedContext, hoveredPropertyId, hoveredColumnKey]);
 
   useEffect(() => {
     recomputeMappingLines();
     // `recomputeMappingLines` itself already depends on `focusEntity` (and so picks up a fresh
     // mapping status right after Accept/Reject), so including it here — rather than re-listing
     // `focusEntity` a second time — is what actually makes that recompute fire on that change.
-  }, [hoveredPropertyId, expandedContext, recomputeMappingLines]);
+  }, [hoveredPropertyId, hoveredColumnKey, expandedContext, recomputeMappingLines]);
 
   const scrollToMappedColumn = useCallback(
     (tableName: string) => {
@@ -703,6 +942,26 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
     propertyRefs.current.get(offscreen.id)?.scrollIntoView({ block: "center", behavior: "smooth" });
   }, [focusEntity, expandedContext]);
 
+  // Clicking a specific Property/Column jumps straight to ITS OWN counterpart — unlike the two
+  // footer functions above (which just find "whichever mapped one happens to be off-screen
+  // first"), these two navigate for the exact row that was actually clicked, so clicking a
+  // Property whose Column is still visible re-centers on it too rather than doing nothing. Wired
+  // from `PropertyListRow`'s own `onNavigateToMapping` (only from `CurrentEntityCard`'s usage) and
+  // `ExpandedTable`'s own `onNavigateToProperty`.
+  const scrollToColumnForProperty = useCallback(
+    (propertyId: string) => {
+      const property = focusEntity?.properties.find((p) => p.id === propertyId);
+      if (!property?.mapping) return;
+      columnRefs.current
+        .get(`${property.mapping.table}.${property.mapping.column}`)
+        ?.scrollIntoView({ block: "center", behavior: "smooth" });
+    },
+    [focusEntity],
+  );
+  const scrollToPropertyById = useCallback((propertyId: string) => {
+    propertyRefs.current.get(propertyId)?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, []);
+
   // rAF-throttled scroll handling shared by both remaining connector systems — either lane
   // scrolling can move a row/property/column in or out of view.
   const scrollRaf = useRef<number | null>(null);
@@ -732,7 +991,7 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
       />
 
       <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-white">
-        <div className="flex h-10 shrink-0 items-center border-b border-black/[0.08] px-3">
+        <div className="flex h-10 shrink-0 items-center justify-between border-b border-black/[0.08] px-3">
           <button
             type="button"
             onClick={app.closeDetail}
@@ -740,6 +999,12 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
           >
             <ArrowLeft className="size-3.5" /> Back to Ontology
           </button>
+          <UndoRedoPill
+            onUndo={app.undo}
+            onRedo={app.redo}
+            canUndo={app.canUndo}
+            canRedo={app.canRedo}
+          />
         </div>
 
         <div
@@ -747,10 +1012,15 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
           // Each lane's own section fills the full height down to `<main>`'s own bottom edge — the
           // reserved 24px clearance for the AI review bar (see `Idea4Surface`'s own body padding)
           // lives INSIDE each section as padding, not as a margin out here, so that strip still
-          // shows each lane's own background rather than a plain gap. Columns stay a fixed 1:1:1
-          // split regardless of what's expanded — only the content within a lane changes, never
-          // the 3 lanes' own widths relative to each other.
-          className="relative grid min-h-0 flex-1 grid-cols-3 gap-[3px] overflow-hidden"
+          // shows each lane's own background rather than a plain gap. Connected Entities/Current
+          // Entity/Data Tables stay a fixed 1:1:1 split regardless of what's expanded — only the
+          // content within a lane changes, never those 3 lanes' own widths relative to each
+          // other. Relations sits between Connected Entities and Current Entity, deliberately
+          // narrower than the rest (its own rows are a single compact pill, not a full card, so
+          // it never needs a full share) — the relation lines/pills still cross straight through
+          // it on their way to Current Entity's title, unchanged; this lane is a separate, plain
+          // browsable list of the same underlying Relations, not a replacement.
+          className="relative grid min-h-0 flex-1 grid-cols-[1fr_0.55fr_1fr_1fr] gap-[3px] overflow-hidden"
         >
           <Idea4Surface
             label="Connected Entities"
@@ -765,52 +1035,81 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
               onDrop={handleEntityPanelDrop}
               className="mx-auto flex w-full max-w-[360px] flex-col gap-2 py-4 transition-[width] duration-300"
             >
-              {orderByExpanded(
-                relatedEntities,
-                (entity) => expandedContext?.kind === "entity" && expandedContext.id === entity.id,
-              ).map((entity) => {
-                const selected = suggestionSelection.has(
-                  suggestionKey({ kind: "entity", id: entity.id }),
-                );
-                const titleRef = (el: HTMLElement | null) => {
-                  if (el) entityTitleRefs.current.set(entity.id, el);
-                  else entityTitleRefs.current.delete(entity.id);
-                };
-                return expandedContext?.kind === "entity" && expandedContext.id === entity.id ? (
+              {expandedConnectedEntity ? (
+                <>
                   <ExpandedEntity
-                    key={entity.id}
-                    entity={entity}
-                    visibleProperties={visiblePropertiesFor(entity)}
-                    selected={selected}
+                    key={expandedConnectedEntity.id}
+                    entity={expandedConnectedEntity}
+                    visibleProperties={visiblePropertiesFor(expandedConnectedEntity)}
+                    selected={suggestionSelection.has(
+                      suggestionKey({ kind: "entity", id: expandedConnectedEntity.id }),
+                    )}
                     onClose={() => setExpandedContext(null)}
-                    onSelect={(mods) => selectOnClick({ kind: "entity", id: entity.id }, mods)}
-                    onDropProperties={(e) => movePropertiesOnDrop(e, entity.id)}
+                    onSelect={(mods) =>
+                      selectOnClick({ kind: "entity", id: expandedConnectedEntity.id }, mods)
+                    }
+                    onDropProperties={(e) => movePropertiesOnDrop(e, expandedConnectedEntity.id)}
                     suggestionSelection={suggestionSelection}
                     onSelectProperty={(propertyId, mods) =>
-                      selectOnClick({ kind: "property", entityId: entity.id, propertyId }, mods)
+                      selectOnClick(
+                        { kind: "property", entityId: expandedConnectedEntity.id, propertyId },
+                        mods,
+                      )
                     }
                     selectedPropertyIdsFor={selectedPropertyIdsFor}
-                    titleRef={titleRef}
-                    sort={propertySortFor(entity.id)}
-                    onSortChange={(key) => setPropertySortFor(entity.id, key)}
-                    onlyIdentifier={!!onlyIdentifierByEntity[entity.id]}
-                    onToggleOnlyIdentifier={() => toggleOnlyIdentifierForEntity(entity.id)}
-                    search={propertySearchFor(entity.id)}
-                    onSearchChange={(value) => setPropertySearchFor(entity.id, value)}
+                    titleRef={(el) => {
+                      if (el) entityTitleRefs.current.set(expandedConnectedEntity.id, el);
+                      else entityTitleRefs.current.delete(expandedConnectedEntity.id);
+                    }}
+                    sort={propertySortFor(expandedConnectedEntity.id)}
+                    onSortChange={(key) => setPropertySortFor(expandedConnectedEntity.id, key)}
+                    filter={propertyFilterFor(expandedConnectedEntity.id)}
+                    onFilterChange={(next) =>
+                      setPropertyFilterFor(expandedConnectedEntity.id, next)
+                    }
+                    search={propertySearchFor(expandedConnectedEntity.id)}
+                    onSearchChange={(value) =>
+                      setPropertySearchFor(expandedConnectedEntity.id, value)
+                    }
+                    isAddingProperty={addingPropertyEntityId === expandedConnectedEntity.id}
+                    onStartAddProperty={() => setAddingPropertyEntityId(expandedConnectedEntity.id)}
+                    onSubmitAddProperty={(name) =>
+                      handleCreateProperty(expandedConnectedEntity.id, name)
+                    }
+                    onCancelAddProperty={() => setAddingPropertyEntityId(null)}
                   />
-                ) : (
-                  <CompactEntity
-                    key={entity.id}
-                    entity={entity}
-                    compact={expandedContext?.kind === "table"}
-                    selected={selected}
-                    onOpen={() => setExpandedContext({ kind: "entity", id: entity.id })}
-                    onSelect={(mods) => selectOnClick({ kind: "entity", id: entity.id }, mods)}
-                    onDropProperties={(e) => movePropertiesOnDrop(e, entity.id)}
-                    rowRef={titleRef}
-                  />
-                );
-              })}
+                  {relatedEntities.length > 1 && (
+                    <CollapsedCardsStack
+                      count={relatedEntities.length - 1}
+                      noun="Entity Type"
+                      nounPlural="Entity Types"
+                      laneLabel="Connected Entities"
+                      onOpen={() => setExpandedContext(null)}
+                    />
+                  )}
+                </>
+              ) : (
+                relatedEntities.map((entity) => {
+                  const titleRef = (el: HTMLElement | null) => {
+                    if (el) entityTitleRefs.current.set(entity.id, el);
+                    else entityTitleRefs.current.delete(entity.id);
+                  };
+                  return (
+                    <CompactEntity
+                      key={entity.id}
+                      entity={entity}
+                      compact={expandedContext?.kind === "table"}
+                      selected={suggestionSelection.has(
+                        suggestionKey({ kind: "entity", id: entity.id }),
+                      )}
+                      onOpen={() => setExpandedContext({ kind: "entity", id: entity.id })}
+                      onSelect={(mods) => selectOnClick({ kind: "entity", id: entity.id }, mods)}
+                      onDropProperties={(e) => movePropertiesOnDrop(e, entity.id)}
+                      rowRef={titleRef}
+                    />
+                  );
+                })
+              )}
               <button
                 type="button"
                 onClick={() => setCreatingEntity(true)}
@@ -818,6 +1117,47 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
               >
                 <span className="text-base">＋</span> Create Entity
               </button>
+            </div>
+          </Idea4Surface>
+
+          <Idea4Surface
+            label="Relations"
+            count={focusRelations.length}
+            bodyRef={relationsBodyRef}
+            onBodyScroll={onAnyLaneScroll}
+          >
+            <div className="mx-auto flex w-full max-w-[300px] flex-col gap-2 py-4">
+              {focusRelations.length === 0 && (
+                <p className="px-2 py-3 text-center text-[11px] text-muted-foreground">
+                  No Relations touch this Entity Type yet.
+                </p>
+              )}
+              {focusRelations.map(({ relation, counterpart, outgoing }) => (
+                <RelationCard
+                  key={relation.id}
+                  relation={relation}
+                  counterpart={counterpart}
+                  outgoing={outgoing}
+                  entities={app.entities}
+                  // Expands the counterpart's own card in Connected Entities (same effect as
+                  // clicking that card directly) — deliberately NOT `app.openDetail`, which would
+                  // move Focus (Current Entity) onto the counterpart instead of just pointing at
+                  // it from where you already are.
+                  onOpenCounterpart={() =>
+                    setExpandedContext({ kind: "entity", id: counterpart.id })
+                  }
+                  onAccept={() =>
+                    app.acceptSuggestions([suggestionKey({ kind: "relation", id: relation.id })])
+                  }
+                  onReject={() =>
+                    app.declineSuggestions([suggestionKey({ kind: "relation", id: relation.id })])
+                  }
+                  cardRef={(el) => {
+                    if (el) relationCardRefs.current.set(relation.id, el);
+                    else relationCardRefs.current.delete(relation.id);
+                  }}
+                />
+              ))}
             </div>
           </Idea4Surface>
 
@@ -859,10 +1199,16 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
               onPropertyListScroll={onAnyLaneScroll}
               sort={propertySortFor(focusEntity.id)}
               onSortChange={(key) => setPropertySortFor(focusEntity.id, key)}
-              onlyIdentifier={!!onlyIdentifierByEntity[focusEntity.id]}
-              onToggleOnlyIdentifier={() => toggleOnlyIdentifierForEntity(focusEntity.id)}
+              filter={propertyFilterFor(focusEntity.id)}
+              onFilterChange={(next) => setPropertyFilterFor(focusEntity.id, next)}
               search={propertySearchFor(focusEntity.id)}
               onSearchChange={(value) => setPropertySearchFor(focusEntity.id, value)}
+              isAddingProperty={addingPropertyEntityId === focusEntity.id}
+              onStartAddProperty={() => setAddingPropertyEntityId(focusEntity.id)}
+              onSubmitAddProperty={(name) => handleCreateProperty(focusEntity.id, name)}
+              onCancelAddProperty={() => setAddingPropertyEntityId(null)}
+              onStartMapDrag={startMapDrag}
+              onNavigateToMapping={scrollToColumnForProperty}
             />
           </Idea4Surface>
 
@@ -879,24 +1225,22 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
               onDrop={handleTablePanelDrop}
               className="mx-auto flex w-full max-w-[360px] flex-col gap-2 py-4 transition-[width] duration-300"
             >
-              {orderByExpanded(
-                mappedTables,
-                (table) => expandedContext?.kind === "table" && expandedContext.name === table.name,
-              ).map((table) => {
-                return expandedContext?.kind === "table" && expandedContext.name === table.name ? (
+              {expandedMappedTable ? (
+                <>
                   <ExpandedTable
-                    key={table.name}
-                    table={table}
+                    key={expandedMappedTable.name}
+                    table={expandedMappedTable}
+                    entities={app.entities}
                     onClose={() => setExpandedContext(null)}
                     cardRef={(el) => {
-                      if (el) tableCardRefs.current.set(table.name, el);
-                      else tableCardRefs.current.delete(table.name);
+                      if (el) tableCardRefs.current.set(expandedMappedTable.name, el);
+                      else tableCardRefs.current.delete(expandedMappedTable.name);
                     }}
                     footerRef={(el) => {
-                      if (el) tableFooterRefs.current.set(table.name, el);
-                      else tableFooterRefs.current.delete(table.name);
+                      if (el) tableFooterRefs.current.set(expandedMappedTable.name, el);
+                      else tableFooterRefs.current.delete(expandedMappedTable.name);
                     }}
-                    onFooterClick={() => scrollToMappedColumn(table.name)}
+                    onFooterClick={() => scrollToMappedColumn(expandedMappedTable.name)}
                     footerDirection={mappedColumnsDirection}
                     onColumnListScroll={onAnyLaneScroll}
                     columnOrderHint={expandedTableColumnOrderHint}
@@ -905,37 +1249,64 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
                     onRejectMapping={(propertyId) =>
                       app.updateMapping(focusEntity.id, propertyId, null)
                     }
-                    sort={columnSortFor(table.name)}
-                    onSortChange={(key) => setColumnSortFor(table.name, key)}
-                    hasExplicitSort={table.name in columnSortByTable}
-                    onlyIdentifier={!!onlyIdentifierByTable[table.name]}
-                    onToggleOnlyIdentifier={() => toggleOnlyIdentifierForTable(table.name)}
-                    search={columnSearchFor(table.name)}
-                    onSearchChange={(value) => setColumnSearchFor(table.name, value)}
+                    sort={columnSortFor(expandedMappedTable.name)}
+                    onSortChange={(key) => setColumnSortFor(expandedMappedTable.name, key)}
+                    hasExplicitSort={expandedMappedTable.name in columnSortByTable}
+                    filter={columnFilterFor(expandedMappedTable.name)}
+                    onFilterChange={(next) => setColumnFilterFor(expandedMappedTable.name, next)}
+                    search={columnSearchFor(expandedMappedTable.name)}
+                    onSearchChange={(value) => setColumnSearchFor(expandedMappedTable.name, value)}
                     onSetColumnRef={(key, el) => {
                       if (el) columnRefs.current.set(key, el);
                       else columnRefs.current.delete(key);
                     }}
+                    dropTargetColumn={
+                      mapDropTarget?.table === expandedMappedTable.name
+                        ? mapDropTarget.column
+                        : null
+                    }
+                    hoveredColumnKey={hoveredColumnKey}
+                    onColumnHoverChange={(key, hovering) =>
+                      setHoveredColumnKey((cur) => {
+                        if (hovering) return key;
+                        return cur === key ? null : cur;
+                      })
+                    }
+                    onNavigateToProperty={scrollToPropertyById}
                   />
-                ) : (
+                  {mappedTables.length > 1 && (
+                    <CollapsedCardsStack
+                      count={mappedTables.length - 1}
+                      noun="Data Table"
+                      nounPlural="Data Tables"
+                      laneLabel="Data Tables"
+                      onOpen={() => setExpandedContext(null)}
+                    />
+                  )}
+                </>
+              ) : (
+                mappedTables.map((table) => (
                   <CompactTable
                     key={table.name}
                     table={table}
+                    entities={app.entities}
                     onOpen={() => setExpandedContext({ kind: "table", name: table.name })}
                   />
-                );
-              })}
+                ))
+              )}
             </div>
           </Idea4Surface>
 
-          {/* Connector overlay — spans the whole 3-lane grid, above the lanes' own content but
+          {/* Connector overlay — spans the whole 4-lane grid, above the lanes' own content but
               below the floating AI review bar (z-20). Relation lines are persistent (for whichever
-              related Entity rows are currently visible); the property<->column ladder is
-              persistent too, but only for whichever ONE Table is currently expanded — a Property
-              whose Column has scrolled out of that Table's own view redirects to its "Mapped
-              columns" footer instead of pointing at nothing. There's no Entity<->Table connector —
-              which Tables an Entity uses is already legible from the Data Tables lane's own
-              contents, without needing its own line. */}
+              related Entity rows are currently visible), each threading straight through its own
+              Relations-lane pill on the way to Current Entity's title rather than floating its own
+              separate label — see `recomputeRelationLines`'s own doc comment. The property<->
+              column ladder is persistent too, but only for whichever ONE Table is currently
+              expanded — a Property whose Column has scrolled out of that Table's own view
+              redirects to its "Mapped columns" footer instead of pointing at nothing. There's no
+              Entity<->Table connector — which Tables an Entity uses is already legible from the
+              Data Tables lane's own contents, without needing its own line. */}
           <svg className="pointer-events-none absolute inset-0 z-10 h-full w-full overflow-visible">
             {relationLines.map((line) => (
               <path
@@ -954,21 +1325,26 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
                 d={line.path}
                 fill="none"
                 stroke={line.suggested ? MAPPING_SUGGESTED_COLOR : MAPPING_DEFAULT_COLOR}
-                strokeWidth={2}
+                strokeWidth={1.5}
                 strokeDasharray="4 3"
+                opacity={0.6}
               />
             ))}
+            {/* Live drag-in-progress line — follows the pointer from wherever the drag started
+                (see `startMapDrag`/`mapDragOrigin`) until it's dropped, so dragging a Property's
+                handle toward a Column reads as a real connection being drawn rather than a bare
+                cursor move. Solid (not dashed) and a touch bolder than the resting lines above, to
+                read as "live" rather than an already-committed mapping. */}
+            {mapDragOrigin && mapDragPos && (
+              <path
+                d={`M ${mapDragOrigin.x1} ${mapDragOrigin.y1} L ${mapDragPos.x} ${mapDragPos.y}`}
+                fill="none"
+                stroke="#00ded8"
+                strokeWidth={2}
+                opacity={0.8}
+              />
+            )}
           </svg>
-          {relationLines.map((line) => (
-            <div
-              key={line.id}
-              style={{ left: line.mid.x, top: line.mid.y }}
-              className="pointer-events-none absolute z-10 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 whitespace-nowrap rounded-full border border-[rgba(28,28,24,0.08)] bg-white px-2 py-1 text-[11px] font-medium text-foreground shadow-[0_1px_3px_rgba(0,0,0,0.08)]"
-            >
-              <RelationStatusIcon relation={line.relation} entities={app.entities} />
-              {relationLabel(line.relation)}
-            </div>
-          ))}
 
           {/* Multi-select action bar — floats over the workspace, bottom-center, only while 2+
               objects are selected. */}
@@ -1109,6 +1485,7 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
  * here yet — this first pass covers the layout shape only.
  */
 function Idea4TableMode({ app, table }: { app: OntologyApp; table: TableSchema }) {
+  useUndoRedoShortcuts(app.undo, app.redo);
   const [expandedEntityId, setExpandedEntityId] = useState<string | null>(null);
   const usingEntities = useMemo(
     () => entitiesUsingTable(table.name, app.entities),
@@ -1121,13 +1498,26 @@ function Idea4TableMode({ app, table }: { app: OntologyApp; table: TableSchema }
   // doc comment above), so this stays scoped to just the one expanded Property list.
   const [propertySort, setPropertySort] = useState<SortState>(DEFAULT_SORT);
   const [propertySortTouched, setPropertySortTouched] = useState(false);
-  const [onlyIdentifier, setOnlyIdentifier] = useState(false);
+  const [propertyFilter, setPropertyFilter] = useState<ListFilter>("all");
   const [propertySearch, setPropertySearch] = useState("");
+  // Only one Entity is ever expanded at once here, so a plain boolean (not keyed by entity id like
+  // `Idea4EntityMode`'s own `addingPropertyEntityId`) suffices for "Add property" too.
+  const [addingProperty, setAddingProperty] = useState(false);
+  const handleCreateProperty = useCallback(
+    (name: string) => {
+      const trimmed = name.trim();
+      if (trimmed && expandedEntityId) app.createProperty(expandedEntityId, trimmed);
+      setAddingProperty(false);
+    },
+    [app, expandedEntityId],
+  );
   const visibleProperties = useMemo(() => {
     const entity = usingEntities.find((e) => e.id === expandedEntityId);
     if (!entity) return [];
     let list = entity.properties;
-    if (onlyIdentifier) list = list.filter((p) => isIdentifierProperty(p));
+    if (propertyFilter === "mapped") list = list.filter((p) => !!p.mapping);
+    else if (propertyFilter === "unmapped") list = list.filter((p) => !p.mapping);
+    else if (propertyFilter === "identifier") list = list.filter((p) => isIdentifierProperty(p));
     const search = propertySearch.trim().toLowerCase();
     if (search) list = list.filter((p) => p.name.toLowerCase().includes(search));
     if (propertySortTouched)
@@ -1141,21 +1531,60 @@ function Idea4TableMode({ app, table }: { app: OntologyApp; table: TableSchema }
   }, [
     usingEntities,
     expandedEntityId,
-    onlyIdentifier,
+    propertyFilter,
     propertySearch,
     propertySortTouched,
     propertySort,
   ]);
   // Columns has no per-Entity ownership the way Properties does — every Entity using this Table
-  // shares the exact same column list, so one plain slot per control suffices here too. No "Only
-  // Identifier" here: with several Entities potentially mapped into this one Table, "identifier"
-  // is a fact about a Property's own mapping, not about a bare Column in isolation — see
-  // `ListControls`'s own optional Filter props.
+  // shares the exact same column list, so one plain slot per control suffices here too. Mapped/
+  // Unmapped/Identifier all read "does ANY Entity currently using this Table map a Property (an
+  // Identifier Property, for that last one) into it" — a fact about the Column across every using
+  // Entity at once, not any one of them in particular.
+  const mappedColumnNames = useMemo(() => {
+    const names = new Set<string>();
+    usingEntities.forEach((entity) => {
+      entity.properties.forEach((p) => {
+        if (p.mapping?.table === table.name) names.add(p.mapping.column);
+      });
+    });
+    return names;
+  }, [usingEntities, table.name]);
+  // Same "does ANY Entity's mapping into this Column still say Suggested" aggregation as
+  // `mappedColumnNames` above, so `CurrentDataTableCard`'s own dot can tell a still-pending
+  // mapping apart from an already-settled one — see `COLUMN_DOT_COLOR`'s own doc comment.
+  const suggestedColumnNames = useMemo(() => {
+    const names = new Set<string>();
+    usingEntities.forEach((entity) => {
+      entity.properties.forEach((p) => {
+        if (p.mapping?.table === table.name && mappingStatus(p.mapping) === "suggested") {
+          names.add(p.mapping.column);
+        }
+      });
+    });
+    return names;
+  }, [usingEntities, table.name]);
+  const identifierColumnNames = useMemo(() => {
+    const names = new Set<string>();
+    usingEntities.forEach((entity) => {
+      entity.properties.forEach((p) => {
+        if (p.mapping?.table === table.name && isIdentifierProperty(p)) names.add(p.mapping.column);
+      });
+    });
+    return names;
+  }, [usingEntities, table.name]);
   const [columnSort, setColumnSort] = useState<SortState>(DEFAULT_SORT);
   const [columnSortTouched, setColumnSortTouched] = useState(false);
+  const [columnFilter, setColumnFilter] = useState<ListFilter>("all");
   const [columnSearch, setColumnSearch] = useState("");
   const visibleTableColumns = useMemo(() => {
     let list = table.columns;
+    if (columnFilter === "mapped") list = list.filter((c) => mappedColumnNames.has(c.name));
+    else if (columnFilter === "unmapped") {
+      list = list.filter((c) => !mappedColumnNames.has(c.name));
+    } else if (columnFilter === "identifier") {
+      list = list.filter((c) => identifierColumnNames.has(c.name));
+    }
     const search = columnSearch.trim().toLowerCase();
     if (search) list = list.filter((c) => c.name.toLowerCase().includes(search));
     if (columnSortTouched) {
@@ -1167,14 +1596,22 @@ function Idea4TableMode({ app, table }: { app: OntologyApp; table: TableSchema }
       );
     }
     return list;
-  }, [table.columns, columnSearch, columnSortTouched, columnSort]);
+  }, [
+    table.columns,
+    columnFilter,
+    mappedColumnNames,
+    identifierColumnNames,
+    columnSearch,
+    columnSortTouched,
+    columnSort,
+  ]);
 
   return (
     <div className="flex h-full w-full overflow-hidden bg-white">
       <Idea4EntityPanel app={app} workingIds={new Set(usingEntities.map((e) => e.id))} />
 
       <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-white">
-        <div className="flex h-10 shrink-0 items-center border-b border-black/[0.08] px-3">
+        <div className="flex h-10 shrink-0 items-center justify-between border-b border-black/[0.08] px-3">
           <button
             type="button"
             onClick={app.closeDetail}
@@ -1182,6 +1619,12 @@ function Idea4TableMode({ app, table }: { app: OntologyApp; table: TableSchema }
           >
             <ArrowLeft className="size-3.5" /> Back to Ontology
           </button>
+          <UndoRedoPill
+            onUndo={app.undo}
+            onRedo={app.redo}
+            canUndo={app.canUndo}
+            canRedo={app.canRedo}
+          />
         </div>
 
         <div className="relative grid min-h-0 flex-1 grid-cols-3 gap-[3px] overflow-hidden">
@@ -1204,10 +1647,14 @@ function Idea4TableMode({ app, table }: { app: OntologyApp; table: TableSchema }
                       setPropertySort((prev) => nextSortState(prev, key));
                       setPropertySortTouched(true);
                     }}
-                    onlyIdentifier={onlyIdentifier}
-                    onToggleOnlyIdentifier={() => setOnlyIdentifier((v) => !v)}
+                    filter={propertyFilter}
+                    onFilterChange={setPropertyFilter}
                     search={propertySearch}
                     onSearchChange={setPropertySearch}
+                    isAddingProperty={addingProperty}
+                    onStartAddProperty={() => setAddingProperty(true)}
+                    onSubmitAddProperty={handleCreateProperty}
+                    onCancelAddProperty={() => setAddingProperty(false)}
                   />
                 ) : (
                   <CompactEntity
@@ -1253,12 +1700,17 @@ function Idea4TableMode({ app, table }: { app: OntologyApp; table: TableSchema }
           <Idea4Surface label="Current Data Table" active>
             <CurrentDataTableCard
               table={table}
+              entities={app.entities}
               visibleColumns={visibleTableColumns}
+              mappedColumnNames={mappedColumnNames}
+              suggestedColumnNames={suggestedColumnNames}
               sort={columnSort}
               onSortChange={(key) => {
                 setColumnSort((prev) => nextSortState(prev, key));
                 setColumnSortTouched(true);
               }}
+              filter={columnFilter}
+              onFilterChange={setColumnFilter}
               search={columnSearch}
               onSearchChange={setColumnSearch}
             />
@@ -1286,20 +1738,34 @@ function Idea4TableMode({ app, table }: { app: OntologyApp; table: TableSchema }
 
 function CurrentDataTableCard({
   table,
+  entities,
   visibleColumns,
+  mappedColumnNames,
+  suggestedColumnNames,
   titleRef,
   sort,
   onSortChange,
+  filter,
+  onFilterChange,
   search,
   onSearchChange,
 }: {
   table: TableSchema;
+  entities: Entity[];
   // See `ExpandedEntity`'s own `visibleProperties` doc comment — same rationale, mirrored for a
-  // plain Column list with no per-Entity mapping context (see `Idea4TableMode`'s own state).
+  // Column list shared across however many Entities map into this Table (see `Idea4TableMode`'s
+  // own `mappedColumnNames`/`identifierColumnNames`).
   visibleColumns: TableSchema["columns"];
+  // Which Columns are Mapped/still-Suggested across every Entity using this Table — see
+  // `Idea4TableMode`'s own `mappedColumnNames`/`suggestedColumnNames` doc comments. Drives this
+  // row's own status dot the same 3-way way `ExpandedTable`'s own per-column dot works.
+  mappedColumnNames: Set<string>;
+  suggestedColumnNames: Set<string>;
   titleRef?: React.RefObject<HTMLButtonElement | null>;
   sort: SortState;
   onSortChange: (key: SortKey) => void;
+  filter: ListFilter;
+  onFilterChange: (next: ListFilter) => void;
   search: string;
   onSearchChange: (value: string) => void;
 }) {
@@ -1310,9 +1776,11 @@ function CurrentDataTableCard({
         type="button"
         className="flex h-[62px] shrink-0 items-center gap-3 bg-[#f1edff] px-3 text-left"
       >
-        <span className="flex size-7 items-center justify-center rounded-full bg-[#dff8e9] text-[#27b86a]">
-          <Link2 className="size-4" />
-        </span>
+        <MappingStatusBadge
+          status={tableMappingStatus(table.name, entities)}
+          {...tableMappingCompleteness(table.name, entities)}
+          size={24}
+        />
         <div className="min-w-0 flex-1">
           <p className="truncate text-[15px] font-semibold">{table.name}</p>
           <p className="mt-0.5 text-[11px] text-muted-foreground">{table.columns.length} columns</p>
@@ -1321,6 +1789,8 @@ function CurrentDataTableCard({
       <ListControls
         sort={sort}
         onSortChange={onSortChange}
+        filter={filter}
+        onFilterChange={onFilterChange}
         search={search}
         onSearchChange={onSearchChange}
         searchPlaceholder="Search columns…"
@@ -1331,7 +1801,19 @@ function CurrentDataTableCard({
             key={column.name}
             className="flex h-[30px] items-center gap-2 px-3 text-[11px] hover:bg-black/[0.035]"
           >
-            <span className="size-1.5 shrink-0 rounded-full bg-[#7c5eff]" />
+            <span
+              className="size-1.5 shrink-0 rounded-full"
+              style={{
+                background:
+                  COLUMN_DOT_COLOR[
+                    suggestedColumnNames.has(column.name)
+                      ? "suggested"
+                      : mappedColumnNames.has(column.name)
+                        ? "mapped"
+                        : "unmapped"
+                  ],
+              }}
+            />
             <span className="min-w-0 flex-1 truncate font-medium">{column.name}</span>
             <span className="max-w-12 truncate font-mono text-[10px] text-muted-foreground">
               {column.type}
@@ -1377,6 +1859,98 @@ function RelationStatusIcon({ relation, entities }: { relation: Relation; entiti
     >
       <Check className="size-2" strokeWidth={3} />
     </span>
+  );
+}
+
+/** One row in the Relations lane — a Relation touching Focus Entity, browsable independently of
+ * its own connector line/pill (that pill is the line's own on-canvas label, positioned along the
+ * connector itself; this is a separate, plain list to scan/accept/reject/jump from — see
+ * `focusRelations`'s own doc comment). Deliberately styled as the SAME small pill the connector's
+ * own floating label already uses (status icon + name, `rounded-full`/`border`/`shadow` trio),
+ * not a bordered card — this list is a parallel way to browse the same Relations, not a
+ * visually-competing new object. Clicking it points at the counterpart Entity's own card in
+ * Connected Entities (expanding it, same as clicking that card directly) WITHOUT moving Focus —
+ * Current Entity stays exactly what it was; this is a way to look at the counterpart from where
+ * you already are, not a way to navigate to it. Accept/Reject reveal on hover and only once the
+ * Relation is still an open suggestion (not yet Confirmed) — same "confirmed items get nothing,
+ * not a Delete" shape `ExpandedTable`'s own inline mapping Accept/Reject uses. */
+function RelationCard({
+  relation,
+  counterpart,
+  outgoing,
+  entities,
+  onOpenCounterpart,
+  onAccept,
+  onReject,
+  cardRef,
+}: {
+  relation: Relation;
+  counterpart: Entity;
+  outgoing: boolean;
+  entities: Entity[];
+  onOpenCounterpart: () => void;
+  onAccept: () => void;
+  onReject: () => void;
+  // Registers this pill's own DOM node so the connector line can anchor on (and visibly thread
+  // through) its actual position — see `recomputeRelationLines`'s own doc comment.
+  cardRef?: (el: HTMLElement | null) => void;
+}) {
+  const status = relationStatus(relation, entities);
+  const canAccept = status !== "confirmed" && status !== "error";
+  const canReject = status !== "confirmed";
+  const counterpartName = counterpart.name || "Untitled entity";
+  return (
+    // A plain `div` acting as the click target, not a `button` — the Accept/Reject controls
+    // inside are real buttons of their own, and nesting a `<button>` inside a `<button>` is
+    // invalid HTML (React warns on it, and click/focus behavior for the inner ones becomes
+    // unreliable in some browsers). Same "row is a div, its actions are real buttons" shape
+    // `PropertyListRow`'s own click-to-select row already uses.
+    <div
+      ref={cardRef}
+      role="button"
+      tabIndex={0}
+      onClick={onOpenCounterpart}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpenCounterpart();
+        }
+      }}
+      title={`${outgoing ? "→" : "←"} ${counterpartName} — click to view in Connected Entities`}
+      className="group/relcard flex w-full cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full border border-[rgba(28,28,24,0.08)] bg-white px-3 py-1.5 text-left text-[11px] font-medium text-foreground shadow-[0_1px_3px_rgba(0,0,0,0.08)] outline-none hover:border-[#7c5eff]/40 focus-visible:ring-2 focus-visible:ring-[#00DED8]"
+    >
+      <RelationStatusIcon relation={relation} entities={entities} />
+      <span className="min-w-0 flex-1 truncate">{relationLabel(relation)}</span>
+      {(canAccept || canReject) && (
+        <span
+          className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/relcard:opacity-100"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {canAccept && (
+            <button
+              type="button"
+              onClick={onAccept}
+              title="Accept this suggested relation"
+              aria-label="Accept this suggested relation"
+              className="flex size-4 items-center justify-center rounded-full text-[#0298b2] hover:bg-[#0298b2]/10"
+            >
+              <Check className="size-2.5" strokeWidth={3} />
+            </button>
+          )}
+          {canReject && (
+            <button
+              type="button"
+              onClick={onReject}
+              title="Reject this suggested relation"
+              aria-label="Reject this suggested relation"
+              className="flex size-4 items-center justify-center rounded-full text-[#f15b15] hover:bg-[#f15b15]/10"
+            >
+              <X className="size-2.5" strokeWidth={3} />
+            </button>
+          )}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -1427,6 +2001,57 @@ function Idea4Surface({
 }
 
 type SelectMods = { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean };
+
+// Stands in for every OTHER card in a lane while one is expanded — a real compact row per
+// remaining item meant scrolling past a dozen-plus of them just to get back to the top (the exact
+// complaint this replaces, first for Connected Entities' own Entity Types, then Data Tables' own
+// Tables). This is deliberately NOT a real per-item list — just one clickable "closer" card,
+// styled as a shallow stack (two faint peeking edges behind the front card) to read as "there's
+// more behind this," that collapses the expanded card back to the full list on click. Clicking any
+// individual item within that full list re-expands it same as before; this is purely the reverse
+// direction. `noun`/`nounPlural` name whatever this lane's own cards ARE ("Entity Type"/"Entity
+// Types", "Data Table"/"Data Tables") — used for the "N more ___" label; `laneLabel` names the
+// LANE itself ("Connected Entities"/"Data Tables" — the same string as `nounPlural` for Data
+// Tables, but not for Connected Entities) for the "show all ___ again" phrase.
+function CollapsedCardsStack({
+  count,
+  noun,
+  nounPlural,
+  laneLabel,
+  onOpen,
+}: {
+  count: number;
+  noun: string;
+  nounPlural: string;
+  laneLabel: string;
+  onOpen: () => void;
+}) {
+  return (
+    <div className="relative pb-1.5">
+      <div
+        aria-hidden
+        className="absolute inset-x-3 bottom-0 h-9 rounded-b-xl border border-black/[0.06] bg-black/[0.015]"
+      />
+      <div
+        aria-hidden
+        className="absolute inset-x-1.5 bottom-0.5 h-9 rounded-b-xl border border-black/[0.07] bg-black/[0.03]"
+      />
+      <button
+        type="button"
+        onClick={onOpen}
+        title={`Close this ${noun} and show all ${laneLabel} again`}
+        className="relative z-10 flex h-12 w-full items-center gap-3 rounded-xl border border-black/[0.08] bg-white px-4 text-left shadow-[0_1px_2px_rgba(0,0,0,0.04)] hover:border-[#7c5eff]/40"
+      >
+        <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-black/[0.06] text-[10px] font-semibold text-muted-foreground">
+          {count}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-muted-foreground">
+          {count === 1 ? `1 more ${noun}` : `${count} more ${nounPlural}`}
+        </span>
+      </button>
+    </div>
+  );
+}
 
 function CompactEntity({
   entity,
@@ -1485,16 +2110,20 @@ function ExpandedEntity({
   titleRef,
   sort,
   onSortChange,
-  onlyIdentifier,
-  onToggleOnlyIdentifier,
+  filter,
+  onFilterChange,
   search,
   onSearchChange,
+  isAddingProperty,
+  onStartAddProperty,
+  onSubmitAddProperty,
+  onCancelAddProperty,
 }: {
   entity: Entity;
-  // The rendered rows, already filtered (Only Identifier / search) and, once explicitly sorted,
-  // reordered — see `visiblePropertiesFor` in `Idea4EntityMode`. `entity.properties` itself stays
-  // the full, unfiltered list, since the header's own "N props" count should never shrink to
-  // match a temporary Filter/Search.
+  // The rendered rows, already filtered (Mapped/Unmapped/Only Identifier / search) and, once
+  // explicitly sorted, reordered — see `visiblePropertiesFor` in `Idea4EntityMode`.
+  // `entity.properties` itself stays the full, unfiltered list, since the header's own "N props"
+  // count should never shrink to match a temporary Filter/Search.
   visibleProperties: Property[];
   selected?: boolean;
   onClose: () => void;
@@ -1506,10 +2135,14 @@ function ExpandedEntity({
   titleRef?: (el: HTMLElement | null) => void;
   sort: SortState;
   onSortChange: (key: SortKey) => void;
-  onlyIdentifier: boolean;
-  onToggleOnlyIdentifier: () => void;
+  filter: ListFilter;
+  onFilterChange: (next: ListFilter) => void;
   search: string;
   onSearchChange: (value: string) => void;
+  isAddingProperty: boolean;
+  onStartAddProperty: () => void;
+  onSubmitAddProperty: (name: string) => void;
+  onCancelAddProperty: () => void;
 }) {
   return (
     <div
@@ -1549,8 +2182,8 @@ function ExpandedEntity({
         {entity.status !== "confirmed" && <ConfidenceChip confidence={entity.confidence} />}
       </button>
       <ListControls
-        onlyIdentifier={onlyIdentifier}
-        onToggleOnlyIdentifier={onToggleOnlyIdentifier}
+        filter={filter}
+        onFilterChange={onFilterChange}
         sort={sort}
         onSortChange={onSortChange}
         search={search}
@@ -1570,6 +2203,12 @@ function ExpandedEntity({
             draggablePropertyIds={selectedPropertyIdsFor}
           />
         ))}
+        <AddPropertyRow
+          isAdding={isAddingProperty}
+          onStartAdd={onStartAddProperty}
+          onSubmit={onSubmitAddProperty}
+          onCancel={onCancelAddProperty}
+        />
       </div>
     </div>
   );
@@ -1593,10 +2232,16 @@ function CurrentEntityCard({
   onPropertyListScroll,
   sort,
   onSortChange,
-  onlyIdentifier,
-  onToggleOnlyIdentifier,
+  filter,
+  onFilterChange,
   search,
   onSearchChange,
+  isAddingProperty,
+  onStartAddProperty,
+  onSubmitAddProperty,
+  onCancelAddProperty,
+  onStartMapDrag,
+  onNavigateToMapping,
 }: {
   entity: Entity;
   // See `ExpandedEntity`'s own `visibleProperties` doc comment — same rationale, same mirrored
@@ -1628,10 +2273,19 @@ function CurrentEntityCard({
   onPropertyListScroll?: () => void;
   sort: SortState;
   onSortChange: (key: SortKey) => void;
-  onlyIdentifier: boolean;
-  onToggleOnlyIdentifier: () => void;
+  filter: ListFilter;
+  onFilterChange: (next: ListFilter) => void;
   search: string;
   onSearchChange: (value: string) => void;
+  isAddingProperty: boolean;
+  onStartAddProperty: () => void;
+  onSubmitAddProperty: (name: string) => void;
+  onCancelAddProperty: () => void;
+  onStartMapDrag?: (propertyId: string, clientX: number, clientY: number) => void;
+  // Clicking a mapped Property row (no modifier key held, so it doesn't collide with the existing
+  // shift/cmd/ctrl multi-select) scrolls that Property's own mapped Column into view instead of
+  // leaving the reviewer to hunt for it — see `scrollToColumnForProperty`'s own doc comment.
+  onNavigateToMapping?: (propertyId: string) => void;
 }) {
   return (
     <div
@@ -1669,8 +2323,8 @@ function CurrentEntityCard({
         {entity.status !== "confirmed" && <ConfidenceChip confidence={entity.confidence} />}
       </button>
       <ListControls
-        onlyIdentifier={onlyIdentifier}
-        onToggleOnlyIdentifier={onToggleOnlyIdentifier}
+        filter={filter}
+        onFilterChange={onFilterChange}
         sort={sort}
         onSortChange={onSortChange}
         search={search}
@@ -1695,8 +2349,16 @@ function CurrentEntityCard({
               suggestionKey({ kind: "property", entityId: entity.id, propertyId: property.id }),
             )}
             onSelect={(mods) => onSelectProperty(property.id, mods)}
+            onStartMapDrag={onStartMapDrag}
+            onNavigateToMapping={onNavigateToMapping}
           />
         ))}
+        <AddPropertyRow
+          isAdding={isAddingProperty}
+          onStartAdd={onStartAddProperty}
+          onSubmit={onSubmitAddProperty}
+          onCancel={onCancelAddProperty}
+        />
       </div>
       <button
         ref={footerRef}
@@ -1719,20 +2381,90 @@ function CurrentEntityCard({
  * three, keyed by whichever Entity/Table it belongs to — see `visiblePropertiesFor`/the
  * `ExpandedTable`-local column filtering for where that state is actually applied.
  */
+/** The Filter control's own trigger + menu — same open/close-on-outside-click shape as
+ * `SortDropdown`, just with 4 fixed options instead of Name/Confidence. Kept local to this file
+ * (unlike `SortDropdown`) since nothing outside this workspace needs a Mapped/Unmapped/Identifier
+ * filter today. */
+function FilterDropdown({
+  value,
+  onChange,
+}: {
+  value: ListFilter;
+  onChange: (next: ListFilter) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative shrink-0">
+      <button
+        type="button"
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className={cn(
+          "-mx-1 flex items-center rounded px-1 transition-colors",
+          value !== "all" ? "font-semibold text-foreground" : "hover:text-foreground",
+        )}
+      >
+        {LIST_FILTER_LABEL[value]} ⇅
+      </button>
+      {open && (
+        <div
+          role="menu"
+          onPointerDown={(e) => e.stopPropagation()}
+          className="absolute left-0 top-full z-30 mt-1 flex w-36 flex-col gap-0.5 rounded-lg border border-node-border bg-node p-1 shadow-[var(--shadow-node-lift)]"
+        >
+          {(["all", "mapped", "unmapped", "identifier"] as const).map((key) => (
+            <button
+              key={key}
+              type="button"
+              role="menuitemradio"
+              aria-checked={value === key}
+              onClick={() => {
+                onChange(key);
+                setOpen(false);
+              }}
+              className={cn(
+                "rounded-md px-2 py-1 text-left text-[11px] transition-colors",
+                value === key
+                  ? "bg-black/[0.08] text-foreground"
+                  : "text-muted-foreground hover:bg-accent",
+              )}
+            >
+              {key === "all" ? "All" : LIST_FILTER_LABEL[key]}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ListControls({
-  onlyIdentifier,
-  onToggleOnlyIdentifier,
+  filter,
+  onFilterChange,
   sort,
   onSortChange,
   search,
   onSearchChange,
   searchPlaceholder,
 }: {
-  // Both omitted entirely hides the Filter control — "Only Identifier" is a fact about a
-  // Property's own mapping, which not every list this appears above has enough context for (see
-  // `Idea4TableMode`'s own Column list, shared across however many Entities map into it).
-  onlyIdentifier?: boolean;
-  onToggleOnlyIdentifier?: () => void;
+  // Both omitted entirely hides the Filter control — Mapped/Unmapped/Only Identifier are all
+  // facts about a Property's own mapping, which not every list this appears above has enough
+  // context for (see `Idea4TableMode`'s own Column list, shared across however many Entities map
+  // into it).
+  filter?: ListFilter;
+  onFilterChange?: (next: ListFilter) => void;
   sort: SortState;
   onSortChange: (key: SortKey) => void;
   search: string;
@@ -1758,20 +2490,7 @@ function ListControls({
         />
       ) : (
         <>
-          {onToggleOnlyIdentifier && (
-            <button
-              type="button"
-              onClick={onToggleOnlyIdentifier}
-              title="Show only the Identifier"
-              aria-pressed={onlyIdentifier}
-              className={cn(
-                "-mx-1 rounded px-1 transition-colors",
-                onlyIdentifier ? "font-semibold text-foreground" : "hover:text-foreground",
-              )}
-            >
-              Filter ⇅
-            </button>
-          )}
+          {onFilterChange && <FilterDropdown value={filter ?? "all"} onChange={onFilterChange} />}
           <SortDropdown sort={sort} onChange={onSortChange} showPrefix={false} />
         </>
       )}
@@ -1791,6 +2510,60 @@ function ListControls({
   );
 }
 
+/** "+ Add property" — a plain button until clicked, then swaps in place for a dashed-border text
+ * input (never a modal, matching `DetailView.tsx`'s own `AddPropertyRow`). Enter or blur submits
+ * whatever's typed (blank submits are silently dropped by the caller); Escape always cancels
+ * regardless of what's been typed. */
+function AddPropertyRow({
+  isAdding,
+  onStartAdd,
+  onSubmit,
+  onCancel,
+}: {
+  isAdding: boolean;
+  onStartAdd: () => void;
+  onSubmit: (name: string) => void;
+  onCancel: () => void;
+}) {
+  if (!isAdding) {
+    return (
+      <button
+        type="button"
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          onStartAdd();
+        }}
+        className="mt-1 flex w-full items-center gap-1.5 rounded-[10px] px-3 py-2 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent"
+      >
+        <Plus className="size-3.5" /> Add property
+      </button>
+    );
+  }
+  return (
+    <input
+      key="new-property-input"
+      autoFocus
+      type="text"
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+      onBlur={(e) => onSubmit(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          onSubmit(e.currentTarget.value);
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          onCancel();
+        }
+      }}
+      placeholder="Property name…"
+      className="mt-1 w-full rounded-[10px] border border-dashed border-input bg-background px-3 py-2 text-[11px] outline-none focus:border-primary"
+    />
+  );
+}
+
 function PropertyListRow({
   property,
   entityId,
@@ -1800,6 +2573,8 @@ function PropertyListRow({
   selected,
   onSelect,
   draggablePropertyIds,
+  onStartMapDrag,
+  onNavigateToMapping,
 }: {
   property: Entity["properties"][number];
   entityId: string;
@@ -1809,6 +2584,14 @@ function PropertyListRow({
   selected?: boolean;
   onSelect: (mods: SelectMods) => void;
   draggablePropertyIds?: (entityId: string) => Set<string>;
+  // Only wired for Current Entity's own properties (see `CurrentEntityCard`) — connected-entity
+  // property rows don't map to a column, only the focus entity's own do, matching the existing
+  // mapping ladder's own scope. Starts the pointer drag that lets this row's own handle be dropped
+  // onto a Column row in Data Tables to (re)map it.
+  onStartMapDrag?: ((propertyId: string, clientX: number, clientY: number) => void) | undefined;
+  // Plain click (no modifier — see below) on a mapped row scrolls its own Column into view, same
+  // scope as `onStartMapDrag` above.
+  onNavigateToMapping?: ((propertyId: string) => void) | undefined;
 }) {
   const mapped = !!property.mapping;
   return (
@@ -1817,17 +2600,20 @@ function PropertyListRow({
       onClick={(e) => {
         if (e.shiftKey || e.metaKey || e.ctrlKey) {
           onSelect({ shiftKey: e.shiftKey, metaKey: e.metaKey, ctrlKey: e.ctrlKey });
+        } else if (mapped) {
+          onNavigateToMapping?.(property.id);
         }
       }}
       onMouseEnter={() => onHoverChange?.(true)}
       onMouseLeave={() => onHoverChange?.(false)}
       className={cn(
-        "flex h-[30px] items-center gap-2 px-3 text-[11px]",
+        "group/prop relative flex h-[30px] items-center gap-2 px-3 text-[11px]",
         selected
           ? "bg-[#00ded8]/10 shadow-[0_0_0_1px_#00ded8]"
           : hovered && mapped
             ? "bg-[#00ded8]/10"
             : "hover:bg-black/[0.035]",
+        mapped && onNavigateToMapping && "cursor-pointer",
       )}
     >
       <span
@@ -1856,16 +2642,32 @@ function PropertyListRow({
         {property.type}
       </span>
       {property.status !== "confirmed" && <ConfidenceChip confidence={property.confidence} />}
+      {onStartMapDrag && (
+        <button
+          type="button"
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            onStartMapDrag(property.id, e.clientX, e.clientY);
+          }}
+          title={mapped ? "Drag onto a column to remap" : "Drag onto a column to map"}
+          className="ml-0.5 flex size-4 shrink-0 cursor-grab items-center justify-center rounded-full text-black/25 opacity-0 outline-none transition-opacity hover:text-[#00ded8] focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-[#00DED8] group-hover/prop:opacity-100 active:cursor-grabbing"
+        >
+          <Link2 className="size-3" />
+        </button>
+      )}
     </div>
   );
 }
 
 function CompactTable({
   table,
+  entities,
   onOpen,
   rowRef,
 }: {
   table: TableSchema;
+  entities: Entity[];
   onOpen: () => void;
   rowRef?: (el: HTMLElement | null) => void;
 }) {
@@ -1876,9 +2678,11 @@ function CompactTable({
       onClick={onOpen}
       className="flex h-12 w-full items-center gap-3 rounded-xl border border-black/[0.08] bg-white px-4 text-left shadow-[0_1px_2px_rgba(0,0,0,0.04)] hover:border-[#24bd72]/40"
     >
-      <span className="flex size-5 items-center justify-center rounded-full bg-[#dff8e9] text-[#27b86a]">
-        <Link2 className="size-3" />
-      </span>
+      <MappingStatusBadge
+        status={tableMappingStatus(table.name, entities)}
+        {...tableMappingCompleteness(table.name, entities)}
+        size={20}
+      />
       <span className="min-w-0 flex-1 truncate text-[14px] font-semibold">{table.name}</span>
     </button>
   );
@@ -1886,6 +2690,7 @@ function CompactTable({
 
 function ExpandedTable({
   table,
+  entities,
   onClose,
   onSetColumnRef,
   titleRef,
@@ -1901,14 +2706,31 @@ function ExpandedTable({
   sort,
   onSortChange,
   hasExplicitSort,
-  onlyIdentifier,
-  onToggleOnlyIdentifier,
+  filter,
+  onFilterChange,
   search,
   onSearchChange,
+  dropTargetColumn,
+  hoveredColumnKey,
+  onColumnHoverChange,
+  onNavigateToProperty,
 }: {
   table: TableSchema;
+  entities: Entity[];
   onClose: () => void;
   onSetColumnRef?: (key: string, el: HTMLElement | null) => void;
+  // The Column name a Property's drag-to-map handle is currently hovering over within THIS Table
+  // (see `mapDropTarget` in `Idea4EntityMode`) — highlighted as the drop target while the drag is
+  // live, `null`/undefined the rest of the time.
+  dropTargetColumn?: string | null;
+  // The `${table}.${column}` key of whichever Column row is currently hovered anywhere in Data
+  // Tables — see `hoveredColumnKey` in `Idea4EntityMode`. Hovering a mapped Column now reveals its
+  // ladder line the same way hovering its Property already does.
+  hoveredColumnKey?: string | null;
+  onColumnHoverChange?: (key: string, hovering: boolean) => void;
+  // Clicking a mapped Column row scrolls its own Property into view in Current Entity — the
+  // reverse direction of `PropertyListRow`'s own `onNavigateToMapping`.
+  onNavigateToProperty?: (propertyId: string) => void;
   titleRef?: (el: HTMLElement | null) => void;
   cardRef?: (el: HTMLElement | null) => void;
   footerRef?: (el: HTMLElement | null) => void;
@@ -1941,8 +2763,8 @@ function ExpandedTable({
   sort?: SortState;
   onSortChange?: (key: SortKey) => void;
   hasExplicitSort?: boolean;
-  onlyIdentifier?: boolean;
-  onToggleOnlyIdentifier?: () => void;
+  filter?: ListFilter;
+  onFilterChange?: (next: ListFilter) => void;
   search?: string;
   onSearchChange?: (value: string) => void;
 }) {
@@ -1965,7 +2787,9 @@ function ExpandedTable({
         (c) => columnMappings?.get(c.name)?.confidence,
       );
     }
-    if (onlyIdentifier) {
+    if (filter === "mapped") list = list.filter((c) => !!columnMappings?.get(c.name));
+    else if (filter === "unmapped") list = list.filter((c) => !columnMappings?.get(c.name));
+    else if (filter === "identifier") {
       list = list.filter((c) => {
         const property = columnMappings?.get(c.name);
         return !!property && isIdentifierProperty(property);
@@ -1976,15 +2800,7 @@ function ExpandedTable({
       list = list.filter((c) => c.name.toLowerCase().includes(trimmedSearch));
     }
     return list;
-  }, [
-    table.columns,
-    columnOrderHint,
-    hasExplicitSort,
-    sort,
-    onlyIdentifier,
-    search,
-    columnMappings,
-  ]);
+  }, [table.columns, columnOrderHint, hasExplicitSort, sort, filter, search, columnMappings]);
   return (
     <div
       ref={cardRef}
@@ -1996,9 +2812,11 @@ function ExpandedTable({
         onClick={onClose}
         className="flex h-[50px] shrink-0 items-center gap-3 bg-[#edf6f1] px-3 text-left"
       >
-        <span className="flex size-5 items-center justify-center rounded-full bg-[#dff8e9] text-[#27b86a]">
-          <Link2 className="size-3" />
-        </span>
+        <MappingStatusBadge
+          status={tableMappingStatus(table.name, entities)}
+          {...tableMappingCompleteness(table.name, entities)}
+          size={20}
+        />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-[14px] font-semibold">{table.name}</span>
           <span className="block text-[10px] text-muted-foreground">
@@ -2007,8 +2825,8 @@ function ExpandedTable({
         </span>
       </button>
       <ListControls
-        onlyIdentifier={!!onlyIdentifier}
-        onToggleOnlyIdentifier={() => onToggleOnlyIdentifier?.()}
+        filter={filter ?? "all"}
+        onFilterChange={(next) => onFilterChange?.(next)}
         sort={sort ?? DEFAULT_SORT}
         onSortChange={(key) => onSortChange?.(key)}
         search={search ?? ""}
@@ -2025,13 +2843,27 @@ function ExpandedTable({
             <div
               key={column.name}
               ref={(el) => onSetColumnRef?.(key, el)}
-              className="flex h-[30px] items-center gap-2 px-3 text-[11px] hover:bg-black/[0.035]"
+              onMouseEnter={() => onColumnHoverChange?.(key, true)}
+              onMouseLeave={() => onColumnHoverChange?.(key, false)}
+              onClick={() => mappedProperty && onNavigateToProperty?.(mappedProperty.id)}
+              className={cn(
+                "flex h-[30px] items-center gap-2 px-3 text-[11px]",
+                dropTargetColumn === column.name
+                  ? "bg-[#00ded8]/10 shadow-[0_0_0_1.5px_#00ded8] hover:bg-[#00ded8]/10"
+                  : hoveredColumnKey === key && mappedProperty
+                    ? "bg-[#00ded8]/10"
+                    : "hover:bg-black/[0.035]",
+                mappedProperty && onNavigateToProperty && "cursor-pointer",
+              )}
             >
               {isSuggested && mappedProperty ? (
                 <span className="flex shrink-0 items-center gap-0.5">
                   <button
                     type="button"
-                    onClick={() => onAcceptMapping?.(mappedProperty.id)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onAcceptMapping?.(mappedProperty.id);
+                    }}
                     title="Accept this suggested mapping"
                     aria-label="Accept this suggested mapping"
                     className="flex size-4 items-center justify-center rounded-full text-[#0298b2] hover:bg-[#0298b2]/10"
@@ -2040,7 +2872,10 @@ function ExpandedTable({
                   </button>
                   <button
                     type="button"
-                    onClick={() => onRejectMapping?.(mappedProperty.id)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRejectMapping?.(mappedProperty.id);
+                    }}
                     title="Reject this suggested mapping"
                     aria-label="Reject this suggested mapping"
                     className="flex size-4 items-center justify-center rounded-full text-[#f15b15] hover:bg-[#f15b15]/10"
@@ -2051,7 +2886,15 @@ function ExpandedTable({
               ) : (
                 <span className="size-4 shrink-0" />
               )}
-              <span className="size-1.5 shrink-0 rounded-full bg-[#7c5eff]" />
+              <span
+                className="size-1.5 shrink-0 rounded-full"
+                style={{
+                  background:
+                    COLUMN_DOT_COLOR[
+                      !mappedProperty ? "unmapped" : isSuggested ? "suggested" : "mapped"
+                    ],
+                }}
+              />
               <span className="min-w-0 flex-1 truncate font-medium">{column.name}</span>
               <span className="max-w-12 truncate font-mono text-[10px] text-muted-foreground">
                 {column.type}
@@ -2174,9 +3017,11 @@ function Idea4TablePanel({ app, activeNames }: { app: OntologyApp; activeNames: 
             )}
           >
             <span className="cursor-grab text-black/25 active:cursor-grabbing">⠿</span>
-            <span className="flex size-4 items-center justify-center rounded-full bg-[#dff8e9] text-[#27b86a]">
-              <Link2 className="size-2.5" />
-            </span>
+            <MappingStatusBadge
+              status={tableMappingStatus(table.name, app.entities)}
+              {...tableMappingCompleteness(table.name, app.entities)}
+              size={16}
+            />
             <span className="min-w-0 flex-1">
               <span className="block truncate text-[11px] font-semibold">{table.name}</span>
               <span className="block text-[10px] text-muted-foreground">

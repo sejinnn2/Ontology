@@ -3,9 +3,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
 import { useOntologyAppContext } from "@/lib/ontology-context";
 import { OverviewCanvas } from "@/components/overview/OverviewCanvas";
-import { DetailView, type AnchorMorphRects } from "@/components/detail/DetailView";
-import { DetailViewIdea3 } from "@/components/detail/DetailViewIdea3";
 import { DetailViewIdea4 } from "@/components/detail/DetailViewIdea4";
+import type { AnchorMorphRects } from "@/lib/app-state";
 import { Header } from "@/components/nav/Header";
 import { GlobalSidebar } from "@/components/nav/GlobalSidebar";
 import { EntityMorphOverlay } from "@/components/overview/EntityMorphOverlay";
@@ -91,13 +90,7 @@ function Index() {
                 editingEntered ? "opacity-100" : "opacity-0",
               )}
             >
-              {app.editingIdea === "idea1" ? (
-                <DetailViewIdea4 app={app} anchor={app.detail} />
-              ) : app.editingIdea === "idea3" ? (
-                <DetailViewIdea3 app={app} anchor={app.detail} />
-              ) : (
-                <DetailView app={app} anchor={app.detail} onAnchorMorphTarget={setMorphTarget} />
-              )}
+              <DetailViewIdea4 app={app} anchor={app.detail} />
             </div>
           ) : (
             <OverviewCanvas app={app} />
