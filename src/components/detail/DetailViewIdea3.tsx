@@ -37,13 +37,14 @@ import { cn } from "@/lib/utils";
  *   [ Entity Types panel ]  [ Connected | CURRENT | Data ]  [ Data Tables panel ]
  *          inventory              bounded lane workspace           inventory
  *
- * Only one SIDE lane is ever in its "expanded" (wider) layout state at a time — expanding a related
- * Entity collapses any expanded Data Table back to compact, and vice versa (see `toggleRelated`/
- * `toggleTable`); Current Entity is the anchor and only ever shifts toward whichever side just grew,
- * via plain flex layout (the side lanes have an explicit, animated pixel width; Current Entity is
- * `flex-1` and simply fills whatever's left). Within whichever side IS active, more than one item
- * can be expanded at once (each its own accordion section, stacked vertically) — expanded items sort
- * to the top of their lane, collapsed ones sort below.
+ * The 3 lanes split the workspace evenly (1:1:1 — each `flex-1 basis-0`), a deliberately simple
+ * starting layout rather than the earlier adaptive-width version. "Expanding" a related Entity or a
+ * Data Table only affects content WITHIN its own lane (revealing its properties/columns in an
+ * accordion section), never the lane's own width. Only one SIDE lane's items are ever expanded at a
+ * time — expanding a related Entity collapses any expanded Data Table back to compact, and vice
+ * versa (see `toggleRelated`/`toggleTable`). Within whichever side IS active, more than one item can
+ * be expanded at once (each its own accordion section, stacked vertically) — expanded items sort to
+ * the top of their lane, collapsed ones sort below.
  *
  * Merge/Split/multi-select are ported from `DetailView.tsx` (Idea 1/2) onto the same underlying
  * `app.suggestionSelection` Set and `app.splitEntity`/`app.mergeEntities` mutators, reusing the
@@ -83,11 +84,6 @@ const TABLE_DND_TYPE = "application/x-idea3-table-name";
 // -> Related) the drag went, since a move-handle now exists on both sides.
 const PROPERTY_MOVE_DND_TYPE = "application/x-idea3-move-properties";
 const PROPERTY_MAP_DND_TYPE = "application/x-idea3-map-property-id";
-
-const RELATED_COMPACT_W = 288;
-const RELATED_EXPANDED_W = 460;
-const DATA_COMPACT_W = 300;
-const DATA_EXPANDED_W = 460;
 
 /** Expanded items float to the top of their lane, collapsed ones sort below — so "what's expanded"
  * stays scannable at a glance without hunting through a long compact list. */
@@ -899,8 +895,6 @@ export function DetailViewIdea3({ app, anchor }: { app: OntologyApp; anchor: Det
     );
   }
 
-  const relatedWidth = expandedRelatedIds.size > 0 ? RELATED_EXPANDED_W : RELATED_COMPACT_W;
-  const dataWidth = expandedTableNames.size > 0 ? DATA_EXPANDED_W : DATA_COMPACT_W;
   const orderedRelated = orderByExpanded(relatedEntities, (e) => expandedRelatedIds.has(e.id));
   const orderedTables = orderByExpanded(dataTables, (t) => expandedTableNames.has(t.name));
   const focusSelected = suggestionSelection.has(
@@ -934,10 +928,7 @@ export function DetailViewIdea3({ app, anchor }: { app: OntologyApp; anchor: Det
         )}
 
         {/* LANE 1 — Connected Entities */}
-        <div
-          style={{ width: relatedWidth }}
-          className="flex shrink-0 flex-col overflow-hidden border-r border-[rgba(28,28,24,0.06)] bg-[#F6F5FA] pt-12 transition-[width] duration-[250ms] ease-out"
-        >
+        <div className="flex min-w-0 flex-1 basis-0 flex-col overflow-hidden border-r border-[rgba(28,28,24,0.06)] bg-[#F6F5FA] pt-12">
           <div className="flex shrink-0 items-center justify-between px-3 pb-2">
             <p className="text-[10px] font-semibold uppercase tracking-wider text-[#7c5eff]">
               Connected Entities
@@ -1099,7 +1090,7 @@ export function DetailViewIdea3({ app, anchor }: { app: OntologyApp; anchor: Det
         </div>
 
         {/* LANE 2 — Current Entity: the origin, visually most prominent. */}
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-white shadow-[0_0_28px_rgba(0,0,0,0.05)]">
+        <div className="flex min-w-0 flex-1 basis-0 flex-col overflow-hidden bg-white shadow-[0_0_28px_rgba(0,0,0,0.05)]">
           <div className="flex shrink-0 items-center gap-2 border-b border-[rgba(28,28,24,0.06)] px-6 py-3.5">
             <StatusBadge
               status={entityDisplayStatus(focusEntity)}
@@ -1304,10 +1295,7 @@ export function DetailViewIdea3({ app, anchor }: { app: OntologyApp; anchor: Det
         </div>
 
         {/* LANE 3 — Data Tables (working set) */}
-        <div
-          style={{ width: dataWidth }}
-          className="flex shrink-0 flex-col overflow-hidden border-l border-[rgba(28,28,24,0.06)] bg-[#F2F8FA] pt-12 transition-[width] duration-[250ms] ease-out"
-        >
+        <div className="flex min-w-0 flex-1 basis-0 flex-col overflow-hidden border-l border-[rgba(28,28,24,0.06)] bg-[#F2F8FA] pt-12">
           <div className="flex shrink-0 items-center justify-between px-3 pb-2">
             <span className="text-[10px] text-muted-foreground">{dataTables.length}</span>
             <p className="text-right text-[10px] font-semibold uppercase tracking-wider text-[#0298b2]">
