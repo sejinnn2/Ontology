@@ -52696,6 +52696,24 @@ export const initialRelations: Relation[] = [
       toColumns: ["policy_id"],
     },
   },
+  // A second Relation between the same two Entity Types, so the Relations lane's grouped slot
+  // (`RelationGroup`) has a real case to show.
+  {
+    id: "r_sales_policy_is_renewed_as_policy",
+    name: "isRenewedAs",
+    description: "Sales Policy is Renewed As Policy",
+    from: "e_sales_policy",
+    to: "e_policy",
+    confidence: 0.72,
+    status: "suggested",
+    cardinality: "1:N",
+    sourceMapping: {
+      fromTable: "policies",
+      fromColumns: ["policy_id"],
+      toTable: "policies",
+      toColumns: ["policy_id"],
+    },
+  },
   {
     id: "r_policy_is_financed_by_finance_company",
     name: "isFinancedBy",
@@ -53610,12 +53628,21 @@ export function tablesUsedByEntity(entity: Entity): string[] {
 // pairing, not just "how much do I believe this suggestion."
 export type ReasoningEvidenceRow = { table: string; detail: string; score: number };
 export type ReasoningContent =
-  | { kind: "evidence"; reasoning: string; topDatasets: ReasoningEvidenceRow[] }
+  // `reasoning` is one or more sentences, each shown as its own paragraph.
+  | { kind: "evidence"; reasoning: string[]; topDatasets: ReasoningEvidenceRow[] }
   | {
       kind: "mapping";
+      // Plain-text version of the explanation, for compact one-line tooltips.
       matchSummary: string;
-      reasoning: string;
-      column: { name: string; entityMatchPct: number; entityType: string; property: string };
+      // "an exact match" / "a strong match" / ... — bucketed off the mapping confidence.
+      strength: string;
+      column: {
+        name: string;
+        entityMatchPct: number;
+        entityType: string;
+        property: string;
+        propertyType: string;
+      };
     };
 
 /** Entity suggestion reasoning: how much of the entity's own primary source table (`entity.table`)
@@ -53644,9 +53671,20 @@ export function entityReasoningContent(entity: Entity): ReasoningContent {
   const strongMatches = entity.properties.filter(
     (p) => p.mapping?.table === entity.table && p.confidence >= 0.85,
   ).length;
-  const reasoning = primaryTable
-    ? `${strongMatches} out of ${primaryTable.columns.length} columns in ${entity.table} strongly match this entity.`
-    : `${strongMatches} of this entity's own properties strongly match a source column.`;
+  const reasoning = [
+    primaryTable
+      ? `${strongMatches} out of ${primaryTable.columns.length} columns in ${entity.table} strongly match this entity.`
+      : `${strongMatches} of this entity's own properties strongly match a source column.`,
+  ];
+  const mappedColumnCount = Array.from(byTable.values()).reduce(
+    (sum, row) => sum + row.columns.length,
+    0,
+  );
+  if (byTable.size > 0) {
+    reasoning.push(
+      `Entity type '${entity.name}' appears consistently across ${byTable.size} table${byTable.size === 1 ? "" : "s"}, in ${mappedColumnCount} column${mappedColumnCount === 1 ? "" : "s"}, boosting cross-source confidence.`,
+    );
+  }
   return { kind: "evidence", reasoning, topDatasets };
 }
 
@@ -53678,7 +53716,7 @@ export function propertyReasoningContent(property: Property, entities: Entity[])
     .sort((a, b) => b.score - a.score)
     .slice(0, 3)
     .map((m) => ({ table: m.table, detail: m.column, score: m.score }));
-  return { kind: "evidence", reasoning, topDatasets };
+  return { kind: "evidence", reasoning: [reasoning], topDatasets };
 }
 
 /** Relation suggestion reasoning: does either connected Entity's own Identifier column show up, by
@@ -53710,7 +53748,7 @@ export function relationReasoningContent(relation: Relation, entities: Entity[])
       ? `This relation appears consistently across ${distinctTables} table${distinctTables === 1 ? "" : "s"}, in ${evidence.length} column${evidence.length === 1 ? "" : "s"}.`
       : "No foreign-key-shaped column was found linking these two Entity Types' own source tables.";
   const topDatasets = evidence.map((e) => ({ table: e.table, detail: e.column, score: scorePct }));
-  return { kind: "evidence", reasoning, topDatasets };
+  return { kind: "evidence", reasoning: [reasoning], topDatasets };
 }
 
 /** Property<->Column mapping reasoning — the deepest of the four, since it's explaining one
@@ -53726,24 +53764,26 @@ export function mappingReasoningContent(
   if (!property.mapping) return null;
   const pct = Math.round(property.confidence * 100);
   const strength =
-    property.confidence >= 0.85
-      ? "a strong match"
-      : property.confidence >= 0.6
-        ? "a likely match"
-        : "a low-confidence match";
+    property.confidence >= 0.95
+      ? "an exact match"
+      : property.confidence >= 0.85
+        ? "a strong match"
+        : property.confidence >= 0.6
+          ? "a likely match"
+          : "a low-confidence match";
   const matchSummary =
-    `Based on the column name, this appears to be ${strength} to ${entity.name} → ${property.name}. ` +
+    `Based on column name, appears to be ${strength} to ${entity.name} entity. ` +
     `${entity.name} → ${property.name} is the closest match to column ${property.mapping.column} with ${pct}% confidence.`;
   return {
     kind: "mapping",
     matchSummary,
-    reasoning:
-      "We use embeddings of the semantic representation of the column based on the table name, column name, and sample values.",
+    strength,
     column: {
       name: property.mapping.column,
       entityMatchPct: pct,
       entityType: entity.name,
       property: property.name,
+      propertyType: property.type,
     },
   };
 }

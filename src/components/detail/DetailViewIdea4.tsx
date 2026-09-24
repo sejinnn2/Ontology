@@ -45,8 +45,14 @@ import {
   type TableSchema,
 } from "@/lib/mock-data";
 import { StatusBadge } from "@/components/ontology/StatusBadge";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { MappingStatusBadge } from "@/components/overview/MappingStatusBadge";
-import { ConfidenceChip } from "@/components/ontology/ConfidenceChip";
+import {
+  EntityConfidenceChip,
+  MappingConfidenceChip,
+  PropertyConfidenceChip,
+  RelationConfidenceChip,
+} from "@/components/ontology/ConfidenceChip";
 import { AiReviewBar, type SuggestionScope } from "@/components/ontology/AiReviewBar";
 import {
   CreateEntityWizard,
@@ -566,6 +572,14 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
         .filter((v): v is { entity: Entity; property: Property } => !!v),
     [selectedRefs, app.entities],
   );
+  const selectedRelations = useMemo(
+    () =>
+      selectedRefs
+        .filter((r): r is Extract<SuggestionRef, { kind: "relation" }> => r.kind === "relation")
+        .map((r) => app.relations.find((relation) => relation.id === r.id))
+        .filter((relation): relation is Relation => !!relation),
+    [selectedRefs, app.relations],
+  );
   const splitEligibleEntityId = useMemo(() => {
     if (selectedEntities.length > 0) return null;
     if (selectedProperties.length === 0) return null;
@@ -664,14 +678,14 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
   const handleEntityPanelDrop = useCallback(
     (e: React.DragEvent) => {
       const id = e.dataTransfer.getData(ENTITY_PANEL_DND_TYPE);
-      if (!focusEntity || !id || id === focusEntity.id) return;
+      if (!focusEntity || !id) return;
       e.preventDefault();
-      // Already a real Connected Entity — dropping it again would only create a redundant second
-      // Relation between the same pair.
-      if (relatedEntities.some((entity) => entity.id === id)) return;
+      // Always adds an unnamed Relation: dropping an Entity already in the lane adds another one
+      // to its `RelationGroup`, and dropping Focus itself adds a self-Relation (which shows Focus
+      // as the lane's "self" row).
       app.createPlaceholderRelation(focusEntity.id, id);
     },
-    [app, focusEntity, relatedEntities],
+    [app, focusEntity],
   );
 
   const handleTablePanelDrop = useCallback((e: React.DragEvent) => {
@@ -691,8 +705,11 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
         .map(({ entity, property }) =>
           suggestionKey({ kind: "property", entityId: entity.id, propertyId: property.id }),
         ),
+      ...selectedRelations
+        .filter((r) => r.status === "confirmed")
+        .map((r) => suggestionKey({ kind: "relation", id: r.id })),
     ],
-    [selectedEntities, selectedProperties],
+    [selectedEntities, selectedProperties, selectedRelations],
   );
   const rejectableKeys = useMemo(
     () => [
@@ -704,8 +721,11 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
         .map(({ entity, property }) =>
           suggestionKey({ kind: "property", entityId: entity.id, propertyId: property.id }),
         ),
+      ...selectedRelations
+        .filter((r) => r.status !== "confirmed")
+        .map((r) => suggestionKey({ kind: "relation", id: r.id })),
     ],
-    [selectedEntities, selectedProperties],
+    [selectedEntities, selectedProperties, selectedRelations],
   );
   const acceptableKeys = useMemo(
     () => [
@@ -722,18 +742,26 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
         .map(({ entity, property }) =>
           suggestionKey({ kind: "property", entityId: entity.id, propertyId: property.id }),
         ),
+      ...selectedRelations
+        .filter((r) => {
+          const status = relationStatus(r, app.entities);
+          return status !== "confirmed" && status !== "error";
+        })
+        .map((r) => suggestionKey({ kind: "relation", id: r.id })),
     ],
-    [selectedEntities, selectedProperties],
+    [selectedEntities, selectedProperties, selectedRelations, app.entities],
   );
   const handleDeleteSelection = useCallback(() => {
     const entityIds = selectedEntities.filter((e) => e.status === "confirmed").map((e) => e.id);
     const propertyItems = selectedProperties
       .filter(({ property }) => property.status === "confirmed")
       .map(({ entity, property }) => ({ entityId: entity.id, propertyId: property.id }));
+    const relationIds = selectedRelations.filter((r) => r.status === "confirmed").map((r) => r.id);
     if (entityIds.length > 0) app.deleteEntities(entityIds);
     if (propertyItems.length > 0) app.deleteProperties(propertyItems);
+    if (relationIds.length > 0) app.deleteRelations(relationIds);
     app.clearSuggestionSelection();
-  }, [selectedEntities, selectedProperties, app]);
+  }, [selectedEntities, selectedProperties, selectedRelations, app]);
   const handleAcceptSelection = useCallback(() => {
     if (acceptableKeys.length > 0) app.acceptSuggestions(acceptableKeys);
   }, [acceptableKeys, app]);
@@ -1432,7 +1460,7 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
           // it never needs a full share) — the relation lines/pills still cross straight through
           // it on their way to Current Entity's title, unchanged; this lane is a separate, plain
           // browsable list of the same underlying Relations, not a replacement.
-          className="relative grid min-h-0 flex-1 grid-cols-[1fr_0.5fr_1fr_1fr] gap-[3px] overflow-hidden bg-[#E3E5E4]"
+          className="relative grid min-h-0 flex-1 grid-cols-[1fr_0.8fr_1fr_1fr] gap-[3px] overflow-hidden bg-[#E3E5E4]"
         >
           <Idea4Surface
             // Label matches Figma's exact header copy ("Entities", not "Connected Entities" or
@@ -1557,37 +1585,51 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
                   No Relations touch this Entity Type yet.
                 </p>
               )}
-              {displayedFocusRelations.map(({ relation, counterpart, outgoing }) => (
-                <RelationCard
-                  key={relation.id}
-                  dimmed={dimmedIn("relations", relation.id)}
-                  relation={relation}
-                  counterpart={counterpart}
-                  outgoing={outgoing}
-                  entities={app.entities}
-                  // Expands the counterpart's own card in Connected Entities (same effect as
-                  // clicking that card directly) — deliberately NOT `app.openDetail`, which would
-                  // move Focus (Current Entity) onto the counterpart instead of just pointing at
-                  // it from where you already are.
-                  onOpenCounterpart={() =>
-                    setExpandedContext({ kind: "entity", id: counterpart.id })
-                  }
-                  onAccept={() =>
-                    app.acceptSuggestions([suggestionKey({ kind: "relation", id: relation.id })])
-                  }
-                  onReject={() =>
-                    app.declineSuggestions([suggestionKey({ kind: "relation", id: relation.id })])
-                  }
-                  cardRef={(el) => {
-                    if (el) relationCardRefs.current.set(relation.id, el);
-                    else relationCardRefs.current.delete(relation.id);
-                  }}
-                  onHoverChange={(hovering) =>
-                    setHoveredRelationId((current) =>
-                      hovering ? relation.id : current === relation.id ? null : current,
-                    )
-                  }
-                />
+              {groupRelationsByCounterpart(displayedFocusRelations).map((group) => (
+                <RelationGroup key={group.counterpartId}>
+                  {group.items.map(({ relation, counterpart, outgoing }) => (
+                    <RelationCard
+                      key={relation.id}
+                      selected={suggestionSelection.has(
+                        suggestionKey({ kind: "relation", id: relation.id }),
+                      )}
+                      onSelect={(mods) =>
+                        selectOnClick({ kind: "relation", id: relation.id }, mods)
+                      }
+                      dimmed={dimmedIn("relations", relation.id)}
+                      relation={relation}
+                      counterpart={counterpart}
+                      outgoing={outgoing}
+                      entities={app.entities}
+                      // Expands the counterpart's own card in Connected Entities (same effect as
+                      // clicking that card directly) — deliberately NOT `app.openDetail`, which would
+                      // move Focus (Current Entity) onto the counterpart instead of just pointing at
+                      // it from where you already are.
+                      onOpenCounterpart={() =>
+                        setExpandedContext({ kind: "entity", id: counterpart.id })
+                      }
+                      onAccept={() =>
+                        app.acceptSuggestions([
+                          suggestionKey({ kind: "relation", id: relation.id }),
+                        ])
+                      }
+                      onReject={() =>
+                        app.declineSuggestions([
+                          suggestionKey({ kind: "relation", id: relation.id }),
+                        ])
+                      }
+                      cardRef={(el) => {
+                        if (el) relationCardRefs.current.set(relation.id, el);
+                        else relationCardRefs.current.delete(relation.id);
+                      }}
+                      onHoverChange={(hovering) =>
+                        setHoveredRelationId((current) =>
+                          hovering ? relation.id : current === relation.id ? null : current,
+                        )
+                      }
+                    />
+                  ))}
+                </RelationGroup>
               ))}
             </div>
           </Idea4Surface>
@@ -1914,7 +1956,7 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
               <SelectionControlBar
                 entities={selectedEntities}
                 properties={selectedProperties}
-                relations={[]}
+                relations={selectedRelations}
                 mappingCount={0}
                 onClear={() => app.clearSuggestionSelection()}
                 onMerge={selectedEntities.length >= 2 ? () => setMergePanelOpen(true) : undefined}
@@ -2111,12 +2153,15 @@ function Idea4TableMode({ app, table }: { app: OntologyApp; table: TableSchema }
   }, [usingEntities, table.name]);
   // A column's confidence is its mapping's — shown only while that mapping is still Suggested,
   // taking the strongest one when several Entities suggest a mapping into the same column.
-  const suggestedColumnConfidence = useMemo(() => {
-    const byColumn = new Map<string, number>();
+  const suggestedColumnMapping = useMemo(() => {
+    const byColumn = new Map<string, { entity: Entity; property: Property }>();
     usingEntities.forEach((entity) => {
       entity.properties.forEach((p) => {
         if (p.mapping?.table !== table.name || mappingStatus(p.mapping) !== "suggested") return;
-        byColumn.set(p.mapping.column, Math.max(byColumn.get(p.mapping.column) ?? 0, p.confidence));
+        const current = byColumn.get(p.mapping.column);
+        if (!current || p.confidence > current.property.confidence) {
+          byColumn.set(p.mapping.column, { entity, property: p });
+        }
       });
     });
     return byColumn;
@@ -2642,7 +2687,7 @@ function Idea4TableMode({ app, table }: { app: OntologyApp; table: TableSchema }
 
         <div
           ref={workspaceRef}
-          className="relative grid min-h-0 flex-1 grid-cols-[1fr_0.5fr_1fr_1fr] gap-[3px] overflow-hidden bg-[#E3E5E4]"
+          className="relative grid min-h-0 flex-1 grid-cols-[1fr_0.8fr_1fr_1fr] gap-[3px] overflow-hidden bg-[#E3E5E4]"
         >
           <Idea4Surface
             label="Entities"
@@ -2688,31 +2733,39 @@ function Idea4TableMode({ app, table }: { app: OntologyApp; table: TableSchema }
                   No Relations touch this Entity Type yet.
                 </p>
               )}
-              {laneRelations.map(({ relation, counterpart, outgoing }) => (
-                <RelationCard
-                  key={relation.id}
-                  dimmed={dimmedIn("relations", relation.id)}
-                  onHoverChange={(hovering) =>
-                    setHoveredRelationId((cur) =>
-                      hovering ? relation.id : cur === relation.id ? null : cur,
-                    )
-                  }
-                  relation={relation}
-                  counterpart={counterpart}
-                  outgoing={outgoing}
-                  entities={app.entities}
-                  onOpenCounterpart={() => openCounterpart(counterpart.id)}
-                  onAccept={() =>
-                    app.acceptSuggestions([suggestionKey({ kind: "relation", id: relation.id })])
-                  }
-                  onReject={() =>
-                    app.declineSuggestions([suggestionKey({ kind: "relation", id: relation.id })])
-                  }
-                  cardRef={(el) => {
-                    if (el) relationCardRefs.current.set(relation.id, el);
-                    else relationCardRefs.current.delete(relation.id);
-                  }}
-                />
+              {groupRelationsByCounterpart(laneRelations).map((group) => (
+                <RelationGroup key={group.counterpartId}>
+                  {group.items.map(({ relation, counterpart, outgoing }) => (
+                    <RelationCard
+                      key={relation.id}
+                      dimmed={dimmedIn("relations", relation.id)}
+                      onHoverChange={(hovering) =>
+                        setHoveredRelationId((cur) =>
+                          hovering ? relation.id : cur === relation.id ? null : cur,
+                        )
+                      }
+                      relation={relation}
+                      counterpart={counterpart}
+                      outgoing={outgoing}
+                      entities={app.entities}
+                      onOpenCounterpart={() => openCounterpart(counterpart.id)}
+                      onAccept={() =>
+                        app.acceptSuggestions([
+                          suggestionKey({ kind: "relation", id: relation.id }),
+                        ])
+                      }
+                      onReject={() =>
+                        app.declineSuggestions([
+                          suggestionKey({ kind: "relation", id: relation.id }),
+                        ])
+                      }
+                      cardRef={(el) => {
+                        if (el) relationCardRefs.current.set(relation.id, el);
+                        else relationCardRefs.current.delete(relation.id);
+                      }}
+                    />
+                  ))}
+                </RelationGroup>
               ))}
             </div>
           </Idea4Surface>
@@ -2826,7 +2879,7 @@ function Idea4TableMode({ app, table }: { app: OntologyApp; table: TableSchema }
 
           <CurrentDataTableCard
             table={table}
-            suggestedColumnConfidence={suggestedColumnConfidence}
+            suggestedColumnMapping={suggestedColumnMapping}
             isColumnDimmed={(name) => dimmedIn("columns", name)}
             entities={app.entities}
             visibleColumns={visibleTableColumns}
@@ -2985,11 +3038,7 @@ function MappedEntityRow({
         <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-[#161919]">
           {entity.name}
         </span>
-        {entityDisplayStatus(entity) === "suggested" && (
-          <span className="shrink-0 rounded-full bg-[#e3e5e4] px-1.5 py-px text-[12px] text-[#252828]">
-            {Math.round(entity.confidence * 100)}%
-          </span>
-        )}
+        {entityDisplayStatus(entity) === "suggested" && <EntityConfidenceChip entity={entity} />}
       </button>
       {offscreenDirection && hovered && (
         // `pl-1` bridges the gap to the pill so moving onto the arrow doesn't end the hover.
@@ -3036,7 +3085,7 @@ function CurrentDataTableCard({
   columnOffscreenDirections,
   onNavigateToOffscreenColumn,
   isColumnDimmed,
-  suggestedColumnConfidence,
+  suggestedColumnMapping,
 }: {
   table: TableSchema;
   entities: Entity[];
@@ -3065,7 +3114,7 @@ function CurrentDataTableCard({
   columnOffscreenDirections?: Record<string, "up" | "down">;
   onNavigateToOffscreenColumn?: (columnName: string) => void;
   isColumnDimmed?: (columnName: string) => boolean;
-  suggestedColumnConfidence?: Map<string, number>;
+  suggestedColumnMapping?: Map<string, { entity: Entity; property: Property }>;
 }) {
   const [scrolledFromTop, setScrolledFromTop] = useState(false);
   return (
@@ -3086,7 +3135,12 @@ function CurrentDataTableCard({
         <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-[#fafafa]">
           {table.name}
         </span>
-        <span className="shrink-0 text-[14px] text-[#fafafa]">{table.columns.length}</span>
+        <CountTooltip
+          count={table.columns.length}
+          singular="column"
+          plural="columns"
+          className="shrink-0 text-[14px] text-[#fafafa]"
+        />
       </button>
       <ListControls
         sort={sort}
@@ -3138,11 +3192,15 @@ function CurrentDataTableCard({
                 />
                 <span className="min-w-0 flex-1 truncate text-[#161919]">{column.name}</span>
                 <TypeGlyph className="size-4 shrink-0 text-[#535353]" aria-label={column.type} />
-                {suggestedColumnConfidence?.has(column.name) && (
-                  <span className="shrink-0 rounded-full bg-[#e3e5e4] px-1.5 py-px text-[12px] text-[#252828]">
-                    {Math.round(suggestedColumnConfidence.get(column.name)! * 100)}%
-                  </span>
-                )}
+                {(() => {
+                  const suggestion = suggestedColumnMapping?.get(column.name);
+                  return suggestion ? (
+                    <MappingConfidenceChip
+                      entity={suggestion.entity}
+                      property={suggestion.property}
+                    />
+                  ) : null;
+                })()}
                 {hovered && offscreenDirection && (
                   // Sits outside the pill on the side facing the lane it scrolls; `pr-1` bridges
                   // the gap so moving onto the arrow doesn't end the hover.
@@ -3220,6 +3278,34 @@ function RelationStatusIcon({ relation, entities }: { relation: Relation; entiti
  * you already are, not a way to navigate to it. Accept/Reject reveal on hover and only once the
  * Relation is still an open suggestion (not yet Confirmed) — same "confirmed items get nothing,
  * not a Delete" shape `ExpandedTable`'s own inline mapping Accept/Reject uses. */
+/** Groups a lane's Relations by counterpart Entity, keeping first-seen order, so every Relation
+ * between the same two Entity Types renders in one `RelationGroup`. */
+function groupRelationsByCounterpart<T extends { relation: Relation; counterpart: Entity }>(
+  items: T[],
+): { counterpartId: string; items: T[] }[] {
+  const groups = new Map<string, T[]>();
+  items.forEach((item) => {
+    const group = groups.get(item.counterpart.id);
+    if (group) group.push(item);
+    else groups.set(item.counterpart.id, [item]);
+  });
+  return Array.from(groups, ([counterpartId, groupItems]) => ({
+    counterpartId,
+    items: groupItems,
+  }));
+}
+
+/** The Relations lane's slot (Figma "Relation-05", node 427:9363): one per counterpart Entity,
+ * stacking every Relation between the same two Entity Types 8px apart. `max-w-[160px]`/`min-h-10`
+ * keep each slot the same width and at least one pill-row tall. */
+function RelationGroup({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex min-h-10 w-full max-w-[160px] shrink-0 flex-col items-center justify-center gap-2">
+      {children}
+    </div>
+  );
+}
+
 function RelationCard({
   relation,
   counterpart,
@@ -3231,6 +3317,8 @@ function RelationCard({
   cardRef,
   onHoverChange,
   dimmed,
+  selected,
+  onSelect,
 }: {
   relation: Relation;
   counterpart: Entity;
@@ -3245,48 +3333,64 @@ function RelationCard({
   onHoverChange?: (hovering: boolean) => void;
   // Faded while another pill is hovered and this one isn't connected to it.
   dimmed?: boolean;
+  selected?: boolean;
+  // Shift/cmd/ctrl-click toggles this Relation in the multi-selection; a plain click still opens
+  // the counterpart.
+  onSelect?: (mods: SelectMods) => void;
 }) {
   const counterpartName = counterpart.name || "Untitled entity";
   return (
-    // Outer slot (`max-w-[160px] min-h-[40px]`, re-checked against Figma node 424:19638) reserves
-    // this row's own full height/width even though the pill itself is shorter — the pill fills it
-    // (`w-full`, not `w-fit`) rather than hugging its own content the way this port previously
-    // had it. `cardRef` stays on the pill itself (not this slot) since that's the exact node the
-    // connector line anchors on — see `recomputeRelationLines`'s own doc comment.
+    // The pill only — `RelationGroup` is the lane slot that stacks every Relation to the same
+    // counterpart. A plain `div` acting as the click target, not a `button`, so the confidence
+    // chip inside can hold its own focusable trigger. `cardRef` sits here since this exact node
+    // is what the connector line anchors on.
     <div
+      ref={cardRef}
+      data-connector-hover
+      data-connector-relation-id={relation.id}
+      role="button"
+      tabIndex={0}
+      aria-pressed={onSelect ? !!selected : undefined}
+      aria-label={`${relationLabel(relation)} ${outgoing ? "to" : "from"} ${counterpartName}`}
+      onClick={(e) => {
+        if (onSelect && (e.shiftKey || e.metaKey || e.ctrlKey)) {
+          onSelect({ shiftKey: e.shiftKey, metaKey: e.metaKey, ctrlKey: e.ctrlKey });
+          return;
+        }
+        onOpenCounterpart();
+      }}
+      onMouseEnter={() => onHoverChange?.(true)}
+      onMouseLeave={() => onHoverChange?.(false)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpenCounterpart();
+        }
+      }}
+      // Figma "pill" (node 427:9364): the 4px `#f3f3f3` ring (lane background) keeps connector
+      // lines from touching the pill's edge; the name fills the pill after the status dot.
       className={cn(
-        "flex min-h-10 w-full max-w-[160px] shrink-0 items-center justify-center transition-opacity duration-150",
+        "group/relcard relative z-20 flex w-full cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full border border-[#e3e5e4] bg-white py-0.5 pl-[10px] pr-1.5 text-left text-[14px] font-normal leading-5 text-[#161919] shadow-[0_0_0_4px_#f3f3f3] outline-none transition-opacity duration-150 hover:!border-[#161919] hover:!bg-white focus-visible:ring-2 focus-visible:ring-[#00DED8]",
+        selected && "bg-[#00ded8]/10 shadow-[0_0_0_1.5px_#00ded8,0_0_0_4px_#f3f3f3]",
         dimmed && "opacity-40",
       )}
     >
-      {/* A plain `div` acting as the click target, not a `button` — the Accept/Reject controls
-          inside are real buttons of their own, and nesting a `<button>` inside a `<button>` is
-          invalid HTML (React warns on it, and click/focus behavior for the inner ones becomes
-          unreliable in some browsers). Same "row is a div, its actions are real buttons" shape
-          `PropertyListRow`'s own click-to-select row already uses. */}
-      <div
-        ref={cardRef}
-        data-connector-hover
-        data-connector-relation-id={relation.id}
-        role="button"
-        tabIndex={0}
-        onClick={onOpenCounterpart}
-        onMouseEnter={() => onHoverChange?.(true)}
-        onMouseLeave={() => onHoverChange?.(false)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            onOpenCounterpart();
-          }
-        }}
-        className="group/relcard relative z-20 flex w-full cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-full border border-[#e3e5e4] bg-white py-0.5 pl-[10px] pr-1.5 text-left text-[14px] font-normal text-[#161919] outline-none hover:!border-[#161919] hover:!bg-white focus-visible:ring-2 focus-visible:ring-[#00DED8]"
-      >
-        <RelationStatusIcon relation={relation} entities={entities} />
-        <span className="min-w-0 truncate">{relationLabel(relation)}</span>
-      </div>
+      <RelationStatusIcon relation={relation} entities={entities} />
+      <span className="min-w-0 flex-1 truncate">{relationLabel(relation)}</span>
+      {relationStatus(relation, entities) === "suggested" && (
+        <RelationConfidenceChip relation={relation} />
+      )}
     </div>
   );
 }
+
+// What each lane header's count counts, for its hover tooltip ("14 entities").
+const LANE_COUNT_NOUNS: Record<string, [string, string]> = {
+  Entities: ["entity", "entities"],
+  "Mapped Entities": ["entity", "entities"],
+  Relations: ["relation", "relations"],
+  "Data Tables": ["table", "tables"],
+};
 
 function Idea4Surface({
   label,
@@ -3320,7 +3424,17 @@ function Idea4Surface({
       {!flush && (
         <header className="flex h-8 shrink-0 items-center justify-between border-b border-[#e3e5e4] bg-[#3c4140] px-4 text-[14px]">
           <span className="font-medium text-[#fafafa]">{label}</span>
-          {count != null && <span className="text-[#fafafa]">{count}</span>}
+          {count != null &&
+            (LANE_COUNT_NOUNS[label] ? (
+              <CountTooltip
+                count={count}
+                singular={LANE_COUNT_NOUNS[label][0]}
+                plural={LANE_COUNT_NOUNS[label][1]}
+                className="text-[#fafafa]"
+              />
+            ) : (
+              <span className="text-[#fafafa]">{count}</span>
+            ))}
         </header>
       )}
       {/* Bottom padding clears the floating AI review bar (bottom-3, 48px tall — a 60px footprint
@@ -3470,9 +3584,7 @@ function CompactEntity({
         {entity.name}
       </span>
       {!compact && entityDisplayStatus(entity) === "suggested" && (
-        <span className="shrink-0 rounded-full bg-[#e3e5e4] px-1.5 py-px text-[12px] text-[#252828]">
-          {Math.round(entity.confidence * 100)}%
-        </span>
+        <EntityConfidenceChip entity={entity} />
       )}
     </button>
   );
@@ -3510,11 +3622,7 @@ function SelfEntityRow({
         <span className="block truncate text-[14px] font-medium text-[#161919]">{entity.name}</span>
         <span className="block text-[12px] text-[#6d7472]">self</span>
       </span>
-      {entityDisplayStatus(entity) === "suggested" && (
-        <span className="shrink-0 rounded-full bg-[#e3e5e4] px-1.5 py-px text-[12px] text-[#252828]">
-          {Math.round(entity.confidence * 100)}%
-        </span>
-      )}
+      {entityDisplayStatus(entity) === "suggested" && <EntityConfidenceChip entity={entity} />}
     </div>
   );
 }
@@ -3627,12 +3735,13 @@ function ExpandedEntity({
         <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-[#fafafa]">
           {entity.name}
         </span>
-        <span className="shrink-0 text-[14px] text-[#fafafa]">{entity.properties.length}</span>
-        {entityDisplayStatus(entity) === "suggested" && (
-          <span className="shrink-0 rounded-full bg-[#e3e5e4] px-1.5 py-px text-[12px] text-[#252828]">
-            {Math.round(entity.confidence * 100)}%
-          </span>
-        )}
+        <CountTooltip
+          count={entity.properties.length}
+          singular="property"
+          plural="properties"
+          className="shrink-0 text-[14px] text-[#fafafa]"
+        />
+        {entityDisplayStatus(entity) === "suggested" && <EntityConfidenceChip entity={entity} />}
       </div>
       <ListControls
         filter={filter}
@@ -3839,12 +3948,13 @@ function CurrentEntityCard({
         <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-[#fafafa]">
           {entity.name}
         </span>
-        <span className="shrink-0 text-[14px] text-[#fafafa]">{entity.properties.length}</span>
-        {entityDisplayStatus(entity) === "suggested" && (
-          <span className="shrink-0 rounded-full bg-[#e3e5e4] px-1.5 py-px text-[12px] text-[#252828]">
-            {Math.round(entity.confidence * 100)}%
-          </span>
-        )}
+        <CountTooltip
+          count={entity.properties.length}
+          singular="property"
+          plural="properties"
+          className="shrink-0 text-[14px] text-[#fafafa]"
+        />
+        {entityDisplayStatus(entity) === "suggested" && <EntityConfidenceChip entity={entity} />}
       </button>
       <ListControls
         filter={filter}
@@ -4226,11 +4336,7 @@ function PropertyListRow({
         const TypeGlyph = propertyTypeIcon(property.type);
         return <TypeGlyph className="size-4 shrink-0 text-[#535353]" aria-label={property.type} />;
       })()}
-      {propertyStatus(property) === "suggested" && (
-        <span className="shrink-0 rounded-full bg-[#e3e5e4] px-1.5 py-px text-[12px] text-[#252828]">
-          {Math.round(property.confidence * 100)}%
-        </span>
-      )}
+      {propertyStatus(property) === "suggested" && <PropertyConfidenceChip property={property} />}
       {hovered && offscreenDirection && (
         // `pl-1` bridges the gap to the pill so moving onto the arrow doesn't end the hover.
         <span className="absolute left-full top-1/2 flex -translate-y-1/2 pl-1">
@@ -4482,7 +4588,12 @@ function ExpandedTable({
         <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-[#fafafa]">
           {table.name}
         </span>
-        <span className="shrink-0 text-[14px] text-[#fafafa]">{table.columns.length}</span>
+        <CountTooltip
+          count={table.columns.length}
+          singular="column"
+          plural="columns"
+          className="shrink-0 text-[14px] text-[#fafafa]"
+        />
       </div>
       <ListControls
         filter={filter ?? "all"}
@@ -4506,6 +4617,9 @@ function ExpandedTable({
             const mappedProperty = columnMappings?.get(column.name);
             const isSuggested =
               !!mappedProperty?.mapping && mappingStatus(mappedProperty.mapping) === "suggested";
+            const mappedOwner = mappedProperty
+              ? entities.find((entity) => entity.properties.some((p) => p.id === mappedProperty.id))
+              : undefined;
             const TypeGlyph = propertyTypeIcon(column.type);
             return (
               <div
@@ -4536,10 +4650,8 @@ function ExpandedTable({
                 />
                 <span className="min-w-0 flex-1 truncate text-[#161919]">{column.name}</span>
                 <TypeGlyph className="size-4 shrink-0 text-[#535353]" aria-label={column.type} />
-                {isSuggested && mappedProperty && (
-                  <span className="shrink-0 rounded-full bg-[#e3e5e4] px-1.5 py-px text-[12px] text-[#252828]">
-                    {Math.round(mappedProperty.confidence * 100)}%
-                  </span>
+                {isSuggested && mappedOwner && mappedProperty && (
+                  <MappingConfidenceChip entity={mappedOwner} property={mappedProperty} />
                 )}
               </div>
             );
@@ -4663,6 +4775,30 @@ function CollapsedSidePanel({
   );
 }
 
+/** A side-panel row's count, with a "N properties"/"N columns" tooltip saying what it counts. */
+function CountTooltip({
+  count,
+  singular,
+  plural,
+  className,
+}: {
+  count: number;
+  singular: string;
+  plural: string;
+  className: string;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className={cn("cursor-default", className)}>{count}</span>
+      </TooltipTrigger>
+      <TooltipContent>
+        {count} {count === 1 ? singular : plural}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function Idea4EntityPanel({
   app,
   focusEntityId,
@@ -4762,14 +4898,15 @@ function Idea4EntityPanel({
                 <span className="min-w-0 flex-1 truncate text-[14px] font-normal text-[#161919]">
                   {entity.name}
                 </span>
-                <span className="shrink-0 text-[14px] text-[#6d7472]">
-                  {entity.properties.length}
-                </span>
+                <CountTooltip
+                  count={entity.properties.length}
+                  singular="property"
+                  plural="properties"
+                  className="shrink-0 text-[14px] text-[#6d7472]"
+                />
               </span>
               {entityDisplayStatus(entity) === "suggested" && (
-                <span className="shrink-0 rounded-full bg-[#e3e5e4] px-1.5 py-px text-[12px] text-[#252828]">
-                  {Math.round(entity.confidence * 100)}%
-                </span>
+                <EntityConfidenceChip entity={entity} />
               )}
             </button>
           );
@@ -4875,9 +5012,12 @@ function Idea4TablePanel({
                 <span className="min-w-0 truncate text-[14px] leading-5 text-[#161919]">
                   {table.name}
                 </span>
-                <span className="shrink-0 text-[14px] leading-5 text-[#6d7472]">
-                  {table.columns.length}
-                </span>
+                <CountTooltip
+                  count={table.columns.length}
+                  singular="column"
+                  plural="columns"
+                  className="shrink-0 text-[14px] leading-5 text-[#6d7472]"
+                />
               </span>
             </button>
           );

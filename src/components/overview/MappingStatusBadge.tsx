@@ -51,7 +51,7 @@ export function MappingStatusBadge({
           tabIndex={0}
           style={{ width: size, height: size }}
           className={cn(
-            "relative flex shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-[#00DED8]",
+            "relative flex shrink-0 cursor-default items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-[#00DED8]",
             className,
           )}
           aria-label={label}

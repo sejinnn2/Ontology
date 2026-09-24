@@ -174,7 +174,7 @@ export function StatusBadge({
         <span
           tabIndex={0}
           style={{ width: size, height: size, background: style.badgeBg }}
-          className="inline-flex shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-[#00DED8]"
+          className="inline-flex shrink-0 cursor-default items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-[#00DED8]"
           aria-label={label}
         >
           <Icon color={style.iconColor} size={Math.round(size * 0.5)} />

@@ -17,7 +17,7 @@ import {
   reviewStatusLabel,
   statusBorderColor,
 } from "@/components/ontology/StatusBadge";
-import { ConfidenceChip } from "@/components/ontology/ConfidenceChip";
+import { EntityConfidenceChip } from "@/components/ontology/ConfidenceChip";
 
 /** Overview's own fixed canvas-node footprint (Figma: node 246:63476 / 246:63464) — the circle
  * connectors and hit-testing anchor to, regardless of the `detailed` text below it. */
@@ -432,7 +432,7 @@ export function OntologyNode({
               {entity.name}
             </span>
             {detailed && entityDisplayStatus(entity) === "suggested" && (
-              <ConfidenceChip confidence={entity.confidence} />
+              <EntityConfidenceChip entity={entity} size="sm" />
             )}
           </span>
           {detailed && !propertyStatusRing && (
