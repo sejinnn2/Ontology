@@ -53212,6 +53212,36 @@ export const initialRelations: Relation[] = [
 
 export type DemoScenario = "fresh" | "in-progress";
 
+/** Flips a table's own already-suggested Property↔Column mappings to "mapped" (confirmed) for
+ * roughly the first `fraction` of its columns, in the table's own column order — used only to seed
+ * `createDemoFixture`'s "fresh" scenario with some real mapping-completeness variety (see that
+ * function's own comment on why). Walks `table.columns` rather than a hardcoded column-name list so
+ * this stays correct if the seed data's own mappings ever shift around; a column with no suggested
+ * mapper at all is skipped (there's nothing to confirm) rather than counted toward the fraction. */
+function seedConfirmedMappingSample(entities: Entity[], tableName: string, fraction: number) {
+  const table = tableByName(tableName);
+  if (!table) return;
+  const target = Math.round(table.columns.length * fraction);
+  const confirmedColumns = new Set<string>();
+  for (const column of table.columns) {
+    if (confirmedColumns.size >= target) break;
+    const hasMapper = entities.some((entity) =>
+      entity.properties.some(
+        (property) =>
+          property.mapping?.table === tableName && property.mapping.column === column.name,
+      ),
+    );
+    if (hasMapper) confirmedColumns.add(column.name);
+  }
+  entities.forEach((entity) => {
+    entity.properties.forEach((property) => {
+      if (property.mapping?.table === tableName && confirmedColumns.has(property.mapping.column)) {
+        property.mapping.status = "mapped";
+      }
+    });
+  });
+}
+
 /** Builds a new, isolated fixture every time so switching scenarios never reuses mutated state. */
 export function createDemoFixture(scenario: DemoScenario): {
   entities: Entity[];
@@ -53243,6 +53273,14 @@ export function createDemoFixture(scenario: DemoScenario): {
       delete relation.warningReason;
       delete relation.errorReason;
     });
+    // Even in "fresh," the Data Tables mapping-status badge (`MappingStatusBadge`) shouldn't show
+    // every single table stuck at 0% — Figma's own "Panel-Data tables" mock (node 424:20441) shows
+    // Unmapped/Partial/Fully-mapped side by side. Confirming a couple of tables' worth of mappings
+    // gives that same Unmapped-vs-Partial variety without touching the Entity/Property Review
+    // Status reset above (a table's mapping completeness and its properties' own review status are
+    // deliberately independent facts — see `MappingStatus`'s doc comment).
+    seedConfirmedMappingSample(entities, "drivers", 0.25);
+    seedConfirmedMappingSample(entities, "policies", 0.5);
     const shipment = entities.find((entity) => entity.id === "e_shipment");
     const shipmentId = shipment?.properties.find((property) => property.id === "p_ship_id");
     if (shipmentId) {

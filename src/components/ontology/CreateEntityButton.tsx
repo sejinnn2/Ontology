@@ -36,7 +36,6 @@ export function CreateEntityButton({ onCreate }: { onCreate: (name: string) => v
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-label="Create Entity Type"
-        title="Create Entity Type"
         className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent"
       >
         <Plus className="size-4" />

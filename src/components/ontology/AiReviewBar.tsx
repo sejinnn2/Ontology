@@ -6,6 +6,7 @@ import {
   mappingStatus,
   propertyStatus,
   type Entity,
+  type Property,
   type Relation,
   type TableSchema,
 } from "@/lib/mock-data";
@@ -18,6 +19,16 @@ import {
   ColumnsIcon,
 } from "@/components/nav/nav-icons";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+
+/** Limits which items the bar counts and selects — Editing mode passes one so the numbers cover
+ * only what its lanes show, not the whole ontology. Tables/Columns follow `mapping`, since they're
+ * derived from mapping suggestions. Omitted = everything (Overview). */
+export type SuggestionScope = {
+  entity: (entity: Entity) => boolean;
+  property: (owner: Entity, property: Property) => boolean;
+  relation: (relation: Relation) => boolean;
+  mapping: (owner: Entity, property: Property) => boolean;
+};
 
 const clampPct = (v: number) => Math.min(100, Math.max(0, Math.round(v)));
 
@@ -212,6 +223,13 @@ const BREAKDOWN_ORDER: BreakdownKey[] = [
  * pills already use (see Header.tsx's own `counts`), just swapping "mapped at all" for "mapped by
  * a suggested, in-range mapping."
  */
+const ALL_IN_SCOPE: SuggestionScope = {
+  entity: () => true,
+  property: () => true,
+  relation: () => true,
+  mapping: () => true,
+};
+
 export function AiReviewBar({
   entities,
   relations,
@@ -221,6 +239,7 @@ export function AiReviewBar({
   onSelectSuggestionsInRange,
   propertySuggestionsHighlightActive = false,
   onTogglePropertySuggestionsHighlight,
+  scope,
 }: {
   entities: Entity[];
   relations: Relation[];
@@ -230,6 +249,7 @@ export function AiReviewBar({
   onSelectSuggestionsInRange: (keys: string[]) => void;
   propertySuggestionsHighlightActive?: boolean;
   onTogglePropertySuggestionsHighlight?: () => void;
+  scope?: SuggestionScope | undefined;
 }) {
   const [expanded, setExpanded] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -253,6 +273,7 @@ export function AiReviewBar({
     },
     [confidenceRange],
   );
+  const inScope: SuggestionScope = scope ?? ALL_IN_SCOPE;
 
   // `buildConfirmPlan` groups every not-yet-confirmed Entity/Property/Relation into `eligible`
   // (Suggested or Warning — Warning never blocks a confirm, only Error does) or `errors`. That
@@ -265,20 +286,25 @@ export function AiReviewBar({
   const eligibleKeys: string[] = [];
   confirmPlan.eligible.entityIds.forEach((id) => {
     const e = entities.find((x) => x.id === id);
-    if (e && inConfidenceRange(e.confidence)) {
+    if (e && inScope.entity(e) && inConfidenceRange(e.confidence)) {
       eligibleKeys.push(suggestionKey({ kind: "entity", id }));
     }
   });
   confirmPlan.eligible.propertyIds.forEach(({ entityId, propertyId }) => {
     const owner = entities.find((e) => e.id === entityId);
     const property = owner?.properties.find((p) => p.id === propertyId);
-    if (property && inConfidenceRange(property.confidence)) {
+    if (
+      owner &&
+      property &&
+      inScope.property(owner, property) &&
+      inConfidenceRange(property.confidence)
+    ) {
       eligibleKeys.push(suggestionKey({ kind: "property", entityId, propertyId }));
     }
   });
   confirmPlan.eligible.relationIds.forEach((id) => {
     const r = relations.find((x) => x.id === id);
-    if (r && inConfidenceRange(r.confidence)) {
+    if (r && inScope.relation(r) && inConfidenceRange(r.confidence)) {
       eligibleKeys.push(suggestionKey({ kind: "relation", id }));
     }
   });
@@ -287,6 +313,7 @@ export function AiReviewBar({
       if (
         property.mapping &&
         mappingStatus(property.mapping) === "suggested" &&
+        inScope.mapping(entity, property) &&
         inConfidenceRange(property.confidence)
       ) {
         eligibleKeys.push(
@@ -302,14 +329,18 @@ export function AiReviewBar({
     let issueInRange = false;
     if (issue.itemKind === "entity") {
       const e = entities.find((x) => x.id === issue.id);
-      issueInRange = !!e && inConfidenceRange(e.confidence);
+      issueInRange = !!e && inScope.entity(e) && inConfidenceRange(e.confidence);
     } else if (issue.itemKind === "relation") {
       const r = relations.find((x) => x.id === issue.id);
-      issueInRange = !!r && inConfidenceRange(r.confidence);
+      issueInRange = !!r && inScope.relation(r) && inConfidenceRange(r.confidence);
     } else {
       const owner = entities.find((e) => e.properties.some((p) => p.id === issue.id));
       const property = owner?.properties.find((p) => p.id === issue.id);
-      issueInRange = !!property && inConfidenceRange(property.confidence);
+      issueInRange =
+        !!owner &&
+        !!property &&
+        inScope.property(owner, property) &&
+        inConfidenceRange(property.confidence);
     }
     if (issueInRange) errorsExcluded += 1;
   });
@@ -321,7 +352,7 @@ export function AiReviewBar({
   let entitiesTotal = 0;
   let entitiesInRange = 0;
   entities.forEach((e) => {
-    if (entityStatus(e) !== "suggested") return;
+    if (entityStatus(e) !== "suggested" || !inScope.entity(e)) return;
     entitiesTotal += 1;
     if (inConfidenceRange(e.confidence)) entitiesInRange += 1;
   });
@@ -329,7 +360,7 @@ export function AiReviewBar({
   let propertiesInRange = 0;
   entities.forEach((e) => {
     e.properties.forEach((p) => {
-      if (propertyStatus(p) !== "suggested") return;
+      if (propertyStatus(p) !== "suggested" || !inScope.property(e, p)) return;
       propertiesTotal += 1;
       if (inConfidenceRange(p.confidence)) propertiesInRange += 1;
     });
@@ -337,7 +368,7 @@ export function AiReviewBar({
   let relationsTotal = 0;
   let relationsInRange = 0;
   relations.forEach((r) => {
-    if (r.status !== "suggested") return;
+    if (r.status !== "suggested" || !inScope.relation(r)) return;
     relationsTotal += 1;
     if (inConfidenceRange(r.confidence)) relationsInRange += 1;
   });
@@ -348,7 +379,7 @@ export function AiReviewBar({
   const columnGroups = new Map<string, { any: boolean; inRange: boolean }>();
   entities.forEach((e) => {
     e.properties.forEach((p) => {
-      if (!p.mapping || mappingStatus(p.mapping) !== "suggested") return;
+      if (!p.mapping || mappingStatus(p.mapping) !== "suggested" || !inScope.mapping(e, p)) return;
       const inRange = inConfidenceRange(p.confidence);
       const tableKey = p.mapping.table;
       const columnKey = `${p.mapping.table}.${p.mapping.column}`;
@@ -449,11 +480,6 @@ export function AiReviewBar({
           <button
             type="button"
             onClick={() => setExpanded((v) => !v)}
-            title={
-              errorsExcluded > 0
-                ? `${errorsExcluded} more in range excluded — blocked by errors`
-                : "Show the breakdown by Entity/Property/Relation/Table/Column"
-            }
             className={cn(
               "flex h-8 min-w-[64px] shrink-0 items-center justify-center whitespace-nowrap rounded-[4px] border border-border px-2 text-sm font-medium text-[#161919] transition-colors",
               expanded ? "bg-secondary" : "bg-white hover:bg-accent",

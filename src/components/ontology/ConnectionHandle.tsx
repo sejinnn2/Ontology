@@ -62,7 +62,6 @@ export function ConnectionHandle({
         if (!e.shiftKey && !e.metaKey && !e.ctrlKey) e.stopPropagation();
       }}
       aria-label={ariaLabel}
-      title={title}
       style={style}
       className={cn(
         "pointer-events-auto box-border flex size-3 shrink-0 cursor-grab items-center justify-center rounded-full border-[1.5px] border-[#00ded8] shadow-[0_0_0_2px_#f6f6f6] transition-[transform,background-color] active:cursor-grabbing",

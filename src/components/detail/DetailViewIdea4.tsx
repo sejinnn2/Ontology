@@ -1,14 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  ArrowDown,
   ArrowLeft,
-  Check,
-  ChevronLeft,
-  ChevronRight,
+  ArrowUp,
+  ArrowUpDown,
+  Calendar,
+  ChevronDown,
+  Fingerprint,
   GitMerge,
-  Link2,
+  Hash,
+  List,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Plus,
   Redo2,
   Search,
+  ToggleLeft,
+  Type as TypeIcon,
   Undo2,
   X,
 } from "lucide-react";
@@ -24,18 +34,20 @@ import {
   relationLabel,
   relationStatus,
   tableByName,
+  tableHighestMappingConfidence,
   tableMappingCompleteness,
   tableMappingStatus,
   tablesUsedByEntity,
   type Entity,
   type Property,
   type Relation,
+  type ReviewStatus,
   type TableSchema,
 } from "@/lib/mock-data";
 import { StatusBadge } from "@/components/ontology/StatusBadge";
 import { MappingStatusBadge } from "@/components/overview/MappingStatusBadge";
 import { ConfidenceChip } from "@/components/ontology/ConfidenceChip";
-import { AiReviewBar } from "@/components/ontology/AiReviewBar";
+import { AiReviewBar, type SuggestionScope } from "@/components/ontology/AiReviewBar";
 import {
   CreateEntityWizard,
   type CreateEntityDraft,
@@ -50,8 +62,7 @@ import {
 } from "@/components/ontology/SortDropdown";
 import { SelectionControlBar } from "@/components/detail/SelectionControlBar";
 import { isTypingTarget } from "@/components/ontology/CanvasControls";
-import { EntitiesIcon, TablesIcon } from "@/components/nav/nav-icons";
-import { orthogonalPath, rightToLeftAnchors, type Rect } from "@/lib/geometry";
+import type { Rect } from "@/lib/geometry";
 import { cn } from "@/lib/utils";
 
 /**
@@ -83,18 +94,10 @@ import { cn } from "@/lib/utils";
  * job (expand/collapse a card) — only shift/cmd-click toggles an Entity or Property into the
  * multi-selection; the action bar itself only appears once 2+ things are selected.
  */
-/** Expanded items float to the top of their lane, collapsed ones stack below — so whichever card
- * is currently open stays easy to find without hunting through the rest of the list. */
-function orderByExpanded<T>(items: T[], isExpanded: (item: T) => boolean): T[] {
-  const expanded = items.filter(isExpanded);
-  const collapsed = items.filter((item) => !isExpanded(item));
-  return [...expanded, ...collapsed];
-}
-
 // The one Filter control every Property/Column list in this workspace shares — "All" (no-op),
-// "Mapped"/"Unmapped" (has vs. lacks a Property<->Column mapping at all, regardless of its own
-// Suggested/Mapped review state), and "Only Identifier" (isIdentifierProperty). A single enum
-// rather than 3 separate booleans since exactly one of them applies at a time.
+// "Mapped" (has a confirmed Property<->Column mapping), "Unmapped" (no mapping, or only a still-
+// Suggested one — see `hasConfirmedMapping`), and "Only Identifier" (isIdentifierProperty). A
+// single enum rather than 3 separate booleans since exactly one of them applies at a time.
 type ListFilter = "all" | "mapped" | "unmapped" | "identifier";
 const LIST_FILTER_LABEL: Record<ListFilter, string> = {
   all: "Filter",
@@ -103,24 +106,81 @@ const LIST_FILTER_LABEL: Record<ListFilter, string> = {
   identifier: "Only Identifier",
 };
 
+/** A Suggested mapping hasn't been reviewed yet, so the Mapped/Unmapped filters treat it as
+ * Unmapped — only a confirmed ("mapped") connector counts as Mapped. */
+function hasConfirmedMapping(property: Property): boolean {
+  return !!property.mapping && mappingStatus(property.mapping) === "mapped";
+}
+
 // A Property<->Column mapping line's own color: purple while it's still a Suggested mapping
 // (nobody has reviewed it yet — same purple as the "Suggested" review status elsewhere), fading to
 // this plain default gray once it's Mapped/confirmed — a mapping that's already settled shouldn't
 // keep drawing the eye the way an outstanding suggestion should.
-const MAPPING_SUGGESTED_COLOR = "#7c5eff";
-const MAPPING_DEFAULT_COLOR = "#a1a1aa";
+const MAPPING_SUGGESTED_COLOR = "#A855F7";
+const MAPPING_DEFAULT_COLOR = "#9EA3A2";
+const CONNECTOR_BEND_GAP = 18;
+const CONNECTOR_RADIUS = 28;
+
+type ConnectorPoint = { x: number; y: number };
+
+/**
+ * Routes a connector through the gutter between lanes: short horizontal exit, vertical travel in
+ * the reserved gutter, then horizontal entry into the target. This keeps paths out of pill columns
+ * while retaining soft 28px corners.
+ */
+function gutterConnectorPath(
+  start: ConnectorPoint,
+  end: ConnectorPoint,
+  bendX: number,
+  radius = CONNECTOR_RADIUS,
+) {
+  if (Math.abs(start.y - end.y) < 0.5) return `M ${start.x} ${start.y} L ${end.x} ${end.y}`;
+
+  const firstDirection = Math.sign(bendX - start.x) || 1;
+  const verticalDirection = Math.sign(end.y - start.y) || 1;
+  const lastDirection = Math.sign(end.x - bendX) || 1;
+  const fittedRadius = Math.max(
+    0,
+    Math.min(
+      radius,
+      Math.abs(bendX - start.x),
+      Math.abs(end.x - bendX),
+      Math.abs(end.y - start.y) / 2,
+    ),
+  );
+
+  if (fittedRadius < 0.5) {
+    return `M ${start.x} ${start.y} L ${bendX} ${start.y} L ${bendX} ${end.y} L ${end.x} ${end.y}`;
+  }
+
+  return [
+    `M ${start.x} ${start.y}`,
+    `L ${bendX - firstDirection * fittedRadius} ${start.y}`,
+    `Q ${bendX} ${start.y} ${bendX} ${start.y + verticalDirection * fittedRadius}`,
+    `L ${bendX} ${end.y - verticalDirection * fittedRadius}`,
+    `Q ${bendX} ${end.y} ${bendX + lastDirection * fittedRadius} ${end.y}`,
+    `L ${end.x} ${end.y}`,
+  ].join(" ");
+}
+
+function horizontalCenters(source: Rect, target: Rect) {
+  return {
+    start: { x: source.x + source.width, y: source.y + source.height / 2 },
+    end: { x: target.x, y: target.y + target.height / 2 },
+  };
+}
 
 // A Column row's own status dot — same 3 states as the mapping line above, just as a small dot
 // instead of a connector: unmapped columns get a hollow neutral dot (nothing to say about them
-// yet), a confirmed/settled mapping gets the same plain gray as its line, and only a still-
-// Suggested mapping gets purple. Previously every Column row's dot was hardcoded to this same
+// yet), a confirmed/settled mapping gets the mapped cyan, and only a still-Suggested mapping
+// gets purple. Previously every Column row's dot was hardcoded to this same
 // purple regardless of its actual state, which read as "every column has an outstanding
 // suggestion" even for an Unmapped-filtered list — purple is reserved for Suggested everywhere
-// else in the app (see `propertyDot` below), so this brings the Column dot in line with that.
+// else in the app (see `reviewStatusDot` below), so this brings the Column dot in line with that.
 type ColumnMapState = "unmapped" | "mapped" | "suggested";
 const COLUMN_DOT_COLOR: Record<ColumnMapState, string> = {
   unmapped: "#d4d4d8",
-  mapped: MAPPING_DEFAULT_COLOR,
+  mapped: "#22D3EE",
   suggested: MAPPING_SUGGESTED_COLOR,
 };
 
@@ -181,33 +241,44 @@ function UndoRedoPill({
   canRedo: boolean;
 }) {
   return (
-    <div className="flex items-center gap-1 rounded-[6px] border border-node-border bg-node p-[3px] shadow-[var(--shadow-node)]">
+    // Rebuilt off the Figma "topNavBar" node (406:5746, fetched in full): Undo/Redo are bare 28px
+    // icon buttons directly in the row — no enclosing bordered/shadowed pill like the prototype's
+    // original — followed by a 1px divider and a static "100%" zoom readout. That readout is
+    // chrome only, not wired to a real zoom handler: this bounded workspace (unlike the Overview
+    // canvas, which already has a real Zoom menu in `CanvasControls.tsx`) isn't actually
+    // zoomable, so this preserves existing behavior (nothing to zoom) rather than fabricating a
+    // new feature — same "static chrome, no invented behavior" call as the Entity types panel's
+    // own "Name" sort control.
+    <div className="flex items-center gap-2">
       <button
         type="button"
         onClick={onUndo}
         disabled={!canUndo}
         aria-label="Undo"
-        title="Undo"
         className={cn(
-          "flex size-7 shrink-0 items-center justify-center rounded-[4px] text-foreground hover:bg-accent",
+          "flex size-7 shrink-0 items-center justify-center rounded text-[#080a09] hover:bg-accent",
           !canUndo && "pointer-events-none opacity-30",
         )}
       >
-        <Undo2 className="size-3.5" />
+        <Undo2 className="size-4" />
       </button>
       <button
         type="button"
         onClick={onRedo}
         disabled={!canRedo}
         aria-label="Redo"
-        title="Redo"
         className={cn(
-          "flex size-7 shrink-0 items-center justify-center rounded-[4px] text-foreground hover:bg-accent",
+          "flex size-7 shrink-0 items-center justify-center rounded text-[#080a09] hover:bg-accent",
           !canRedo && "pointer-events-none opacity-30",
         )}
       >
-        <Redo2 className="size-3.5" />
+        <Redo2 className="size-4" />
       </button>
+      <div className="h-4 w-px shrink-0 bg-[#e3e5e4]" aria-hidden />
+      <span className="flex h-7 shrink-0 items-center gap-1 rounded pl-2 pr-1 text-[12px] text-[#080a09]">
+        100%
+        <ChevronDown className="size-4 text-[#6d7472]" />
+      </span>
     </div>
   );
 }
@@ -232,8 +303,17 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
         .filter((relation) => relation.from === focusEntity.id || relation.to === focusEntity.id)
         .map((relation) => (relation.from === focusEntity.id ? relation.to : relation.from)),
     );
-    return app.entities.filter((entity) => ids.has(entity.id));
+    return app.entities.filter((entity) => ids.has(entity.id) && entity.id !== focusEntity.id);
   }, [app.entities, app.relations, focusEntity]);
+
+  const hasSelfRelation = useMemo(
+    () =>
+      !!focusEntity &&
+      app.relations.some(
+        (relation) => relation.from === focusEntity.id && relation.to === focusEntity.id,
+      ),
+    [app.relations, focusEntity],
+  );
 
   // Whichever ONE Connected Entity is currently expanded, if any — the Connected Entities lane
   // below uses this to render just that one `ExpandedEntity` plus a single collapsed "N more"
@@ -264,6 +344,22 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
       .filter((v): v is { relation: Relation; counterpart: Entity; outgoing: boolean } => !!v);
   }, [focusEntity, app.relations, app.entities]);
 
+  const displayedFocusRelations = useMemo(() => {
+    if (expandedConnectedEntity) {
+      return focusRelations.filter(
+        ({ counterpart }) => counterpart.id === expandedConnectedEntity.id,
+      );
+    }
+    const entityOrder = new Map(relatedEntities.map((entity, index) => [entity.id, index]));
+    return [...focusRelations].sort((a, b) => {
+      const aIndex =
+        a.counterpart.id === focusEntity?.id ? -1 : (entityOrder.get(a.counterpart.id) ?? 0);
+      const bIndex =
+        b.counterpart.id === focusEntity?.id ? -1 : (entityOrder.get(b.counterpart.id) ?? 0);
+      return aIndex - bIndex;
+    });
+  }, [focusRelations, expandedConnectedEntity, relatedEntities, focusEntity]);
+
   // Data Tables has no Relation-like fact to drive "is this Table showing" the way Connected
   // Entities does — a Table only ever appears once a Property actually maps into it. Dragging one
   // in from the toolbox ahead of any mapping needs its own small bit of state to keep it visible
@@ -290,6 +386,28 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
     if (expandedContext?.kind !== "table") return null;
     return mappedTables.find((table) => table.name === expandedContext.name) ?? null;
   }, [mappedTables, expandedContext]);
+
+  // Suggestions bar counts only what the lanes show: Focus + Entities lane, the Relations lane,
+  // the Property list(s) on canvas (Focus's, plus an expanded Connected Entity's), and mappings
+  // from those Properties into the Data Tables lane.
+  const suggestionScope = useMemo<SuggestionScope>(() => {
+    const entityIds = new Set(relatedEntities.map((entity) => entity.id));
+    if (focusEntity) entityIds.add(focusEntity.id);
+    const propertyOwnerIds = new Set<string>();
+    if (focusEntity) propertyOwnerIds.add(focusEntity.id);
+    if (expandedConnectedEntity) propertyOwnerIds.add(expandedConnectedEntity.id);
+    const relationIds = new Set(focusRelations.map(({ relation }) => relation.id));
+    const tableNames = new Set(mappedTables.map((table) => table.name));
+    return {
+      entity: (entity) => entityIds.has(entity.id),
+      property: (owner) => propertyOwnerIds.has(owner.id),
+      relation: (relation) => relationIds.has(relation.id),
+      mapping: (owner, property) =>
+        propertyOwnerIds.has(owner.id) &&
+        !!property.mapping &&
+        tableNames.has(property.mapping.table),
+    };
+  }, [relatedEntities, focusEntity, expandedConnectedEntity, focusRelations, mappedTables]);
 
   // --- Filter/Sort/Search for every Property list (Current Entity's own, and each Connected
   // Entity's own expanded one) and every Column list (each expanded Table's own) — one Record
@@ -346,8 +464,8 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
     (entity: Entity) => {
       let list = entity.properties;
       const filter = propertyFilterByEntity[entity.id] ?? "all";
-      if (filter === "mapped") list = list.filter((p) => !!p.mapping);
-      else if (filter === "unmapped") list = list.filter((p) => !p.mapping);
+      if (filter === "mapped") list = list.filter(hasConfirmedMapping);
+      else if (filter === "unmapped") list = list.filter((p) => !hasConfirmedMapping(p));
       else if (filter === "identifier") list = list.filter((p) => isIdentifierProperty(p));
       const search = propertySearchByEntity[entity.id]?.trim().toLowerCase();
       if (search) list = list.filter((p) => p.name.toLowerCase().includes(search));
@@ -397,10 +515,10 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
   const expandedTableColumnOrderHint = useMemo(() => {
     if (!focusEntity || expandedContext?.kind !== "table") return undefined;
     const tableName = expandedContext.name;
-    return focusEntity.properties
-      .filter((p) => p.mapping?.table === tableName)
-      .map((p) => p.mapping!.column);
-  }, [focusEntity, expandedContext]);
+    return visiblePropertiesFor(focusEntity).map((property) =>
+      property.mapping?.table === tableName ? property.mapping.column : null,
+    );
+  }, [focusEntity, expandedContext, visiblePropertiesFor]);
 
   // The currently-expanded Table's own mapped Columns, keyed by column name, to whichever of
   // Current Entity's Properties maps into it — lets `ExpandedTable` show an Accept/Reject control
@@ -673,14 +791,52 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
   // own Relations-lane pill, then that same pill -> Current Entity's title) — the pill itself is
   // a real row in the Relations lane, not a floating label, so the connector visibly threads
   // through it instead of just pointing near it.
-  const [relationLines, setRelationLines] = useState<{ id: string; path: string }[]>([]);
+  const [relationLines, setRelationLines] = useState<
+    { id: string; path: string; suggested: boolean; counterpartId: string }[]
+  >([]);
+  const [hoveredEntityId, setHoveredEntityId] = useState<string | null>(null);
+  const [hoveredRelationId, setHoveredRelationId] = useState<string | null>(null);
   const [hoveredPropertyId, setHoveredPropertyId] = useState<string | null>(null);
   // The Column-side mirror of `hoveredPropertyId` — keyed `${table}.${column}` (same key shape as
   // `columnRefs`) since a Column, unlike a Property, has no ID of its own. Hovering EITHER end of
   // a mapping now reveals its line, not just the Property side.
   const [hoveredColumnKey, setHoveredColumnKey] = useState<string | null>(null);
+  // Which Table (by name) is the current cross-lane highlight target — set by hovering EITHER a
+  // mapped Property row in Current Entity or that Table's own compact row in Data Tables, so
+  // hovering either end highlights both: the Table's row gets a solid border (see `CompactTable`),
+  // every Property mapped into it gets a shaded background (see `PropertyListRow`), AND every one
+  // of those shaded Properties draws its own line to that Table's row (see `familyLines`/
+  // `recomputeFamilyLines` below) — matching Figma nodes 407:6393/407:6938's dashed connectors,
+  // which all bend at roughly the same X and so read as one shared trunk even though each is its
+  // own independent path (same "parallel connections share a bend" `orthogonalPath` already gives
+  // for free). Deliberately separate from `hoveredColumnKey` above, which only drives the mapping
+  // ladder line and only applies once a Table is actually expanded — this is the compact-list
+  // equivalent.
+  const [hoveredTableName, setHoveredTableName] = useState<string | null>(null);
+  const clearConnectorHover = useCallback(() => {
+    setHoveredEntityId(null);
+    setHoveredRelationId(null);
+    setHoveredPropertyId(null);
+    setHoveredColumnKey(null);
+    setHoveredTableName(null);
+  }, []);
+  // The Entity<->Table connector for the compact (unexpanded) case above — every Property mapped
+  // into whichever Table is `hoveredTableName` gets its own line to that Table's compact row.
+  const [familyLines, setFamilyLines] = useState<
+    { id: string; path: string; suggested: boolean; propertyId: string; tableName: string }[]
+  >([]);
+  const [compactTableDirections, setCompactTableDirections] = useState<
+    Record<string, "up" | "down">
+  >({});
   const [mappingLines, setMappingLines] = useState<
-    { id: string; path: string; suggested: boolean }[]
+    {
+      id: string;
+      path: string;
+      suggested: boolean;
+      propertyId: string;
+      tableName: string;
+      columnKey: string;
+    }[]
   >([]);
   // Which way each footer's own redirect currently points — "up" once its off-screen target has
   // scrolled above the visible area, "down" while it's still below — `null` when there's nothing
@@ -776,10 +932,10 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
 
   const recomputeRelationLines = useCallback(() => {
     const container = workspaceRef.current;
-    const title = currentTitleRef.current;
+    const currentLane = currentBodyRef.current;
     const connectedBody = connectedBodyRef.current;
     const relationsBody = relationsBodyRef.current;
-    if (!container || !title || !connectedBody || !relationsBody || !focusEntity) {
+    if (!container || !currentLane || !connectedBody || !relationsBody || !focusEntity) {
       setRelationLines([]);
       return;
     }
@@ -788,46 +944,65 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
       const r = el.getBoundingClientRect();
       return { x: r.left - cRect.left, y: r.top - cRect.top, width: r.width, height: r.height };
     };
-    const titleRect = rectOf(title);
-    const next: { id: string; path: string }[] = [];
-    // No line at all until a Connected Entity is actually expanded — with every Relation drawn at
-    // once (the old default), the shared trunk reads as visual noise rather than pointing at
-    // anything in particular. Expanding one (by clicking its own card, or its own Relations-lane
-    // pill) is what makes its one relation worth drawing.
-    const visibleFocusRelations =
-      expandedContext?.kind === "entity"
-        ? focusRelations.filter(({ counterpart }) => counterpart.id === expandedContext.id)
-        : [];
-    visibleFocusRelations.forEach(({ relation, counterpart }) => {
+    const currentLaneRect = rectOf(currentLane);
+    const connectedLaneRect = rectOf(connectedBody);
+    const next: {
+      id: string;
+      path: string;
+      suggested: boolean;
+      counterpartId: string;
+    }[] = [];
+    // Every currently visible connected Entity/Relation pair is rendered by default. When one
+    // Entity is expanded, the other compact rows are intentionally replaced by the collapsed
+    // stack, so only pairs with a real on-screen row receive a path.
+    const visibleFocusRelations = displayedFocusRelations;
+    visibleFocusRelations.forEach(({ relation, counterpart }, index) => {
       const row = entityTitleRefs.current.get(counterpart.id);
       const pill = relationCardRefs.current.get(relation.id);
       if (!row || !pill) return;
       if (!withinViewport(row, connectedBody) || !withinViewport(pill, relationsBody)) return;
-      // Always the row's own RIGHT edge -> the pill's own LEFT edge, and the pill's own RIGHT
-      // edge -> the title's own LEFT edge — never the adaptive top/bottom anchoring
-      // `edgeAnchorsForRects` falls back to for a row far above/below its target, which made a
-      // line look like it emerged from underneath its row instead of its side.
+
       const rowRect = rectOf(row);
       const pillRect = rectOf(pill);
-      const toPill = rightToLeftAnchors(rowRect, pillRect, 6);
-      const fromPill = rightToLeftAnchors(pillRect, titleRect, 6);
-      // Two angular elbows (one rounded 90-degree bend at a shared X, not a smooth curve) joined
-      // into one path — the connector now visibly threads straight through the Relations lane's
-      // own pill instead of just floating near it, same "parallel connections share a bend" case
-      // `orthogonalPath` documents itself for.
+      const laneOffset = Math.max(
+        -12,
+        Math.min(12, (index - (visibleFocusRelations.length - 1) / 2) * 4),
+      );
+      const toPill = expandedConnectedEntity
+        ? {
+            start: {
+              x: rowRect.x + rowRect.width,
+              y: connectedLaneRect.y + connectedLaneRect.height / 2 + laneOffset,
+            },
+            end: { x: pillRect.x, y: pillRect.y + pillRect.height / 2 },
+          }
+        : horizontalCenters(rowRect, pillRect);
+      const laneAnchor = {
+        x: currentLaneRect.x,
+        y: currentLaneRect.y + currentLaneRect.height / 2,
+      };
+      const fromPill = {
+        x: pillRect.x + pillRect.width,
+        y: pillRect.y + pillRect.height / 2,
+      };
       const path = [
-        orthogonalPath(toPill.p1, toPill.p2, 10, "horizontal"),
-        orthogonalPath(fromPill.p1, fromPill.p2, 10, "horizontal"),
+        gutterConnectorPath(toPill.start, toPill.end, pillRect.x - CONNECTOR_BEND_GAP),
+        gutterConnectorPath(fromPill, laneAnchor, fromPill.x + CONNECTOR_BEND_GAP),
       ].join(" ");
-      next.push({ id: relation.id, path });
+      next.push({
+        id: relation.id,
+        path,
+        suggested: relation.status === "suggested",
+        counterpartId: counterpart.id,
+      });
     });
     setRelationLines(next);
-  }, [focusRelations, focusEntity, expandedContext]);
+  }, [displayedFocusRelations, focusEntity, expandedConnectedEntity]);
 
   useEffect(() => {
     recomputeRelationLines();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusRelations, mappedTables, expandedContext]);
+  }, [displayedFocusRelations, mappedTables, expandedContext]);
 
   // Property <-> Column ladder: same "nothing selected, nothing drawn" rule the Relations lane's
   // own connector follows — only the Property currently being hovered gets its own line, not
@@ -858,7 +1033,14 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
       const r = el.getBoundingClientRect();
       return { x: r.left - cRect.left, y: r.top - cRect.top, width: r.width, height: r.height };
     };
-    const next: { id: string; path: string; suggested: boolean }[] = [];
+    const next: {
+      id: string;
+      path: string;
+      suggested: boolean;
+      propertyId: string;
+      tableName: string;
+      columnKey: string;
+    }[] = [];
     // Whichever off-screen Property/Column is found FIRST (in the same order `scrollToMoreProps`/
     // `scrollToMappedColumn` themselves search) decides that footer's own arrow direction — so the
     // arrow always points the way clicking it actually jumps.
@@ -877,10 +1059,6 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
       if (!colVisible && colEl && mappedColumnsDir === null) {
         mappedColumnsDir = directionOf(colEl, tableCard);
       }
-      // The footer arrows above still scan every mapped Property regardless of hover — they're a
-      // "there's more, come look" prompt, not a per-item highlight — but the line itself only
-      // draws for whichever one Property OR Column end of it is actually hovered right now.
-      if (prop.id !== hoveredPropertyId && mappingKey !== hoveredColumnKey) return;
       // Same off-screen redirect as the Column side above, just mirrored: a Property that's
       // scrolled outside Current Entity's own visible list redirects to Current Entity's own
       // "More props" footer instead of vanishing — see that footer's own doc comment.
@@ -888,24 +1066,145 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
       if (!source) return;
       const target = colVisible ? colEl! : footer;
       if (!target) return;
-      const { p1, p2 } = rightToLeftAnchors(rectOf(source), rectOf(target), 6);
+      const sourceRect = rectOf(source);
+      const targetRect = rectOf(target);
+      const anchors = horizontalCenters(sourceRect, targetRect);
       next.push({
         id: prop.id,
-        path: orthogonalPath(p1, p2, 10, "horizontal"),
+        path: gutterConnectorPath(anchors.start, anchors.end, targetRect.x - CONNECTOR_BEND_GAP),
         suggested: mappingStatus(prop.mapping) === "suggested",
+        propertyId: prop.id,
+        tableName,
+        columnKey: mappingKey,
       });
     });
     setMappingLines(next);
     setMorePropsDirection(morePropsDir);
     setMappedColumnsDirection(mappedColumnsDir);
-  }, [focusEntity, expandedContext, hoveredPropertyId, hoveredColumnKey]);
+  }, [focusEntity, expandedContext]);
 
   useEffect(() => {
     recomputeMappingLines();
     // `recomputeMappingLines` itself already depends on `focusEntity` (and so picks up a fresh
     // mapping status right after Accept/Reject), so including it here — rather than re-listing
     // `focusEntity` a second time — is what actually makes that recompute fire on that change.
-  }, [hoveredPropertyId, hoveredColumnKey, expandedContext, recomputeMappingLines]);
+  }, [expandedContext, recomputeMappingLines]);
+
+  // The compact-list mirror of `recomputeMappingLines` above: every visible mapped Property is
+  // connected to its visible compact Table by default. Interaction-specific emphasis can be
+  // layered on later without making topology discovery depend on hover.
+  const recomputeFamilyLines = useCallback(() => {
+    const container = workspaceRef.current;
+    const currentBody = currentBodyRef.current;
+    const dataBody = dataBodyRef.current;
+    if (!container || !currentBody || !dataBody || !focusEntity) {
+      setFamilyLines([]);
+      setCompactTableDirections({});
+      return;
+    }
+    if (expandedContext?.kind === "table") {
+      setFamilyLines([]);
+      setCompactTableDirections({});
+      return;
+    }
+    const cRect = container.getBoundingClientRect();
+    const rectOf = (el: HTMLElement): Rect => {
+      const r = el.getBoundingClientRect();
+      return { x: r.left - cRect.left, y: r.top - cRect.top, width: r.width, height: r.height };
+    };
+    const next: {
+      id: string;
+      path: string;
+      suggested: boolean;
+      propertyId: string;
+      tableName: string;
+    }[] = [];
+    const directions: Record<string, "up" | "down"> = {};
+    const bodyRect = rectOf(currentBody);
+    mappedTables.forEach((table) => {
+      const tableEl = tableCardRefs.current.get(table.name);
+      if (!tableEl || !withinViewport(tableEl, dataBody)) return;
+      const targetRect = rectOf(tableEl);
+      const mappedProperties = focusEntity.properties.filter(
+        (prop) => prop.mapping?.table === table.name,
+      );
+      let visibleCount = 0;
+      let firstOffscreen: {
+        prop: Property;
+        element: HTMLElement;
+        direction: "up" | "down";
+      } | null = null;
+      for (const prop of mappedProperties) {
+        const propEl = propertyRefs.current.get(prop.id);
+        if (!propEl) continue;
+        if (!withinViewport(propEl, currentBody)) {
+          firstOffscreen ??= { prop, element: propEl, direction: directionOf(propEl, currentBody) };
+          continue;
+        }
+        visibleCount += 1;
+        const anchors = horizontalCenters(rectOf(propEl), targetRect);
+        next.push({
+          id: `${table.name}-${prop.id}`,
+          path: gutterConnectorPath(anchors.start, anchors.end, targetRect.x - CONNECTOR_BEND_GAP),
+          suggested: mappingStatus(prop.mapping!) === "suggested",
+          propertyId: prop.id,
+          tableName: table.name,
+        });
+      }
+      if (firstOffscreen) directions[table.name] = firstOffscreen.direction;
+      if (visibleCount === 0 && firstOffscreen) {
+        const source = {
+          x: bodyRect.x + bodyRect.width,
+          y:
+            firstOffscreen.direction === "up" ? bodyRect.y + 12 : bodyRect.y + bodyRect.height - 12,
+        };
+        const end = { x: targetRect.x, y: targetRect.y + targetRect.height / 2 };
+        next.push({
+          id: `${table.name}-${firstOffscreen.prop.id}-offscreen`,
+          path: gutterConnectorPath(source, end, targetRect.x - CONNECTOR_BEND_GAP),
+          suggested: mappingStatus(firstOffscreen.prop.mapping!) === "suggested",
+          propertyId: firstOffscreen.prop.id,
+          tableName: table.name,
+        });
+      }
+    });
+    setFamilyLines(next);
+    setCompactTableDirections(directions);
+  }, [focusEntity, mappedTables, expandedContext]);
+
+  useEffect(() => {
+    recomputeFamilyLines();
+  }, [mappedTables, expandedContext, recomputeFamilyLines]);
+
+  const scrollToMappedPropertyForTable = useCallback(
+    (tableName: string) => {
+      if (!focusEntity) return;
+      const body = currentBodyRef.current;
+      if (!body) return;
+      const candidates = focusEntity.properties
+        .filter((prop) => prop.mapping?.table === tableName)
+        .map((prop) => ({ prop, element: propertyRefs.current.get(prop.id) }))
+        .filter(
+          (item): item is { prop: Property; element: HTMLElement } =>
+            !!item.element && !withinViewport(item.element, body),
+        );
+      if (candidates.length === 0) return;
+      const bodyRect = body.getBoundingClientRect();
+      const nearest = candidates.reduce((best, item) => {
+        const rect = item.element.getBoundingClientRect();
+        const distance =
+          rect.bottom < bodyRect.top ? bodyRect.top - rect.bottom : rect.top - bodyRect.bottom;
+        const bestRect = best.element.getBoundingClientRect();
+        const bestDistance =
+          bestRect.bottom < bodyRect.top
+            ? bodyRect.top - bestRect.bottom
+            : bestRect.top - bodyRect.bottom;
+        return distance < bestDistance ? item : best;
+      });
+      nearest.element.scrollIntoView({ block: "center", behavior: "smooth" });
+    },
+    [focusEntity],
+  );
 
   const scrollToMappedColumn = useCallback(
     (tableName: string) => {
@@ -962,8 +1261,8 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
     propertyRefs.current.get(propertyId)?.scrollIntoView({ block: "center", behavior: "smooth" });
   }, []);
 
-  // rAF-throttled scroll handling shared by both remaining connector systems — either lane
-  // scrolling can move a row/property/column in or out of view.
+  // rAF-throttled scroll handling shared by every connector system — any lane scrolling can move a
+  // row/property/column/table in or out of view.
   const scrollRaf = useRef<number | null>(null);
   const onAnyLaneScroll = useCallback(() => {
     if (scrollRaf.current != null) return;
@@ -971,8 +1270,46 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
       scrollRaf.current = null;
       recomputeRelationLines();
       recomputeMappingLines();
+      recomputeFamilyLines();
     });
-  }, [recomputeRelationLines, recomputeMappingLines]);
+  }, [recomputeRelationLines, recomputeMappingLines, recomputeFamilyLines]);
+
+  // Connector paths use DOM coordinates, so viewport/lane resizing must invalidate them just like
+  // scrolling does. Observe the workspace and every independently-sized lane; the window listener
+  // also catches browser zoom/resize cases where ResizeObserver delivery can be delayed a frame.
+  useEffect(() => {
+    const observed = [
+      workspaceRef.current,
+      connectedBodyRef.current,
+      relationsBodyRef.current,
+      currentBodyRef.current,
+      dataBodyRef.current,
+    ].filter((element): element is NonNullable<typeof element> => element != null);
+    const observer = new ResizeObserver(onAnyLaneScroll);
+    observed.forEach((element) => observer.observe(element));
+    window.addEventListener("resize", onAnyLaneScroll);
+    onAnyLaneScroll();
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", onAnyLaneScroll);
+    };
+  }, [onAnyLaneScroll]);
+
+  // Filtering/searching/sorting changes which row DOM nodes exist without necessarily changing a
+  // lane's outer size. Recompute after React commits those new rows so paths never keep stale
+  // coordinates or point to rows that have disappeared.
+  useEffect(() => {
+    onAnyLaneScroll();
+  }, [
+    propertyFilterByEntity,
+    propertySearchByEntity,
+    propertySortByEntity,
+    columnFilterByTable,
+    columnSearchByTable,
+    columnSortByTable,
+    expandedContext,
+    onAnyLaneScroll,
+  ]);
 
   if (!focusEntity) {
     return (
@@ -981,6 +1318,62 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
       </div>
     );
   }
+
+  const connectorHoverActive =
+    hoveredEntityId != null ||
+    hoveredRelationId != null ||
+    hoveredPropertyId != null ||
+    hoveredColumnKey != null ||
+    hoveredTableName != null;
+
+  // While a pill is hovered, every pill not directly connected to it fades — the same connections
+  // the connector lines draw, so pills and lines always dim together.
+  // Plain calculation (not `useMemo`) — this runs after the early return above.
+  const hoverRelated = (() => {
+    if (!connectorHoverActive || !focusEntity) return null;
+    const entities = new Set<string>();
+    const relations = new Set<string>();
+    const properties = new Set<string>();
+    const tables = new Set<string>();
+    const columns = new Set<string>();
+    if (hoveredEntityId) {
+      entities.add(hoveredEntityId);
+      focusRelations.forEach(({ relation, counterpart }) => {
+        if (counterpart.id === hoveredEntityId) relations.add(relation.id);
+      });
+    }
+    if (hoveredRelationId) {
+      relations.add(hoveredRelationId);
+      const match = focusRelations.find(({ relation }) => relation.id === hoveredRelationId);
+      if (match) entities.add(match.counterpart.id);
+    }
+    if (hoveredPropertyId) {
+      properties.add(hoveredPropertyId);
+      const property = focusEntity.properties.find((p) => p.id === hoveredPropertyId);
+      if (property?.mapping) {
+        tables.add(property.mapping.table);
+        columns.add(`${property.mapping.table}.${property.mapping.column}`);
+      }
+    }
+    if (hoveredTableName) {
+      tables.add(hoveredTableName);
+      focusEntity.properties.forEach((p) => {
+        if (p.mapping?.table === hoveredTableName) properties.add(p.id);
+      });
+    }
+    if (hoveredColumnKey) {
+      columns.add(hoveredColumnKey);
+      tables.add(hoveredColumnKey.slice(0, hoveredColumnKey.indexOf(".")));
+      focusEntity.properties.forEach((p) => {
+        if (p.mapping && `${p.mapping.table}.${p.mapping.column}` === hoveredColumnKey) {
+          properties.add(p.id);
+        }
+      });
+    }
+    return { entities, relations, properties, tables, columns };
+  })();
+  const dimmedIn = (kind: keyof NonNullable<typeof hoverRelated>, id: string) =>
+    hoverRelated != null && !hoverRelated[kind].has(id);
 
   return (
     <div className="flex h-full w-full overflow-hidden bg-white">
@@ -991,13 +1384,15 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
       />
 
       <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-white">
-        <div className="flex h-10 shrink-0 items-center justify-between border-b border-black/[0.08] px-3">
+        {/* "topNavBar", Figma node 406:5746 — height/padding/text corrected to match (was h-10,
+            12px text, and missing "view" from the label). */}
+        <div className="flex h-12 shrink-0 items-center justify-between border-b border-[#e3e5e4] bg-white pl-3 pr-2">
           <button
             type="button"
             onClick={app.closeDetail}
-            className="flex items-center gap-1 text-[12px] font-medium text-[#1c1c18] hover:underline"
+            className="flex items-center gap-2 text-[14px] font-medium text-[#161919] hover:underline"
           >
-            <ArrowLeft className="size-3.5" /> Back to Ontology
+            <ArrowLeft className="size-4" /> Back to Ontology view
           </button>
           <UndoRedoPill
             onUndo={app.undo}
@@ -1009,6 +1404,23 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
 
         <div
           ref={workspaceRef}
+          onPointerMove={(event) => {
+            const target = event.target;
+            const pill =
+              target instanceof Element
+                ? target.closest<HTMLElement>("[data-connector-hover]")
+                : null;
+            if (!pill) {
+              clearConnectorHover();
+              return;
+            }
+            setHoveredEntityId(pill.dataset["connectorEntityId"] ?? null);
+            setHoveredRelationId(pill.dataset["connectorRelationId"] ?? null);
+            setHoveredPropertyId(pill.dataset["connectorPropertyId"] ?? null);
+            setHoveredColumnKey(pill.dataset["connectorColumnKey"] ?? null);
+            setHoveredTableName(pill.dataset["connectorTableName"] ?? null);
+          }}
+          onMouseLeave={clearConnectorHover}
           // Each lane's own section fills the full height down to `<main>`'s own bottom edge — the
           // reserved 24px clearance for the AI review bar (see `Idea4Surface`'s own body padding)
           // lives INSIDE each section as padding, not as a margin out here, so that strip still
@@ -1020,25 +1432,47 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
           // it never needs a full share) — the relation lines/pills still cross straight through
           // it on their way to Current Entity's title, unchanged; this lane is a separate, plain
           // browsable list of the same underlying Relations, not a replacement.
-          className="relative grid min-h-0 flex-1 grid-cols-[1fr_0.55fr_1fr_1fr] gap-[3px] overflow-hidden"
+          className="relative grid min-h-0 flex-1 grid-cols-[1fr_0.5fr_1fr_1fr] gap-[3px] overflow-hidden bg-[#E3E5E4]"
         >
           <Idea4Surface
-            label="Connected Entities"
-            count={relatedEntities.length}
+            // Label matches Figma's exact header copy ("Entities", not "Connected Entities" or
+            // this port's own earlier "Related Entities" — this app's own internal naming for the
+            // concept, e.g. `relatedEntities`, is left as-is, only the displayed string changes).
+            // Count includes the pinned self row below, same as Figma's own count (5 = 1 self + 4
+            // related, in its sample data).
+            label="Entities"
+            count={relatedEntities.length + (hasSelfRelation ? 1 : 0)}
             bodyRef={connectedBodyRef}
             onBodyScroll={onAnyLaneScroll}
+            flush={!!expandedConnectedEntity}
           >
             <div
               onDragOver={(e) => {
                 if (e.dataTransfer.types.includes(ENTITY_PANEL_DND_TYPE)) e.preventDefault();
               }}
               onDrop={handleEntityPanelDrop}
-              className="mx-auto flex w-full max-w-[360px] flex-col gap-2 py-4 transition-[width] duration-300"
+              className={cn(
+                "flex w-full min-h-full flex-col transition-[width] duration-300",
+                expandedConnectedEntity
+                  ? "h-full items-stretch gap-0 p-0"
+                  : "items-center justify-center-safe gap-3 px-4 pt-4",
+              )}
             >
+              {focusEntity && hasSelfRelation && (
+                <SelfEntityRow
+                  entity={focusEntity}
+                  dimmed={dimmedIn("entities", focusEntity.id)}
+                  rowRef={(element) => {
+                    if (element) entityTitleRefs.current.set(focusEntity.id, element);
+                    else entityTitleRefs.current.delete(focusEntity.id);
+                  }}
+                />
+              )}
               {expandedConnectedEntity ? (
                 <>
                   <ExpandedEntity
                     key={expandedConnectedEntity.id}
+                    isPropertyDimmed={(id) => dimmedIn("properties", id)}
                     entity={expandedConnectedEntity}
                     visibleProperties={visiblePropertiesFor(expandedConnectedEntity)}
                     selected={suggestionSelection.has(
@@ -1077,16 +1511,8 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
                       handleCreateProperty(expandedConnectedEntity.id, name)
                     }
                     onCancelAddProperty={() => setAddingPropertyEntityId(null)}
+                    onBodyScroll={onAnyLaneScroll}
                   />
-                  {relatedEntities.length > 1 && (
-                    <CollapsedCardsStack
-                      count={relatedEntities.length - 1}
-                      noun="Entity Type"
-                      nounPlural="Entity Types"
-                      laneLabel="Connected Entities"
-                      onOpen={() => setExpandedContext(null)}
-                    />
-                  )}
                 </>
               ) : (
                 relatedEntities.map((entity) => {
@@ -1098,6 +1524,7 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
                     <CompactEntity
                       key={entity.id}
                       entity={entity}
+                      dimmed={dimmedIn("entities", entity.id)}
                       compact={expandedContext?.kind === "table"}
                       selected={suggestionSelection.has(
                         suggestionKey({ kind: "entity", id: entity.id }),
@@ -1106,35 +1533,34 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
                       onSelect={(mods) => selectOnClick({ kind: "entity", id: entity.id }, mods)}
                       onDropProperties={(e) => movePropertiesOnDrop(e, entity.id)}
                       rowRef={titleRef}
+                      onHoverChange={(hovering) =>
+                        setHoveredEntityId((current) =>
+                          hovering ? entity.id : current === entity.id ? null : current,
+                        )
+                      }
                     />
                   );
                 })
               )}
-              <button
-                type="button"
-                onClick={() => setCreatingEntity(true)}
-                className="mt-1 flex h-12 items-center gap-1 rounded-xl bg-black/[0.04] px-4 text-[12px] text-muted-foreground hover:bg-black/[0.07]"
-              >
-                <span className="text-base">＋</span> Create Entity
-              </button>
             </div>
           </Idea4Surface>
 
           <Idea4Surface
             label="Relations"
-            count={focusRelations.length}
+            count={displayedFocusRelations.length}
             bodyRef={relationsBodyRef}
             onBodyScroll={onAnyLaneScroll}
           >
-            <div className="mx-auto flex w-full max-w-[300px] flex-col gap-2 py-4">
-              {focusRelations.length === 0 && (
+            <div className="flex w-full min-h-full flex-col items-center justify-center-safe gap-3 px-2 pt-4">
+              {displayedFocusRelations.length === 0 && (
                 <p className="px-2 py-3 text-center text-[11px] text-muted-foreground">
                   No Relations touch this Entity Type yet.
                 </p>
               )}
-              {focusRelations.map(({ relation, counterpart, outgoing }) => (
+              {displayedFocusRelations.map(({ relation, counterpart, outgoing }) => (
                 <RelationCard
                   key={relation.id}
+                  dimmed={dimmedIn("relations", relation.id)}
                   relation={relation}
                   counterpart={counterpart}
                   outgoing={outgoing}
@@ -1156,79 +1582,91 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
                     if (el) relationCardRefs.current.set(relation.id, el);
                     else relationCardRefs.current.delete(relation.id);
                   }}
+                  onHoverChange={(hovering) =>
+                    setHoveredRelationId((current) =>
+                      hovering ? relation.id : current === relation.id ? null : current,
+                    )
+                  }
                 />
               ))}
             </div>
           </Idea4Surface>
 
-          <Idea4Surface
-            label="Current Entity"
-            active
+          {/* No `Idea4Surface` wrapper here — `CurrentEntityCard` is self-contained (see its own
+              top-of-function comment) since Figma's "Category" card (node 407:5561) is one flush
+              panel, not a floating card inside generic lane chrome. `onBodyScroll` doesn't need
+              separately wiring here: `onPropertyListScroll` below already carries the identical
+              `onAnyLaneScroll` handler onto this lane's own (now only) scroll container. */}
+          <CurrentEntityCard
+            entity={focusEntity}
+            isPropertyDimmed={(id) => dimmedIn("properties", id)}
+            visibleProperties={visiblePropertiesFor(focusEntity)}
+            titleRef={currentTitleRef}
             bodyRef={currentBodyRef}
-            onBodyScroll={onAnyLaneScroll}
-          >
-            <CurrentEntityCard
-              entity={focusEntity}
-              visibleProperties={visiblePropertiesFor(focusEntity)}
-              titleRef={currentTitleRef}
-              hoveredPropertyId={hoveredPropertyId}
-              onPropertyHoverChange={(id, hovering) =>
-                setHoveredPropertyId((cur) => {
-                  if (hovering) return id;
-                  return cur === id ? null : cur;
-                })
-              }
-              onSetPropertyRef={(id, el) => {
-                if (el) propertyRefs.current.set(id, el);
-                else propertyRefs.current.delete(id);
-              }}
-              selected={suggestionSelection.has(
-                suggestionKey({ kind: "entity", id: focusEntity.id }),
-              )}
-              onSelect={(mods) => selectOnClick({ kind: "entity", id: focusEntity.id }, mods)}
-              onDropProperties={(e) => movePropertiesOnDrop(e, focusEntity.id)}
-              suggestionSelection={suggestionSelection}
-              onSelectProperty={(propertyId, mods) =>
-                selectOnClick({ kind: "property", entityId: focusEntity.id, propertyId }, mods)
-              }
-              footerRef={(el) => {
-                currentFooterRef.current = el;
-              }}
-              onFooterClick={scrollToMoreProps}
-              footerDirection={morePropsDirection}
-              onPropertyListScroll={onAnyLaneScroll}
-              sort={propertySortFor(focusEntity.id)}
-              onSortChange={(key) => setPropertySortFor(focusEntity.id, key)}
-              filter={propertyFilterFor(focusEntity.id)}
-              onFilterChange={(next) => setPropertyFilterFor(focusEntity.id, next)}
-              search={propertySearchFor(focusEntity.id)}
-              onSearchChange={(value) => setPropertySearchFor(focusEntity.id, value)}
-              isAddingProperty={addingPropertyEntityId === focusEntity.id}
-              onStartAddProperty={() => setAddingPropertyEntityId(focusEntity.id)}
-              onSubmitAddProperty={(name) => handleCreateProperty(focusEntity.id, name)}
-              onCancelAddProperty={() => setAddingPropertyEntityId(null)}
-              onStartMapDrag={startMapDrag}
-              onNavigateToMapping={scrollToColumnForProperty}
-            />
-          </Idea4Surface>
+            hoveredPropertyId={hoveredPropertyId}
+            onPropertyHoverChange={(id, hovering) => {
+              setHoveredPropertyId((cur) => {
+                if (hovering) return id;
+                return cur === id ? null : cur;
+              });
+            }}
+            onSetPropertyRef={(id, el) => {
+              if (el) propertyRefs.current.set(id, el);
+              else propertyRefs.current.delete(id);
+            }}
+            selected={suggestionSelection.has(
+              suggestionKey({ kind: "entity", id: focusEntity.id }),
+            )}
+            onSelect={(mods) => selectOnClick({ kind: "entity", id: focusEntity.id }, mods)}
+            onDropProperties={(e) => movePropertiesOnDrop(e, focusEntity.id)}
+            suggestionSelection={suggestionSelection}
+            onSelectProperty={(propertyId, mods) =>
+              selectOnClick({ kind: "property", entityId: focusEntity.id, propertyId }, mods)
+            }
+            footerRef={(el) => {
+              currentFooterRef.current = el;
+            }}
+            onFooterClick={scrollToMoreProps}
+            footerDirection={morePropsDirection}
+            onPropertyListScroll={onAnyLaneScroll}
+            sort={propertySortFor(focusEntity.id)}
+            onSortChange={(key) => setPropertySortFor(focusEntity.id, key)}
+            filter={propertyFilterFor(focusEntity.id)}
+            onFilterChange={(next) => setPropertyFilterFor(focusEntity.id, next)}
+            search={propertySearchFor(focusEntity.id)}
+            onSearchChange={(value) => setPropertySearchFor(focusEntity.id, value)}
+            isAddingProperty={addingPropertyEntityId === focusEntity.id}
+            onStartAddProperty={() => setAddingPropertyEntityId(focusEntity.id)}
+            onSubmitAddProperty={(name) => handleCreateProperty(focusEntity.id, name)}
+            onCancelAddProperty={() => setAddingPropertyEntityId(null)}
+            onStartMapDrag={startMapDrag}
+            onNavigateToMapping={scrollToColumnForProperty}
+          />
 
           <Idea4Surface
             label="Data Tables"
             count={mappedTables.length}
             bodyRef={dataBodyRef}
             onBodyScroll={onAnyLaneScroll}
+            flush={!!expandedMappedTable}
           >
             <div
               onDragOver={(e) => {
                 if (e.dataTransfer.types.includes(TABLE_PANEL_DND_TYPE)) e.preventDefault();
               }}
               onDrop={handleTablePanelDrop}
-              className="mx-auto flex w-full max-w-[360px] flex-col gap-2 py-4 transition-[width] duration-300"
+              className={cn(
+                "flex w-full min-h-full flex-col transition-[width] duration-300",
+                expandedMappedTable
+                  ? "h-full items-stretch gap-0 p-0"
+                  : "items-center justify-center-safe gap-3 px-4 pt-4",
+              )}
             >
               {expandedMappedTable ? (
                 <>
                   <ExpandedTable
                     key={expandedMappedTable.name}
+                    isColumnDimmed={(key) => dimmedIn("columns", key)}
                     table={expandedMappedTable}
                     entities={app.entities}
                     onClose={() => setExpandedContext(null)}
@@ -1245,10 +1683,6 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
                     onColumnListScroll={onAnyLaneScroll}
                     columnOrderHint={expandedTableColumnOrderHint}
                     columnMappings={expandedTableColumnMappings}
-                    onAcceptMapping={(propertyId) => app.confirmMapping(focusEntity.id, propertyId)}
-                    onRejectMapping={(propertyId) =>
-                      app.updateMapping(focusEntity.id, propertyId, null)
-                    }
                     sort={columnSortFor(expandedMappedTable.name)}
                     onSortChange={(key) => setColumnSortFor(expandedMappedTable.name, key)}
                     hasExplicitSort={expandedMappedTable.name in columnSortByTable}
@@ -1274,23 +1708,28 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
                     }
                     onNavigateToProperty={scrollToPropertyById}
                   />
-                  {mappedTables.length > 1 && (
-                    <CollapsedCardsStack
-                      count={mappedTables.length - 1}
-                      noun="Data Table"
-                      nounPlural="Data Tables"
-                      laneLabel="Data Tables"
-                      onOpen={() => setExpandedContext(null)}
-                    />
-                  )}
                 </>
               ) : (
                 mappedTables.map((table) => (
                   <CompactTable
                     key={table.name}
+                    dimmed={dimmedIn("tables", table.name)}
                     table={table}
                     entities={app.entities}
                     onOpen={() => setExpandedContext({ kind: "table", name: table.name })}
+                    rowRef={(el) => {
+                      if (el) tableCardRefs.current.set(table.name, el);
+                      else tableCardRefs.current.delete(table.name);
+                    }}
+                    highlighted={hoveredTableName === table.name}
+                    onHoverChange={(hovering) =>
+                      setHoveredTableName((cur) => {
+                        if (hovering) return table.name;
+                        return cur === table.name ? null : cur;
+                      })
+                    }
+                    offscreenDirection={compactTableDirections[table.name]}
+                    onNavigateToOffscreen={() => scrollToMappedPropertyForTable(table.name)}
                   />
                 ))
               )}
@@ -1304,32 +1743,67 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
               separate label — see `recomputeRelationLines`'s own doc comment. The property<->
               column ladder is persistent too, but only for whichever ONE Table is currently
               expanded — a Property whose Column has scrolled out of that Table's own view
-              redirects to its "Mapped columns" footer instead of pointing at nothing. There's no
-              Entity<->Table connector — which Tables an Entity uses is already legible from the
-              Data Tables lane's own contents, without needing its own line. */}
-          <svg className="pointer-events-none absolute inset-0 z-10 h-full w-full overflow-visible">
-            {relationLines.map((line) => (
-              <path
-                key={`rel-${line.id}`}
-                d={line.path}
-                fill="none"
-                stroke="#7c5eff"
-                strokeWidth={1.5}
-                strokeDasharray="4 3"
-                opacity={0.6}
-              />
-            ))}
-            {mappingLines.map((line) => (
-              <path
-                key={`map-${line.id}`}
-                d={line.path}
-                fill="none"
-                stroke={line.suggested ? MAPPING_SUGGESTED_COLOR : MAPPING_DEFAULT_COLOR}
-                strokeWidth={1.5}
-                strokeDasharray="4 3"
-                opacity={0.6}
-              />
-            ))}
+              redirects to its "Mapped columns" footer instead of pointing at nothing. The compact
+              Entity<->Table case (no Table expanded) gets its own lines too, but only for whichever
+              ONE Table is currently cross-lane-highlighted (`hoveredTableName`) — see
+              `recomputeFamilyLines`'s own doc comment, matching Figma nodes 407:6393/407:6938. */}
+          <svg
+            className="pointer-events-none absolute inset-0 z-10 h-full w-full overflow-visible"
+            style={{ clipPath: "inset(68px 0 0 0)" }}
+          >
+            {relationLines.map((line) => {
+              const related =
+                hoveredEntityId === line.counterpartId || hoveredRelationId === line.id;
+              return (
+                <path
+                  key={`rel-${line.id}`}
+                  d={line.path}
+                  fill="none"
+                  stroke={line.suggested ? MAPPING_SUGGESTED_COLOR : MAPPING_DEFAULT_COLOR}
+                  strokeWidth={connectorHoverActive && related ? 2 : 1.5}
+                  opacity={connectorHoverActive && !related ? 0.16 : 1}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="transition-[opacity,stroke-width] duration-150"
+                />
+              );
+            })}
+            {mappingLines.map((line) => {
+              const related =
+                hoveredPropertyId === line.propertyId ||
+                hoveredColumnKey === line.columnKey ||
+                hoveredTableName === line.tableName;
+              return (
+                <path
+                  key={`map-${line.id}`}
+                  d={line.path}
+                  fill="none"
+                  stroke={line.suggested ? MAPPING_SUGGESTED_COLOR : MAPPING_DEFAULT_COLOR}
+                  strokeWidth={connectorHoverActive && related ? 2 : 1.5}
+                  opacity={connectorHoverActive && !related ? 0.16 : 1}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="transition-[opacity,stroke-width] duration-150"
+                />
+              );
+            })}
+            {familyLines.map((line) => {
+              const related =
+                hoveredPropertyId === line.propertyId || hoveredTableName === line.tableName;
+              return (
+                <path
+                  key={`family-${line.id}`}
+                  d={line.path}
+                  fill="none"
+                  stroke={line.suggested ? MAPPING_SUGGESTED_COLOR : MAPPING_DEFAULT_COLOR}
+                  strokeWidth={connectorHoverActive && related ? 2 : 1.5}
+                  opacity={connectorHoverActive && !related ? 0.16 : 1}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="transition-[opacity,stroke-width] duration-150"
+                />
+              );
+            })}
             {/* Live drag-in-progress line — follows the pointer from wherever the drag started
                 (see `startMapDrag`/`mapDragOrigin`) until it's dropped, so dragging a Property's
                 handle toward a Column reads as a real connection being drawn rather than a bare
@@ -1345,6 +1819,18 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
               />
             )}
           </svg>
+
+          {/* Diffuse foreground layer from the Figma composition: connector and item layers pass
+              beneath it near the fixed review controls, so the workspace ends softly instead of
+              being cut off by the toolbar. */}
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 bottom-0 z-[15] h-24 backdrop-blur-[1px]"
+            style={{
+              background:
+                "linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0.88) 58%, rgba(255,255,255,0.98))",
+            }}
+          />
 
           {/* Multi-select action bar — floats over the workspace, bottom-center, only while 2+
               objects are selected. */}
@@ -1455,6 +1941,7 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
               confidenceRange={app.confidenceRange}
               onConfidenceRangeChange={app.setConfidenceRange}
               onSelectSuggestionsInRange={app.selectSuggestionKeys}
+              scope={suggestionScope}
             />
           </div>
         </div>
@@ -1486,56 +1973,97 @@ function Idea4EntityMode({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
  */
 function Idea4TableMode({ app, table }: { app: OntologyApp; table: TableSchema }) {
   useUndoRedoShortcuts(app.undo, app.redo);
-  const [expandedEntityId, setExpandedEntityId] = useState<string | null>(null);
   const usingEntities = useMemo(
     () => entitiesUsingTable(table.name, app.entities),
     [table.name, app.entities],
   );
 
-  // A much smaller mirror of `Idea4EntityMode`'s own Filter/Sort/Search state — this mode never
-  // has more than one Entity expanded at once, so one plain (non-keyed) slot per control is
-  // enough; Merge/Split/the ladder are still intentionally not wired up here (see this file's own
-  // doc comment above), so this stays scoped to just the one expanded Property list.
-  const [propertySort, setPropertySort] = useState<SortState>(DEFAULT_SORT);
-  const [propertySortTouched, setPropertySortTouched] = useState(false);
-  const [propertyFilter, setPropertyFilter] = useState<ListFilter>("all");
-  const [propertySearch, setPropertySearch] = useState("");
-  // Only one Entity is ever expanded at once here, so a plain boolean (not keyed by entity id like
-  // `Idea4EntityMode`'s own `addingPropertyEntityId`) suffices for "Add property" too.
-  const [addingProperty, setAddingProperty] = useState(false);
-  const handleCreateProperty = useCallback(
-    (name: string) => {
-      const trimmed = name.trim();
-      if (trimmed && expandedEntityId) app.createProperty(expandedEntityId, trimmed);
-      setAddingProperty(false);
+  // Which Mapped Entity drives the Entities/Relations lanes: an expanded (clicked) one, otherwise
+  // whichever row is hovered — held while the pointer stays anywhere in the Mapped Entities lane,
+  // so moving between rows doesn't flicker. With neither, those two lanes stay empty. Both reset
+  // when the anchor Table changes.
+  const [previewEntityId, setPreviewEntityId] = useState<string | null>(null);
+  const [expandedEntityId, setExpandedEntityId] = useState<string | null>(null);
+  useEffect(() => {
+    setPreviewEntityId(null);
+    setExpandedEntityId(null);
+  }, [table.name]);
+  const expandedEntity = usingEntities.find((entity) => entity.id === expandedEntityId) ?? null;
+  const laneEntityId = expandedEntity?.id ?? previewEntityId;
+  const laneEntity = usingEntities.find((entity) => entity.id === laneEntityId) ?? null;
+
+  // Transient hover targets — they only emphasize connector lines and reveal scroll arrows.
+  const [hoveredMappedRowId, setHoveredMappedRowId] = useState<string | null>(null);
+  const [hoveredPropertyId, setHoveredPropertyId] = useState<string | null>(null);
+  const [hoveredColumnName, setHoveredColumnName] = useState<string | null>(null);
+  const [hoveredEntityId, setHoveredEntityId] = useState<string | null>(null);
+  const [hoveredRelationId, setHoveredRelationId] = useState<string | null>(null);
+
+  const relatedEntities = useMemo(() => {
+    if (!laneEntity) return [];
+    const ids = new Set(
+      app.relations
+        .filter((relation) => relation.from === laneEntity.id || relation.to === laneEntity.id)
+        .map((relation) => (relation.from === laneEntity.id ? relation.to : relation.from)),
+    );
+    return app.entities.filter((entity) => ids.has(entity.id) && entity.id !== laneEntity.id);
+  }, [app.entities, app.relations, laneEntity]);
+
+  const hasSelfRelation =
+    !!laneEntity &&
+    app.relations.some(
+      (relation) => relation.from === laneEntity.id && relation.to === laneEntity.id,
+    );
+
+  const laneRelations = useMemo(() => {
+    if (!laneEntity) return [];
+    return app.relations
+      .filter((relation) => relation.from === laneEntity.id || relation.to === laneEntity.id)
+      .map((relation) => {
+        const outgoing = relation.from === laneEntity.id;
+        const counterpartId = outgoing ? relation.to : relation.from;
+        const counterpart = app.entities.find((entity) => entity.id === counterpartId);
+        return counterpart ? { relation, counterpart, outgoing } : null;
+      })
+      .filter((v): v is { relation: Relation; counterpart: Entity; outgoing: boolean } => !!v);
+  }, [laneEntity, app.relations, app.entities]);
+
+  // Suggestions bar counts what the lanes show for an expanded (clicked) Mapped Entity — not a
+  // hover preview, so the number doesn't jump around while the pointer passes over rows.
+  const suggestionScope = useMemo<SuggestionScope>(() => {
+    const entityIds = new Set(usingEntities.map((entity) => entity.id));
+    const relationIds = new Set<string>();
+    const expandedId = expandedEntity?.id;
+    if (expandedId) {
+      app.relations.forEach((relation) => {
+        if (relation.from !== expandedId && relation.to !== expandedId) return;
+        relationIds.add(relation.id);
+        entityIds.add(relation.from);
+        entityIds.add(relation.to);
+      });
+    }
+    return {
+      entity: (entity) => entityIds.has(entity.id),
+      property: (owner) => owner.id === expandedId,
+      relation: (relation) => relationIds.has(relation.id),
+      mapping: (_owner, property) => property.mapping?.table === table.name,
+    };
+  }, [usingEntities, app.relations, expandedEntity, table.name]);
+
+  // Opening a Related Entity or a Relation's counterpart expands it here IF it's also a Mapped
+  // Entity — otherwise it isn't part of this Table's Mapped Entities at all, so this navigates there.
+  const openCounterpart = useCallback(
+    (entityId: string) => {
+      if (usingEntities.some((entity) => entity.id === entityId)) {
+        setPreviewEntityId(null);
+        setExpandedEntityId(entityId);
+      } else {
+        app.openDetail("entity", entityId);
+      }
     },
-    [app, expandedEntityId],
+    [usingEntities, app],
   );
-  const visibleProperties = useMemo(() => {
-    const entity = usingEntities.find((e) => e.id === expandedEntityId);
-    if (!entity) return [];
-    let list = entity.properties;
-    if (propertyFilter === "mapped") list = list.filter((p) => !!p.mapping);
-    else if (propertyFilter === "unmapped") list = list.filter((p) => !p.mapping);
-    else if (propertyFilter === "identifier") list = list.filter((p) => isIdentifierProperty(p));
-    const search = propertySearch.trim().toLowerCase();
-    if (search) list = list.filter((p) => p.name.toLowerCase().includes(search));
-    if (propertySortTouched)
-      list = sortByState(
-        list,
-        propertySort,
-        (p) => p.name,
-        (p) => p.confidence,
-      );
-    return list;
-  }, [
-    usingEntities,
-    expandedEntityId,
-    propertyFilter,
-    propertySearch,
-    propertySortTouched,
-    propertySort,
-  ]);
+
   // Columns has no per-Entity ownership the way Properties does — every Entity using this Table
   // shares the exact same column list, so one plain slot per control suffices here too. Mapped/
   // Unmapped/Identifier all read "does ANY Entity currently using this Table map a Property (an
@@ -1550,9 +2078,17 @@ function Idea4TableMode({ app, table }: { app: OntologyApp; table: TableSchema }
     });
     return names;
   }, [usingEntities, table.name]);
-  // Same "does ANY Entity's mapping into this Column still say Suggested" aggregation as
-  // `mappedColumnNames` above, so `CurrentDataTableCard`'s own dot can tell a still-pending
-  // mapping apart from an already-settled one — see `COLUMN_DOT_COLOR`'s own doc comment.
+  // Mapped/Unmapped filter only — a Column counts as Mapped once any Entity's mapping into it is
+  // confirmed; the status dot keeps using `mappedColumnNames`/`suggestedColumnNames`.
+  const confirmedColumnNames = useMemo(() => {
+    const names = new Set<string>();
+    usingEntities.forEach((entity) => {
+      entity.properties.forEach((p) => {
+        if (p.mapping?.table === table.name && hasConfirmedMapping(p)) names.add(p.mapping.column);
+      });
+    });
+    return names;
+  }, [usingEntities, table.name]);
   const suggestedColumnNames = useMemo(() => {
     const names = new Set<string>();
     usingEntities.forEach((entity) => {
@@ -1573,15 +2109,27 @@ function Idea4TableMode({ app, table }: { app: OntologyApp; table: TableSchema }
     });
     return names;
   }, [usingEntities, table.name]);
+  // A column's confidence is its mapping's — shown only while that mapping is still Suggested,
+  // taking the strongest one when several Entities suggest a mapping into the same column.
+  const suggestedColumnConfidence = useMemo(() => {
+    const byColumn = new Map<string, number>();
+    usingEntities.forEach((entity) => {
+      entity.properties.forEach((p) => {
+        if (p.mapping?.table !== table.name || mappingStatus(p.mapping) !== "suggested") return;
+        byColumn.set(p.mapping.column, Math.max(byColumn.get(p.mapping.column) ?? 0, p.confidence));
+      });
+    });
+    return byColumn;
+  }, [usingEntities, table.name]);
   const [columnSort, setColumnSort] = useState<SortState>(DEFAULT_SORT);
   const [columnSortTouched, setColumnSortTouched] = useState(false);
   const [columnFilter, setColumnFilter] = useState<ListFilter>("all");
   const [columnSearch, setColumnSearch] = useState("");
   const visibleTableColumns = useMemo(() => {
     let list = table.columns;
-    if (columnFilter === "mapped") list = list.filter((c) => mappedColumnNames.has(c.name));
+    if (columnFilter === "mapped") list = list.filter((c) => confirmedColumnNames.has(c.name));
     else if (columnFilter === "unmapped") {
-      list = list.filter((c) => !mappedColumnNames.has(c.name));
+      list = list.filter((c) => !confirmedColumnNames.has(c.name));
     } else if (columnFilter === "identifier") {
       list = list.filter((c) => identifierColumnNames.has(c.name));
     }
@@ -1599,25 +2147,490 @@ function Idea4TableMode({ app, table }: { app: OntologyApp; table: TableSchema }
   }, [
     table.columns,
     columnFilter,
-    mappedColumnNames,
+    confirmedColumnNames,
     identifierColumnNames,
     columnSearch,
     columnSortTouched,
     columnSort,
   ]);
 
+  // The expanded Mapped Entity's own Property list — Filter/Sort/Search/Add, same rules as
+  // `Idea4EntityMode`'s `visiblePropertiesFor`, reset whenever a different Entity is expanded.
+  const [propertySort, setPropertySort] = useState<SortState>(DEFAULT_SORT);
+  const [propertySortTouched, setPropertySortTouched] = useState(false);
+  const [propertyFilter, setPropertyFilter] = useState<ListFilter>("all");
+  const [propertySearch, setPropertySearch] = useState("");
+  const [addingProperty, setAddingProperty] = useState(false);
+  useEffect(() => {
+    setPropertySort(DEFAULT_SORT);
+    setPropertySortTouched(false);
+    setPropertyFilter("all");
+    setPropertySearch("");
+    setAddingProperty(false);
+    setHoveredPropertyId(null);
+  }, [expandedEntityId]);
+  const visibleExpandedProperties = useMemo(() => {
+    if (!expandedEntity) return [];
+    let list = expandedEntity.properties;
+    if (propertyFilter === "mapped") list = list.filter(hasConfirmedMapping);
+    else if (propertyFilter === "unmapped") list = list.filter((p) => !hasConfirmedMapping(p));
+    else if (propertyFilter === "identifier") list = list.filter((p) => isIdentifierProperty(p));
+    const search = propertySearch.trim().toLowerCase();
+    if (search) list = list.filter((p) => p.name.toLowerCase().includes(search));
+    if (propertySortTouched) {
+      list = sortByState(
+        list,
+        propertySort,
+        (p) => p.name,
+        (p) => p.confidence,
+      );
+    }
+    return list;
+  }, [expandedEntity, propertyFilter, propertySearch, propertySortTouched, propertySort]);
+
+  const suggestionSelection = app.suggestionSelection;
+  const selectedPropertyIdsFor = useCallback(
+    (entityId: string) => {
+      const ids = new Set<string>();
+      suggestionSelection.forEach((key) => {
+        const ref = parseSuggestionKey(key);
+        if (ref?.kind === "property" && ref.entityId === entityId) ids.add(ref.propertyId);
+      });
+      return ids;
+    },
+    [suggestionSelection],
+  );
+
+  // --- Connectors: Entities -> Relations -> the lane Entity's Mapped Entities row (relation
+  // lines), and Mapped Entity (or, once expanded, each of its Properties) -> Column (column lines).
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const relatedBodyRef = useRef<HTMLDivElement>(null);
+  const relationsBodyRef = useRef<HTMLDivElement>(null);
+  const mappedBodyRef = useRef<HTMLDivElement>(null);
+  const expandedBodyRef = useRef<HTMLDivElement>(null);
+  const dataBodyRef = useRef<HTMLDivElement>(null);
+  const entityRowRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const relationCardRefs = useRef<Map<string, HTMLElement>>(new Map());
+  // Holds each compact Mapped Entity row, or the expanded card's title while one is expanded.
+  const mappedEntityRowRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const propertyRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const columnRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const [relationLines, setRelationLines] = useState<
+    { id: string; path: string; suggested: boolean }[]
+  >([]);
+  const [columnLines, setColumnLines] = useState<
+    {
+      id: string;
+      path: string;
+      suggested: boolean;
+      entityId: string;
+      propertyId: string | null;
+      columnName: string;
+    }[]
+  >([]);
+  const [entityOffscreen, setEntityOffscreen] = useState<Record<string, "up" | "down">>({});
+  const [propertyOffscreen, setPropertyOffscreen] = useState<Record<string, "up" | "down">>({});
+  const [columnOffscreen, setColumnOffscreen] = useState<Record<string, "up" | "down">>({});
+
+  const withinViewport = (el: HTMLElement, lane: HTMLElement) => {
+    const r = el.getBoundingClientRect();
+    const c = lane.getBoundingClientRect();
+    return r.bottom > c.top && r.top < c.bottom && r.right > c.left && r.left < c.right;
+  };
+  const directionOf = (el: HTMLElement, lane: HTMLElement): "up" | "down" =>
+    el.getBoundingClientRect().top < lane.getBoundingClientRect().top ? "up" : "down";
+
+  const recomputeRelationLines = useCallback(() => {
+    const container = workspaceRef.current;
+    const relatedBody = relatedBodyRef.current;
+    const relationsBody = relationsBodyRef.current;
+    const mappedBody = mappedBodyRef.current;
+    const laneRow = laneEntityId ? mappedEntityRowRefs.current.get(laneEntityId) : null;
+    if (!container || !relatedBody || !relationsBody || !mappedBody || !laneRow) {
+      setRelationLines([]);
+      return;
+    }
+    if (!withinViewport(laneRow, mappedBody)) {
+      setRelationLines([]);
+      return;
+    }
+    const cRect = container.getBoundingClientRect();
+    const rectOf = (el: HTMLElement): Rect => {
+      const r = el.getBoundingClientRect();
+      return { x: r.left - cRect.left, y: r.top - cRect.top, width: r.width, height: r.height };
+    };
+    // An expanded card's title sits under the clipped header strip, so aim at the middle of the
+    // Mapped Entities lane's left edge instead — the same anchor `Idea4EntityMode` uses.
+    const mappedRect = rectOf(mappedBody);
+    const laneRect: Rect = expandedEntity
+      ? { x: mappedRect.x, y: mappedRect.y + mappedRect.height / 2, width: 0, height: 0 }
+      : rectOf(laneRow);
+    const next: { id: string; path: string; suggested: boolean }[] = [];
+    laneRelations.forEach(({ relation, counterpart }) => {
+      const row = entityRowRefs.current.get(counterpart.id);
+      const pill = relationCardRefs.current.get(relation.id);
+      if (!row || !pill) return;
+      if (!withinViewport(row, relatedBody) || !withinViewport(pill, relationsBody)) return;
+      const rowRect = rectOf(row);
+      const pillRect = rectOf(pill);
+      const toPill = horizontalCenters(rowRect, pillRect);
+      const fromPill = horizontalCenters(pillRect, laneRect);
+      const path = [
+        gutterConnectorPath(toPill.start, toPill.end, pillRect.x - CONNECTOR_BEND_GAP),
+        gutterConnectorPath(fromPill.start, fromPill.end, fromPill.start.x + CONNECTOR_BEND_GAP),
+      ].join(" ");
+      next.push({ id: relation.id, path, suggested: relation.status === "suggested" });
+    });
+    setRelationLines(next);
+  }, [laneRelations, laneEntityId, expandedEntity]);
+
+  // Every visible left item (a compact Mapped Entity row, or an expanded Entity's Property) gets a
+  // line to every visible Column it maps into. When one side is scrolled out of view, the visible
+  // side gets a scroll arrow (on hover) and — only if it has no visible counterpart at all — a stub
+  // line pointing at the edge of the other lane, the same rules `Idea4EntityMode` uses for Data
+  // Tables.
+  const recomputeColumnLines = useCallback(() => {
+    const container = workspaceRef.current;
+    const dataBody = dataBodyRef.current;
+    const leftBody = expandedEntity ? expandedBodyRef.current : mappedBodyRef.current;
+    if (!container || !dataBody || !leftBody) {
+      setColumnLines([]);
+      setEntityOffscreen({});
+      setPropertyOffscreen({});
+      setColumnOffscreen({});
+      return;
+    }
+    const cRect = container.getBoundingClientRect();
+    const rectOf = (el: HTMLElement): Rect => {
+      const r = el.getBoundingClientRect();
+      return { x: r.left - cRect.left, y: r.top - cRect.top, width: r.width, height: r.height };
+    };
+    type LeftItem = {
+      key: string;
+      entityId: string;
+      propertyId: string | null;
+      el: HTMLElement | undefined;
+      // Column name -> whether any mapping into it is still a suggestion.
+      columns: Map<string, boolean>;
+    };
+    const leftItems: LeftItem[] = expandedEntity
+      ? visibleExpandedProperties
+          .filter((p) => p.mapping?.table === table.name)
+          .map((p) => ({
+            key: p.id,
+            entityId: expandedEntity.id,
+            propertyId: p.id,
+            el: propertyRefs.current.get(p.id),
+            columns: new Map([[p.mapping!.column, mappingStatus(p.mapping!) === "suggested"]]),
+          }))
+      : usingEntities.map((entity) => {
+          const columns = new Map<string, boolean>();
+          entity.properties.forEach((p) => {
+            if (p.mapping?.table !== table.name) return;
+            const suggested = mappingStatus(p.mapping) === "suggested";
+            columns.set(p.mapping.column, (columns.get(p.mapping.column) ?? false) || suggested);
+          });
+          return {
+            key: entity.id,
+            entityId: entity.id,
+            propertyId: null,
+            el: mappedEntityRowRefs.current.get(entity.id),
+            columns,
+          };
+        });
+    const leftRect = rectOf(leftBody);
+    const dataRect = rectOf(dataBody);
+    const lines: typeof columnLines = [];
+    const leftDirections: Record<string, "up" | "down"> = {};
+    const columnDirections: Record<string, "up" | "down"> = {};
+    const columnHasVisibleCounterpart = new Set<string>();
+    const columnOffscreenCounterpart = new Map<
+      string,
+      { direction: "up" | "down"; suggested: boolean; entityId: string; propertyId: string | null }
+    >();
+    for (const item of leftItems) {
+      if (!item.el) continue;
+      const leftVisible = withinViewport(item.el, leftBody);
+      const itemRect = rectOf(item.el);
+      let visibleTargets = 0;
+      let firstOffscreen: { direction: "up" | "down"; column: string; suggested: boolean } | null =
+        null;
+      for (const [column, suggested] of item.columns) {
+        const columnEl = columnRefs.current.get(column);
+        if (!columnEl) continue;
+        const columnVisible = withinViewport(columnEl, dataBody);
+        if (leftVisible && columnVisible) {
+          visibleTargets += 1;
+          columnHasVisibleCounterpart.add(column);
+          const columnRect = rectOf(columnEl);
+          const anchors = horizontalCenters(itemRect, columnRect);
+          lines.push({
+            id: `${item.key}-${column}`,
+            path: gutterConnectorPath(
+              anchors.start,
+              anchors.end,
+              columnRect.x - CONNECTOR_BEND_GAP,
+            ),
+            suggested,
+            entityId: item.entityId,
+            propertyId: item.propertyId,
+            columnName: column,
+          });
+        } else if (leftVisible) {
+          firstOffscreen ??= { direction: directionOf(columnEl, dataBody), column, suggested };
+        } else if (columnVisible && !columnOffscreenCounterpart.has(column)) {
+          columnOffscreenCounterpart.set(column, {
+            direction: directionOf(item.el, leftBody),
+            suggested,
+            entityId: item.entityId,
+            propertyId: item.propertyId,
+          });
+        }
+      }
+      if (!firstOffscreen) continue;
+      leftDirections[item.key] = firstOffscreen.direction;
+      if (visibleTargets > 0) continue;
+      const start = { x: itemRect.x + itemRect.width, y: itemRect.y + itemRect.height / 2 };
+      const end = {
+        x: dataRect.x,
+        y: firstOffscreen.direction === "up" ? dataRect.y + 12 : dataRect.y + dataRect.height - 12,
+      };
+      lines.push({
+        id: `${item.key}-offscreen`,
+        path: gutterConnectorPath(start, end, dataRect.x - CONNECTOR_BEND_GAP),
+        suggested: firstOffscreen.suggested,
+        entityId: item.entityId,
+        propertyId: item.propertyId,
+        columnName: firstOffscreen.column,
+      });
+    }
+    for (const [column, offscreen] of columnOffscreenCounterpart) {
+      columnDirections[column] = offscreen.direction;
+      if (columnHasVisibleCounterpart.has(column)) continue;
+      const columnRect = rectOf(columnRefs.current.get(column)!);
+      const start = {
+        x: leftRect.x + leftRect.width,
+        y: offscreen.direction === "up" ? leftRect.y + 12 : leftRect.y + leftRect.height - 12,
+      };
+      const end = { x: columnRect.x, y: columnRect.y + columnRect.height / 2 };
+      lines.push({
+        id: `column-${column}-offscreen`,
+        path: gutterConnectorPath(start, end, columnRect.x - CONNECTOR_BEND_GAP),
+        suggested: offscreen.suggested,
+        entityId: offscreen.entityId,
+        propertyId: offscreen.propertyId,
+        columnName: column,
+      });
+    }
+    setColumnLines(lines);
+    if (expandedEntity) {
+      setEntityOffscreen({});
+      setPropertyOffscreen(leftDirections);
+    } else {
+      setEntityOffscreen(leftDirections);
+      setPropertyOffscreen({});
+    }
+    setColumnOffscreen(columnDirections);
+  }, [expandedEntity, visibleExpandedProperties, usingEntities, table.name]);
+
+  // Scrolls `lane` (not the page) so whichever of `elements` is nearest outside its visible area
+  // lands centered — `scrollIntoView` can also move overflow-hidden ancestors like the workspace.
+  const scrollNearestIntoView = useCallback((elements: HTMLElement[], lane: HTMLElement) => {
+    const laneRect = lane.getBoundingClientRect();
+    const distance = (el: HTMLElement) => {
+      const r = el.getBoundingClientRect();
+      return r.bottom < laneRect.top ? laneRect.top - r.bottom : r.top - laneRect.bottom;
+    };
+    const offscreen = elements.filter((el) => distance(el) > 0);
+    if (offscreen.length === 0) return;
+    const nearest = offscreen.reduce((best, el) => (distance(el) < distance(best) ? el : best));
+    const r = nearest.getBoundingClientRect();
+    lane.scrollBy({
+      top: r.top + r.height / 2 - (laneRect.top + laneRect.height / 2),
+      behavior: "smooth",
+    });
+  }, []);
+  const columnElementsFor = (columnNames: Iterable<string>) =>
+    Array.from(columnNames)
+      .map((name) => columnRefs.current.get(name))
+      .filter((el): el is HTMLElement => !!el);
+  const scrollToColumnsForEntity = (entityId: string) => {
+    const entity = usingEntities.find((e) => e.id === entityId);
+    const dataBody = dataBodyRef.current;
+    if (!entity || !dataBody) return;
+    const names = entity.properties
+      .filter((p) => p.mapping?.table === table.name)
+      .map((p) => p.mapping!.column);
+    scrollNearestIntoView(columnElementsFor(names), dataBody);
+  };
+  const scrollToColumnForProperty = (propertyId: string) => {
+    const property = expandedEntity?.properties.find((p) => p.id === propertyId);
+    const dataBody = dataBodyRef.current;
+    if (!property?.mapping || !dataBody) return;
+    scrollNearestIntoView(columnElementsFor([property.mapping.column]), dataBody);
+  };
+  const scrollToCounterpartsForColumn = (columnName: string) => {
+    if (expandedEntity) {
+      const lane = expandedBodyRef.current;
+      if (!lane) return;
+      const elements = expandedEntity.properties
+        .filter((p) => p.mapping?.table === table.name && p.mapping.column === columnName)
+        .map((p) => propertyRefs.current.get(p.id))
+        .filter((el): el is HTMLElement => !!el);
+      scrollNearestIntoView(elements, lane);
+      return;
+    }
+    const lane = mappedBodyRef.current;
+    if (!lane) return;
+    const elements = usingEntities
+      .filter((entity) =>
+        entity.properties.some(
+          (p) => p.mapping?.table === table.name && p.mapping.column === columnName,
+        ),
+      )
+      .map((entity) => mappedEntityRowRefs.current.get(entity.id))
+      .filter((el): el is HTMLElement => !!el);
+    scrollNearestIntoView(elements, lane);
+  };
+
+  const scrollRaf = useRef<number | null>(null);
+  const onAnyLaneScroll = useCallback(() => {
+    if (scrollRaf.current != null) return;
+    scrollRaf.current = requestAnimationFrame(() => {
+      scrollRaf.current = null;
+      recomputeRelationLines();
+      recomputeColumnLines();
+    });
+  }, [recomputeRelationLines, recomputeColumnLines]);
+
+  useEffect(() => {
+    const observed = [
+      workspaceRef.current,
+      relatedBodyRef.current,
+      relationsBodyRef.current,
+      mappedBodyRef.current,
+      dataBodyRef.current,
+    ].filter((element): element is NonNullable<typeof element> => element != null);
+    const observer = new ResizeObserver(onAnyLaneScroll);
+    observed.forEach((element) => observer.observe(element));
+    window.addEventListener("resize", onAnyLaneScroll);
+    onAnyLaneScroll();
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", onAnyLaneScroll);
+    };
+  }, [onAnyLaneScroll]);
+
+  // Rows appear/disappear (filter, search, sort, expand, lane Entity switch) and hover arrows
+  // shift row widths without resizing a lane, so recompute after React commits those changes.
+  useEffect(() => {
+    onAnyLaneScroll();
+  }, [
+    columnFilter,
+    columnSearch,
+    columnSort,
+    laneEntityId,
+    expandedEntityId,
+    visibleExpandedProperties,
+    visibleTableColumns,
+    hoveredMappedRowId,
+    hoveredPropertyId,
+    hoveredColumnName,
+    onAnyLaneScroll,
+  ]);
+
+  const columnHoverActive =
+    hoveredMappedRowId != null ||
+    hoveredPropertyId != null ||
+    hoveredColumnName != null ||
+    hoveredEntityId != null ||
+    hoveredRelationId != null;
+
+  // While a pill is hovered, every pill not directly connected to it fades — the same connections
+  // the connector lines draw (see `Idea4EntityMode`'s own `hoverRelated`).
+  const hoverRelated = useMemo(() => {
+    if (!columnHoverActive) return null;
+    const mapped = new Set<string>();
+    const entities = new Set<string>();
+    const relations = new Set<string>();
+    const properties = new Set<string>();
+    const columns = new Set<string>();
+    if (hoveredMappedRowId) {
+      mapped.add(hoveredMappedRowId);
+      // The Entities/Relations lanes are showing exactly this Entity's own neighbourhood.
+      entities.add(hoveredMappedRowId);
+      relatedEntities.forEach((entity) => entities.add(entity.id));
+      laneRelations.forEach(({ relation }) => relations.add(relation.id));
+      usingEntities
+        .find((entity) => entity.id === hoveredMappedRowId)
+        ?.properties.forEach((p) => {
+          if (p.mapping?.table === table.name) columns.add(p.mapping.column);
+        });
+    }
+    if (hoveredColumnName) {
+      columns.add(hoveredColumnName);
+      usingEntities.forEach((entity) => {
+        if (
+          entity.properties.some(
+            (p) => p.mapping?.table === table.name && p.mapping.column === hoveredColumnName,
+          )
+        ) {
+          mapped.add(entity.id);
+        }
+      });
+      expandedEntity?.properties.forEach((p) => {
+        if (p.mapping?.table === table.name && p.mapping.column === hoveredColumnName) {
+          properties.add(p.id);
+        }
+      });
+    }
+    if (hoveredPropertyId) {
+      properties.add(hoveredPropertyId);
+      const property = expandedEntity?.properties.find((p) => p.id === hoveredPropertyId);
+      if (property?.mapping?.table === table.name) columns.add(property.mapping.column);
+    }
+    if (hoveredRelationId) {
+      relations.add(hoveredRelationId);
+      const match = laneRelations.find(({ relation }) => relation.id === hoveredRelationId);
+      if (match) entities.add(match.counterpart.id);
+    }
+    if (hoveredEntityId) {
+      entities.add(hoveredEntityId);
+      laneRelations.forEach(({ relation, counterpart }) => {
+        if (counterpart.id === hoveredEntityId) relations.add(relation.id);
+      });
+    }
+    return { mapped, entities, relations, properties, columns };
+  }, [
+    columnHoverActive,
+    hoveredMappedRowId,
+    hoveredColumnName,
+    hoveredPropertyId,
+    hoveredRelationId,
+    hoveredEntityId,
+    relatedEntities,
+    laneRelations,
+    usingEntities,
+    expandedEntity,
+    table.name,
+  ]);
+  const dimmedIn = (kind: keyof NonNullable<typeof hoverRelated>, id: string) =>
+    hoverRelated != null && !hoverRelated[kind].has(id);
+
   return (
     <div className="flex h-full w-full overflow-hidden bg-white">
       <Idea4EntityPanel app={app} workingIds={new Set(usingEntities.map((e) => e.id))} />
 
       <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-white">
-        <div className="flex h-10 shrink-0 items-center justify-between border-b border-black/[0.08] px-3">
+        {/* "topNavBar", Figma node 406:5746 — height/padding/text corrected to match (was h-10,
+            12px text, and missing "view" from the label). */}
+        <div className="flex h-12 shrink-0 items-center justify-between border-b border-[#e3e5e4] bg-white pl-3 pr-2">
           <button
             type="button"
             onClick={app.closeDetail}
-            className="flex items-center gap-1 text-[12px] font-medium text-[#1c1c18] hover:underline"
+            className="flex items-center gap-2 text-[14px] font-medium text-[#161919] hover:underline"
           >
-            <ArrowLeft className="size-3.5" /> Back to Ontology
+            <ArrowLeft className="size-4" /> Back to Ontology view
           </button>
           <UndoRedoPill
             onUndo={app.undo}
@@ -1627,94 +2640,272 @@ function Idea4TableMode({ app, table }: { app: OntologyApp; table: TableSchema }
           />
         </div>
 
-        <div className="relative grid min-h-0 flex-1 grid-cols-3 gap-[3px] overflow-hidden">
-          <Idea4Surface label="Connected Entities" count={usingEntities.length}>
-            <div className="mx-auto flex w-full max-w-[360px] flex-col gap-2 py-4">
-              {orderByExpanded(usingEntities, (e) => e.id === expandedEntityId).map((entity) =>
-                expandedEntityId === entity.id ? (
-                  <ExpandedEntity
-                    key={entity.id}
-                    entity={entity}
-                    visibleProperties={visibleProperties}
-                    onClose={() => setExpandedEntityId(null)}
-                    onSelect={() => {}}
-                    onDropProperties={() => {}}
-                    suggestionSelection={app.suggestionSelection}
-                    onSelectProperty={() => {}}
-                    selectedPropertyIdsFor={() => new Set()}
-                    sort={propertySort}
-                    onSortChange={(key) => {
-                      setPropertySort((prev) => nextSortState(prev, key));
-                      setPropertySortTouched(true);
-                    }}
-                    filter={propertyFilter}
-                    onFilterChange={setPropertyFilter}
-                    search={propertySearch}
-                    onSearchChange={setPropertySearch}
-                    isAddingProperty={addingProperty}
-                    onStartAddProperty={() => setAddingProperty(true)}
-                    onSubmitAddProperty={handleCreateProperty}
-                    onCancelAddProperty={() => setAddingProperty(false)}
-                  />
-                ) : (
-                  <CompactEntity
-                    key={entity.id}
-                    entity={entity}
-                    onOpen={() => setExpandedEntityId(entity.id)}
-                    onSelect={() => {}}
-                    onDropProperties={() => {}}
-                  />
-                ),
+        <div
+          ref={workspaceRef}
+          className="relative grid min-h-0 flex-1 grid-cols-[1fr_0.5fr_1fr_1fr] gap-[3px] overflow-hidden bg-[#E3E5E4]"
+        >
+          <Idea4Surface
+            label="Entities"
+            count={relatedEntities.length + (hasSelfRelation ? 1 : 0)}
+            bodyRef={relatedBodyRef}
+            onBodyScroll={onAnyLaneScroll}
+          >
+            <div className="flex w-full min-h-full flex-col items-center justify-center-safe gap-3 px-4 pt-4">
+              {laneEntity && hasSelfRelation && (
+                <SelfEntityRow entity={laneEntity} dimmed={dimmedIn("entities", laneEntity.id)} />
               )}
-            </div>
-          </Idea4Surface>
-
-          <Idea4Surface label="Current Entity" count={usingEntities.length}>
-            <div className="mx-auto flex w-full max-w-[360px] flex-col gap-1.5 py-4">
-              {usingEntities.length === 0 && (
-                <p className="px-2 py-3 text-center text-[11px] text-muted-foreground">
-                  No Entity Types map into this table yet.
-                </p>
-              )}
-              {usingEntities.map((entity) => (
-                <button
+              {relatedEntities.map((entity) => (
+                <CompactEntity
                   key={entity.id}
-                  type="button"
-                  onClick={() => app.openDetail("entity", entity.id)}
-                  className="flex items-center gap-2 rounded-xl border border-black/[0.08] bg-white px-3 py-2 text-left shadow-[0_1px_2px_rgba(0,0,0,0.04)] hover:border-[#7c5eff]/40"
-                  title="Open this Entity Type as the Focus"
-                >
-                  <StatusBadge
-                    status={entityDisplayStatus(entity)}
-                    size={16}
-                    confidence={entity.confidence}
-                  />
-                  <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold">
-                    {entity.name}
-                  </span>
-                </button>
+                  entity={entity}
+                  dimmed={dimmedIn("entities", entity.id)}
+                  onHoverChange={(hovering) =>
+                    setHoveredEntityId((cur) =>
+                      hovering ? entity.id : cur === entity.id ? null : cur,
+                    )
+                  }
+                  onOpen={() => openCounterpart(entity.id)}
+                  onSelect={() => {}}
+                  onDropProperties={() => {}}
+                  rowRef={(el) => {
+                    if (el) entityRowRefs.current.set(entity.id, el);
+                    else entityRowRefs.current.delete(entity.id);
+                  }}
+                />
               ))}
             </div>
           </Idea4Surface>
 
-          <Idea4Surface label="Current Data Table" active>
-            <CurrentDataTableCard
-              table={table}
-              entities={app.entities}
-              visibleColumns={visibleTableColumns}
-              mappedColumnNames={mappedColumnNames}
-              suggestedColumnNames={suggestedColumnNames}
-              sort={columnSort}
-              onSortChange={(key) => {
-                setColumnSort((prev) => nextSortState(prev, key));
-                setColumnSortTouched(true);
-              }}
-              filter={columnFilter}
-              onFilterChange={setColumnFilter}
-              search={columnSearch}
-              onSearchChange={setColumnSearch}
-            />
+          <Idea4Surface
+            label="Relations"
+            count={laneRelations.length}
+            bodyRef={relationsBodyRef}
+            onBodyScroll={onAnyLaneScroll}
+          >
+            <div className="flex w-full min-h-full flex-col items-center justify-center-safe gap-3 px-2 pt-4">
+              {laneEntity && laneRelations.length === 0 && (
+                <p className="px-2 py-3 text-center text-[11px] text-muted-foreground">
+                  No Relations touch this Entity Type yet.
+                </p>
+              )}
+              {laneRelations.map(({ relation, counterpart, outgoing }) => (
+                <RelationCard
+                  key={relation.id}
+                  dimmed={dimmedIn("relations", relation.id)}
+                  onHoverChange={(hovering) =>
+                    setHoveredRelationId((cur) =>
+                      hovering ? relation.id : cur === relation.id ? null : cur,
+                    )
+                  }
+                  relation={relation}
+                  counterpart={counterpart}
+                  outgoing={outgoing}
+                  entities={app.entities}
+                  onOpenCounterpart={() => openCounterpart(counterpart.id)}
+                  onAccept={() =>
+                    app.acceptSuggestions([suggestionKey({ kind: "relation", id: relation.id })])
+                  }
+                  onReject={() =>
+                    app.declineSuggestions([suggestionKey({ kind: "relation", id: relation.id })])
+                  }
+                  cardRef={(el) => {
+                    if (el) relationCardRefs.current.set(relation.id, el);
+                    else relationCardRefs.current.delete(relation.id);
+                  }}
+                />
+              ))}
+            </div>
           </Idea4Surface>
+
+          <Idea4Surface
+            label="Mapped Entities"
+            count={usingEntities.length}
+            bodyRef={mappedBodyRef}
+            onBodyScroll={onAnyLaneScroll}
+            flush={!!expandedEntity}
+          >
+            {expandedEntity ? (
+              <ExpandedEntity
+                key={expandedEntity.id}
+                isPropertyDimmed={(id) => dimmedIn("properties", id)}
+                entity={expandedEntity}
+                visibleProperties={visibleExpandedProperties}
+                selected={suggestionSelection.has(
+                  suggestionKey({ kind: "entity", id: expandedEntity.id }),
+                )}
+                onClose={() => setExpandedEntityId(null)}
+                closeLabel="Back to Mapped Entities"
+                onSelect={() =>
+                  app.toggleSuggestionSelected({ kind: "entity", id: expandedEntity.id })
+                }
+                onDropProperties={() => {}}
+                suggestionSelection={suggestionSelection}
+                onSelectProperty={(propertyId) =>
+                  app.toggleSuggestionSelected({
+                    kind: "property",
+                    entityId: expandedEntity.id,
+                    propertyId,
+                  })
+                }
+                selectedPropertyIdsFor={selectedPropertyIdsFor}
+                titleRef={(el) => {
+                  if (el) mappedEntityRowRefs.current.set(expandedEntity.id, el);
+                  else mappedEntityRowRefs.current.delete(expandedEntity.id);
+                }}
+                sort={propertySort}
+                onSortChange={(key) => {
+                  setPropertySort((prev) => nextSortState(prev, key));
+                  setPropertySortTouched(true);
+                }}
+                filter={propertyFilter}
+                onFilterChange={setPropertyFilter}
+                search={propertySearch}
+                onSearchChange={setPropertySearch}
+                isAddingProperty={addingProperty}
+                onStartAddProperty={() => setAddingProperty(true)}
+                onSubmitAddProperty={(name) => {
+                  const trimmed = name.trim();
+                  if (trimmed) app.createProperty(expandedEntity.id, trimmed);
+                  setAddingProperty(false);
+                }}
+                onCancelAddProperty={() => setAddingProperty(false)}
+                onBodyScroll={onAnyLaneScroll}
+                bodyRef={expandedBodyRef}
+                hoveredPropertyId={hoveredPropertyId}
+                onPropertyHoverChange={(propertyId, hovering) =>
+                  setHoveredPropertyId((cur) =>
+                    hovering ? propertyId : cur === propertyId ? null : cur,
+                  )
+                }
+                onSetPropertyRef={(propertyId, el) => {
+                  if (el) propertyRefs.current.set(propertyId, el);
+                  else propertyRefs.current.delete(propertyId);
+                }}
+                propertyOffscreenDirections={propertyOffscreen}
+                onNavigateToOffscreenProperty={scrollToColumnForProperty}
+              />
+            ) : (
+              <div
+                onMouseLeave={() => setPreviewEntityId(null)}
+                className="flex w-full min-h-full flex-col items-center justify-center-safe gap-3 px-4 pt-4"
+              >
+                {usingEntities.length === 0 && (
+                  <p className="px-2 py-3 text-center text-[11px] text-muted-foreground">
+                    No Entity Types map into this table yet.
+                  </p>
+                )}
+                {usingEntities.map((entity) => (
+                  <MappedEntityRow
+                    key={entity.id}
+                    entity={entity}
+                    dimmed={dimmedIn("mapped", entity.id)}
+                    highlighted={entity.id === laneEntityId}
+                    hovered={hoveredMappedRowId === entity.id}
+                    onHoverChange={(hovering) => {
+                      setHoveredMappedRowId((cur) =>
+                        hovering ? entity.id : cur === entity.id ? null : cur,
+                      );
+                      if (hovering) setPreviewEntityId(entity.id);
+                    }}
+                    onOpen={() => {
+                      setPreviewEntityId(null);
+                      setHoveredMappedRowId(null);
+                      setExpandedEntityId(entity.id);
+                    }}
+                    rowRef={(el) => {
+                      if (el) mappedEntityRowRefs.current.set(entity.id, el);
+                      else mappedEntityRowRefs.current.delete(entity.id);
+                    }}
+                    offscreenDirection={entityOffscreen[entity.id]}
+                    onNavigateToOffscreen={() => scrollToColumnsForEntity(entity.id)}
+                  />
+                ))}
+              </div>
+            )}
+          </Idea4Surface>
+
+          <CurrentDataTableCard
+            table={table}
+            suggestedColumnConfidence={suggestedColumnConfidence}
+            isColumnDimmed={(name) => dimmedIn("columns", name)}
+            entities={app.entities}
+            visibleColumns={visibleTableColumns}
+            mappedColumnNames={mappedColumnNames}
+            suggestedColumnNames={suggestedColumnNames}
+            bodyRef={dataBodyRef}
+            onBodyScroll={onAnyLaneScroll}
+            sort={columnSort}
+            onSortChange={(key) => {
+              setColumnSort((prev) => nextSortState(prev, key));
+              setColumnSortTouched(true);
+            }}
+            filter={columnFilter}
+            onFilterChange={setColumnFilter}
+            search={columnSearch}
+            onSearchChange={setColumnSearch}
+            setColumnRef={(columnName, el) => {
+              if (el) columnRefs.current.set(columnName, el);
+              else columnRefs.current.delete(columnName);
+            }}
+            hoveredColumnName={hoveredColumnName}
+            onColumnHoverChange={(columnName, hovering) =>
+              setHoveredColumnName((cur) =>
+                hovering ? columnName : cur === columnName ? null : cur,
+              )
+            }
+            columnOffscreenDirections={columnOffscreen}
+            onNavigateToOffscreenColumn={scrollToCounterpartsForColumn}
+          />
+
+          {/* Connector overlay — clipped below the lane headers so lines slide under them. */}
+          <svg
+            className="pointer-events-none absolute inset-0 z-10 h-full w-full overflow-visible"
+            style={{ clipPath: "inset(68px 0 0 0)" }}
+          >
+            {relationLines.map((line) => {
+              const related = !hoverRelated || hoverRelated.relations.has(line.id);
+              return (
+                <path
+                  key={`rel-${line.id}`}
+                  d={line.path}
+                  fill="none"
+                  stroke={line.suggested ? MAPPING_SUGGESTED_COLOR : MAPPING_DEFAULT_COLOR}
+                  strokeWidth={hoverRelated && related ? 2 : 1.5}
+                  opacity={related ? 1 : 0.16}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="transition-[opacity,stroke-width] duration-150"
+                />
+              );
+            })}
+            {columnLines.map((line) => {
+              const related =
+                line.entityId === hoveredMappedRowId ||
+                (line.propertyId != null && line.propertyId === hoveredPropertyId) ||
+                line.columnName === hoveredColumnName;
+              return (
+                <path
+                  key={`col-${line.id}`}
+                  d={line.path}
+                  fill="none"
+                  stroke={line.suggested ? MAPPING_SUGGESTED_COLOR : MAPPING_DEFAULT_COLOR}
+                  strokeWidth={columnHoverActive && related ? 2 : 1.5}
+                  opacity={columnHoverActive && !related ? 0.16 : 1}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="transition-[opacity,stroke-width] duration-150"
+                />
+              );
+            })}
+          </svg>
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 bottom-0 z-[15] h-24 backdrop-blur-[1px]"
+            style={{
+              background:
+                "linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0.88) 58%, rgba(255,255,255,0.98))",
+            }}
+          />
         </div>
 
         <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center">
@@ -1726,12 +2917,100 @@ function Idea4TableMode({ app, table }: { app: OntologyApp; table: TableSchema }
               confidenceRange={app.confidenceRange}
               onConfidenceRangeChange={app.setConfidenceRange}
               onSelectSuggestionsInRange={app.selectSuggestionKeys}
+              scope={suggestionScope}
             />
           </div>
         </div>
       </main>
 
-      <Idea4TablePanel app={app} activeNames={new Set([table.name])} />
+      <Idea4TablePanel app={app} activeNames={new Set()} focusName={table.name} />
+    </div>
+  );
+}
+
+/** The Mapped Entities lane's own row (Figma node 407:4873) — a plain compact card, same
+ * badge/name/confidence recipe as `CompactEntity`, but with a solid border highlight (not a teal
+ * ring) for whichever ONE is currently pinned as this mode's own local Focus, matching
+ * `CompactTable`'s own `highlighted` treatment in `Idea4EntityMode` rather than `CompactEntity`'s
+ * own selected state — Figma doesn't show a hover-purple/teal-select state for this row, only
+ * "pinned" vs not. */
+function MappedEntityRow({
+  entity,
+  highlighted,
+  hovered,
+  onOpen,
+  rowRef,
+  onHoverChange,
+  offscreenDirection,
+  onNavigateToOffscreen,
+  dimmed,
+}: {
+  entity: Entity;
+  highlighted?: boolean;
+  hovered?: boolean;
+  onOpen: () => void;
+  rowRef?: (el: HTMLElement | null) => void;
+  onHoverChange?: (hovering: boolean) => void;
+  // Set when some Column this Entity maps into is scrolled out of view — hovering then shows a
+  // scroll arrow, same interaction as `CompactTable`'s.
+  offscreenDirection?: "up" | "down" | undefined;
+  onNavigateToOffscreen?: () => void;
+  dimmed?: boolean;
+}) {
+  return (
+    // The scroll arrow floats beside the pill (in the lane's side padding) instead of taking
+    // width from it — this lane is often narrow, and a shrinking pill would lose the name.
+    <div
+      onMouseEnter={() => onHoverChange?.(true)}
+      onMouseLeave={() => onHoverChange?.(false)}
+      className={cn(
+        "relative flex w-full max-w-[340px] shrink-0 transition-opacity duration-150",
+        dimmed && "opacity-40",
+      )}
+    >
+      <button
+        ref={rowRef}
+        type="button"
+        onClick={onOpen}
+        className={cn(
+          "relative z-20 flex h-10 w-full items-center gap-2.5 overflow-hidden rounded-[38px] border bg-white px-3 text-left hover:!border-[#161919]",
+          highlighted ? "border-[#161919]" : "border-[#e3e5e4]",
+        )}
+      >
+        <StatusBadge
+          status={entityDisplayStatus(entity)}
+          size={16}
+          confidence={entity.confidence}
+        />
+        <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-[#161919]">
+          {entity.name}
+        </span>
+        {entityDisplayStatus(entity) === "suggested" && (
+          <span className="shrink-0 rounded-full bg-[#e3e5e4] px-1.5 py-px text-[12px] text-[#252828]">
+            {Math.round(entity.confidence * 100)}%
+          </span>
+        )}
+      </button>
+      {offscreenDirection && hovered && (
+        // `pl-1` bridges the gap to the pill so moving onto the arrow doesn't end the hover.
+        <span className="absolute left-full top-1/2 z-20 flex -translate-y-1/2 pl-1">
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onNavigateToOffscreen?.();
+            }}
+            className="flex size-6 items-center justify-center rounded-full border border-[#e3e5e4] bg-white text-[#535353] hover:border-[#161919]"
+            aria-label={`Scroll to mapped column ${offscreenDirection}`}
+          >
+            {offscreenDirection === "up" ? (
+              <ArrowUp className="size-3.5" />
+            ) : (
+              <ArrowDown className="size-3.5" />
+            )}
+          </button>
+        </span>
+      )}
     </div>
   );
 }
@@ -1743,12 +3022,21 @@ function CurrentDataTableCard({
   mappedColumnNames,
   suggestedColumnNames,
   titleRef,
+  bodyRef,
+  onBodyScroll,
   sort,
   onSortChange,
   filter,
   onFilterChange,
   search,
   onSearchChange,
+  setColumnRef,
+  hoveredColumnName,
+  onColumnHoverChange,
+  columnOffscreenDirections,
+  onNavigateToOffscreenColumn,
+  isColumnDimmed,
+  suggestedColumnConfidence,
 }: {
   table: TableSchema;
   entities: Entity[];
@@ -1762,29 +3050,43 @@ function CurrentDataTableCard({
   mappedColumnNames: Set<string>;
   suggestedColumnNames: Set<string>;
   titleRef?: React.RefObject<HTMLButtonElement | null>;
+  bodyRef?: React.RefObject<HTMLDivElement | null>;
+  onBodyScroll?: () => void;
   sort: SortState;
   onSortChange: (key: SortKey) => void;
   filter: ListFilter;
   onFilterChange: (next: ListFilter) => void;
   search: string;
   onSearchChange: (value: string) => void;
+  // Connector hooks — Table mode draws Mapped Entity / Property -> Column lines into these rows.
+  setColumnRef?: (columnName: string, el: HTMLElement | null) => void;
+  hoveredColumnName?: string | null;
+  onColumnHoverChange?: (columnName: string, hovering: boolean) => void;
+  columnOffscreenDirections?: Record<string, "up" | "down">;
+  onNavigateToOffscreenColumn?: (columnName: string) => void;
+  isColumnDimmed?: (columnName: string) => boolean;
+  suggestedColumnConfidence?: Map<string, number>;
 }) {
+  const [scrolledFromTop, setScrolledFromTop] = useState(false);
   return (
-    <div className="mx-auto mt-4 flex h-[calc(100%-16px)] w-full max-w-[360px] flex-col overflow-hidden rounded-[14px] border border-[#7c5eff] bg-white shadow-[0_4px_14px_rgba(46,35,110,0.12)]">
+    // Mirrors `CurrentEntityCard` (Entity mode's selected lane) exactly — same mint surface, cyan
+    // 32px title with badge/name/count, list controls, and pill rows — with Columns in place of
+    // Properties. Column pills reuse `ExpandedTable`'s column pill recipe.
+    <div className="relative mb-[60px] flex min-w-0 flex-col overflow-hidden bg-[#e7f1f0]">
       <button
         ref={titleRef}
         type="button"
-        className="flex h-[62px] shrink-0 items-center gap-3 bg-[#f1edff] px-3 text-left"
+        className="flex h-8 shrink-0 items-center gap-2 border-b border-[#e3e5e4] bg-[#0891b2] px-4 text-left"
       >
         <MappingStatusBadge
           status={tableMappingStatus(table.name, entities)}
           {...tableMappingCompleteness(table.name, entities)}
-          size={24}
+          size={16}
         />
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-[15px] font-semibold">{table.name}</p>
-          <p className="mt-0.5 text-[11px] text-muted-foreground">{table.columns.length} columns</p>
-        </div>
+        <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-[#fafafa]">
+          {table.name}
+        </span>
+        <span className="shrink-0 text-[14px] text-[#fafafa]">{table.columns.length}</span>
       </button>
       <ListControls
         sort={sort}
@@ -1795,32 +3097,92 @@ function CurrentDataTableCard({
         onSearchChange={onSearchChange}
         searchPlaceholder="Search columns…"
       />
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain py-1.5">
-        {visibleColumns.map((column) => (
-          <div
-            key={column.name}
-            className="flex h-[30px] items-center gap-2 px-3 text-[11px] hover:bg-black/[0.035]"
-          >
-            <span
-              className="size-1.5 shrink-0 rounded-full"
-              style={{
-                background:
-                  COLUMN_DOT_COLOR[
-                    suggestedColumnNames.has(column.name)
-                      ? "suggested"
-                      : mappedColumnNames.has(column.name)
-                        ? "mapped"
-                        : "unmapped"
-                  ],
-              }}
-            />
-            <span className="min-w-0 flex-1 truncate font-medium">{column.name}</span>
-            <span className="max-w-12 truncate font-mono text-[10px] text-muted-foreground">
-              {column.type}
-            </span>
-          </div>
-        ))}
+      <div
+        ref={bodyRef}
+        onScroll={(event) => {
+          setScrolledFromTop(event.currentTarget.scrollTop > 1);
+          onBodyScroll?.();
+        }}
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-[72px] pt-4"
+      >
+        <div className="flex w-full min-h-full flex-col items-center justify-center-safe gap-3 px-8">
+          {visibleColumns.map((column) => {
+            const TypeGlyph = propertyTypeIcon(column.type);
+            const hovered = hoveredColumnName === column.name;
+            const offscreenDirection = columnOffscreenDirections?.[column.name];
+            return (
+              <div
+                key={column.name}
+                ref={(el) => setColumnRef?.(column.name, el)}
+                onMouseEnter={() => onColumnHoverChange?.(column.name, true)}
+                onMouseLeave={() => onColumnHoverChange?.(column.name, false)}
+                className={cn(
+                  "relative z-20 flex w-full max-w-[340px] items-center gap-2 rounded-full border bg-white py-1.5 pl-3 pr-2 text-[12px] hover:border-[#161919]",
+                  hovered ? "border-[#161919]" : "border-[#e3e5e4]",
+                  "transition-opacity duration-150",
+                  isColumnDimmed?.(column.name) && "opacity-40",
+                )}
+              >
+                <span
+                  className="size-1.5 shrink-0 rounded-full"
+                  style={{
+                    background:
+                      COLUMN_DOT_COLOR[
+                        suggestedColumnNames.has(column.name)
+                          ? "suggested"
+                          : mappedColumnNames.has(column.name)
+                            ? "mapped"
+                            : "unmapped"
+                      ],
+                  }}
+                />
+                <span className="min-w-0 flex-1 truncate text-[#161919]">{column.name}</span>
+                <TypeGlyph className="size-4 shrink-0 text-[#535353]" aria-label={column.type} />
+                {suggestedColumnConfidence?.has(column.name) && (
+                  <span className="shrink-0 rounded-full bg-[#e3e5e4] px-1.5 py-px text-[12px] text-[#252828]">
+                    {Math.round(suggestedColumnConfidence.get(column.name)! * 100)}%
+                  </span>
+                )}
+                {hovered && offscreenDirection && (
+                  // Sits outside the pill on the side facing the lane it scrolls; `pr-1` bridges
+                  // the gap so moving onto the arrow doesn't end the hover.
+                  <span className="absolute right-full top-1/2 flex -translate-y-1/2 pr-1">
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onNavigateToOffscreenColumn?.(column.name);
+                      }}
+                      className="flex size-6 items-center justify-center rounded-full border border-[#e3e5e4] bg-white text-[#535353] hover:border-[#161919]"
+                      aria-label={`Scroll to mapped entity ${offscreenDirection}`}
+                    >
+                      {offscreenDirection === "up" ? (
+                        <ArrowUp className="size-3.5" />
+                      ) : (
+                        <ArrowDown className="size-3.5" />
+                      )}
+                    </button>
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
+      {scrolledFromTop && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 top-[68px] z-20 h-[72px]"
+          style={{
+            background: "linear-gradient(to bottom, #e7f1f0 0%, #e7f1f0 50%, #e7f1f000 100%)",
+          }}
+        />
+      )}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 bottom-0 h-[72px]"
+        style={{ background: "linear-gradient(to bottom, #e7f1f000, #e7f1f0 50%)" }}
+      />
     </div>
   );
 }
@@ -1834,31 +3196,15 @@ const TABLE_PANEL_DND_TYPE = "application/x-idea4-table-from-panel";
 
 /** The small circular status icon inside a relation pill — reuses the same confirmed/suggested
  * color language `StatusBadge` already establishes app-wide, just at pill scale. */
+// A plain 6px dot, same as `reviewStatusDot` — Figma's Relations-lane pill (node 406:4970) shows
+// a bare status dot, not the prototype's original 14px circle+check-glyph badge.
 function RelationStatusIcon({ relation, entities }: { relation: Relation; entities: Entity[] }) {
   const status = relationStatus(relation, entities);
-  const bg =
-    status === "confirmed"
-      ? "#c7eef5"
-      : status === "warning"
-        ? "#faebb0"
-        : status === "error"
-          ? "#ffe6db"
-          : "#e1daff";
-  const fg =
-    status === "confirmed"
-      ? "#007287"
-      : status === "warning"
-        ? "#967700"
-        : status === "error"
-          ? "#9c461e"
-          : "#553eb7";
   return (
     <span
-      className="flex size-3.5 shrink-0 items-center justify-center rounded-full"
-      style={{ background: bg, color: fg }}
-    >
-      <Check className="size-2" strokeWidth={3} />
-    </span>
+      className="size-1.5 shrink-0 rounded-full"
+      style={{ background: reviewStatusDot(status) }}
+    />
   );
 }
 
@@ -1883,6 +3229,8 @@ function RelationCard({
   onAccept,
   onReject,
   cardRef,
+  onHoverChange,
+  dimmed,
 }: {
   relation: Relation;
   counterpart: Entity;
@@ -1894,62 +3242,48 @@ function RelationCard({
   // Registers this pill's own DOM node so the connector line can anchor on (and visibly thread
   // through) its actual position — see `recomputeRelationLines`'s own doc comment.
   cardRef?: (el: HTMLElement | null) => void;
+  onHoverChange?: (hovering: boolean) => void;
+  // Faded while another pill is hovered and this one isn't connected to it.
+  dimmed?: boolean;
 }) {
-  const status = relationStatus(relation, entities);
-  const canAccept = status !== "confirmed" && status !== "error";
-  const canReject = status !== "confirmed";
   const counterpartName = counterpart.name || "Untitled entity";
   return (
-    // A plain `div` acting as the click target, not a `button` — the Accept/Reject controls
-    // inside are real buttons of their own, and nesting a `<button>` inside a `<button>` is
-    // invalid HTML (React warns on it, and click/focus behavior for the inner ones becomes
-    // unreliable in some browsers). Same "row is a div, its actions are real buttons" shape
-    // `PropertyListRow`'s own click-to-select row already uses.
+    // Outer slot (`max-w-[160px] min-h-[40px]`, re-checked against Figma node 424:19638) reserves
+    // this row's own full height/width even though the pill itself is shorter — the pill fills it
+    // (`w-full`, not `w-fit`) rather than hugging its own content the way this port previously
+    // had it. `cardRef` stays on the pill itself (not this slot) since that's the exact node the
+    // connector line anchors on — see `recomputeRelationLines`'s own doc comment.
     <div
-      ref={cardRef}
-      role="button"
-      tabIndex={0}
-      onClick={onOpenCounterpart}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onOpenCounterpart();
-        }
-      }}
-      title={`${outgoing ? "→" : "←"} ${counterpartName} — click to view in Connected Entities`}
-      className="group/relcard flex w-full cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full border border-[rgba(28,28,24,0.08)] bg-white px-3 py-1.5 text-left text-[11px] font-medium text-foreground shadow-[0_1px_3px_rgba(0,0,0,0.08)] outline-none hover:border-[#7c5eff]/40 focus-visible:ring-2 focus-visible:ring-[#00DED8]"
-    >
-      <RelationStatusIcon relation={relation} entities={entities} />
-      <span className="min-w-0 flex-1 truncate">{relationLabel(relation)}</span>
-      {(canAccept || canReject) && (
-        <span
-          className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/relcard:opacity-100"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {canAccept && (
-            <button
-              type="button"
-              onClick={onAccept}
-              title="Accept this suggested relation"
-              aria-label="Accept this suggested relation"
-              className="flex size-4 items-center justify-center rounded-full text-[#0298b2] hover:bg-[#0298b2]/10"
-            >
-              <Check className="size-2.5" strokeWidth={3} />
-            </button>
-          )}
-          {canReject && (
-            <button
-              type="button"
-              onClick={onReject}
-              title="Reject this suggested relation"
-              aria-label="Reject this suggested relation"
-              className="flex size-4 items-center justify-center rounded-full text-[#f15b15] hover:bg-[#f15b15]/10"
-            >
-              <X className="size-2.5" strokeWidth={3} />
-            </button>
-          )}
-        </span>
+      className={cn(
+        "flex min-h-10 w-full max-w-[160px] shrink-0 items-center justify-center transition-opacity duration-150",
+        dimmed && "opacity-40",
       )}
+    >
+      {/* A plain `div` acting as the click target, not a `button` — the Accept/Reject controls
+          inside are real buttons of their own, and nesting a `<button>` inside a `<button>` is
+          invalid HTML (React warns on it, and click/focus behavior for the inner ones becomes
+          unreliable in some browsers). Same "row is a div, its actions are real buttons" shape
+          `PropertyListRow`'s own click-to-select row already uses. */}
+      <div
+        ref={cardRef}
+        data-connector-hover
+        data-connector-relation-id={relation.id}
+        role="button"
+        tabIndex={0}
+        onClick={onOpenCounterpart}
+        onMouseEnter={() => onHoverChange?.(true)}
+        onMouseLeave={() => onHoverChange?.(false)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onOpenCounterpart();
+          }
+        }}
+        className="group/relcard relative z-20 flex w-full cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-full border border-[#e3e5e4] bg-white py-0.5 pl-[10px] pr-1.5 text-left text-[14px] font-normal text-[#161919] outline-none hover:!border-[#161919] hover:!bg-white focus-visible:ring-2 focus-visible:ring-[#00DED8]"
+      >
+        <RelationStatusIcon relation={relation} entities={entities} />
+        <span className="min-w-0 truncate">{relationLabel(relation)}</span>
+      </div>
     </div>
   );
 }
@@ -1957,45 +3291,72 @@ function RelationCard({
 function Idea4Surface({
   label,
   count,
-  active = false,
   bodyRef,
   onBodyScroll,
+  flush = false,
   children,
 }: {
   label: string;
   count?: number;
-  active?: boolean;
   bodyRef?: React.RefObject<HTMLDivElement | null>;
   onBodyScroll?: () => void;
+  flush?: boolean;
   children: ReactNode;
 }) {
+  const [scrolledFromTop, setScrolledFromTop] = useState(false);
   return (
     <section
-      className={cn(
-        "flex min-w-0 flex-col overflow-hidden bg-[radial-gradient(circle_at_1px_1px,rgba(28,28,24,0.075)_1.5px,transparent_1.6px)] bg-[size:32px_32px]",
-        active ? "bg-[#F2F5F5]" : "bg-[#FAFAFA]",
-      )}
+      className={cn("relative flex min-w-0 flex-col overflow-hidden")}
+      style={{ background: "#F3F3F3" }}
     >
-      <header
-        className={cn(
-          "flex h-8 shrink-0 items-center justify-between px-3 font-mono text-[11px] text-[#687274]",
-          active ? "bg-[#ECF3F2]" : "bg-[#F4F4F4]",
-        )}
-      >
-        <span>{label}</span>
-        {count != null && <span>{count}</span>}
-      </header>
+      {/* Title, 32px — off Figma "Entity Triggered Editing" lane title (node 424:19587, re-checked
+          — this frame's own title bars flipped from a light `#f9f9f9` chrome to a dark
+          `#3c4140`/zinc-700 one since this was first ported): flat `#3c4140`, label Medium/14px,
+          count Regular/14px, both the same light `#fafafa`/zinc-50 (not two different grays the
+          way this header previously split them, and not the dark-on-light pairing this whole
+          lane system used before this re-check). Body bg `#F3F3F3` (re-checked) — same neutral for
+          Entities/Relations/Data Tables; the Selected Entity lane's own `CurrentEntityCard` uses a
+          different mint `#E7F1F0` instead of this shared surface. */}
+      {!flush && (
+        <header className="flex h-8 shrink-0 items-center justify-between border-b border-[#e3e5e4] bg-[#3c4140] px-4 text-[14px]">
+          <span className="font-medium text-[#fafafa]">{label}</span>
+          {count != null && <span className="text-[#fafafa]">{count}</span>}
+        </header>
+      )}
       {/* Bottom padding clears the floating AI review bar (bottom-3, 48px tall — a 60px footprint
           from `<main>`'s own bottom edge) by exactly 24px, so scrolled-to-the-end content in any
           lane, and `CurrentEntityCard`'s own `h-full` sizing, both land the same fixed 24px above
           it rather than lining up against an arbitrary reserved margin. */}
       <div
         ref={bodyRef}
-        onScroll={onBodyScroll}
-        className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-7 pb-[84px]"
+        onScroll={(event) => {
+          setScrolledFromTop(event.currentTarget.scrollTop > 1);
+          onBodyScroll?.();
+        }}
+        className={cn(
+          "min-h-0 flex-1 overscroll-contain",
+          flush ? "overflow-hidden p-0" : "overflow-y-auto px-4 pb-[84px]",
+        )}
       >
         {children}
       </div>
+      {!flush && scrolledFromTop && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 top-8 z-10 h-12"
+          style={{ background: "linear-gradient(to bottom, #F3F3F3, #F3F3F300)" }}
+        />
+      )}
+      {/* "scroll for more" fade (Figma node 407:3672 / 407:6084) — a fixed overlay, not part of the
+          scrolling content, so it always reads as "there's more below" rather than scrolling away
+          itself. `pointer-events-none` so it never intercepts clicks/drags on the list beneath it. */}
+      {!flush && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 bottom-0 h-[72px]"
+          style={{ background: "linear-gradient(to bottom, #F3F3F300, #F3F3F3 50%)" }}
+        />
+      )}
     </section>
   );
 }
@@ -2030,17 +3391,18 @@ function CollapsedCardsStack({
     <div className="relative pb-1.5">
       <div
         aria-hidden
-        className="absolute inset-x-3 bottom-0 h-9 rounded-b-xl border border-black/[0.06] bg-black/[0.015]"
+        className="absolute inset-x-3 bottom-0 h-9 rounded-b-md border border-black/[0.06] bg-black/[0.015]"
       />
       <div
         aria-hidden
-        className="absolute inset-x-1.5 bottom-0.5 h-9 rounded-b-xl border border-black/[0.07] bg-black/[0.03]"
+        className="absolute inset-x-1.5 bottom-0.5 h-9 rounded-b-md border border-black/[0.07] bg-black/[0.03]"
       />
       <button
         type="button"
         onClick={onOpen}
-        title={`Close this ${noun} and show all ${laneLabel} again`}
-        className="relative z-10 flex h-12 w-full items-center gap-3 rounded-xl border border-black/[0.08] bg-white px-4 text-left shadow-[0_1px_2px_rgba(0,0,0,0.04)] hover:border-[#7c5eff]/40"
+        // Radius/border/shadow match the lane row card recipe below (`CompactEntity`) — same
+        // Figma-sampled "lane card" family, node 406:4929.
+        className="relative z-10 flex h-12 w-full items-center gap-3 rounded-md border border-[#e3e5e4] bg-white px-4 text-left hover:border-[#161919]"
       >
         <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-black/[0.06] text-[10px] font-semibold text-muted-foreground">
           {count}
@@ -2061,6 +3423,8 @@ function CompactEntity({
   onSelect,
   onDropProperties,
   rowRef,
+  onHoverChange,
+  dimmed,
 }: {
   entity: Entity;
   compact?: boolean;
@@ -2069,10 +3433,14 @@ function CompactEntity({
   onSelect: (mods: SelectMods) => void;
   onDropProperties: (e: React.DragEvent) => void;
   rowRef?: (el: HTMLElement | null) => void;
+  onHoverChange?: (hovering: boolean) => void;
+  dimmed?: boolean;
 }) {
   return (
     <button
       ref={rowRef}
+      data-connector-hover
+      data-connector-entity-id={entity.id}
       type="button"
       onClick={(e) => {
         if (e.shiftKey || e.metaKey || e.ctrlKey) {
@@ -2083,17 +3451,71 @@ function CompactEntity({
       }}
       onDragOver={(e) => e.preventDefault()}
       onDrop={onDropProperties}
+      onMouseEnter={() => onHoverChange?.(true)}
+      onMouseLeave={() => onHoverChange?.(false)}
       className={cn(
-        "flex min-h-12 w-full items-center gap-3 overflow-hidden rounded-xl border border-black/[0.08] bg-white px-4 text-left shadow-[0_1px_2px_rgba(0,0,0,0.04)] hover:border-[#7c5eff]/40",
+        // Pill shape (40px tall, rounded-[38px] — a full capsule at this height) sampled directly
+        // off the Figma "Entity Triggered Editing" Related Entities lane (node 424:19590, its own
+        // "Entity-02"+ rows) — replaces this row's earlier rounded-md/48px card recipe. Selected/
+        // hover states are unchanged (not shown in that frame's sample data) — kept as this app's
+        // existing teal `--ring`/`#7c5eff` accent conventions.
+        "relative z-20 flex h-10 w-full max-w-[340px] shrink-0 items-center gap-2.5 overflow-hidden rounded-[38px] border border-[#e3e5e4] bg-white px-3 text-left hover:!border-[#161919] hover:!bg-white",
         selected && "bg-[#00ded8]/10 shadow-[0_0_0_1.5px_#00ded8]",
+        "transition-opacity duration-150",
+        dimmed && "opacity-40",
       )}
     >
-      <StatusBadge status={entityDisplayStatus(entity)} size={20} confidence={entity.confidence} />
-      <span className="min-w-0 flex-1 truncate text-[14px] font-semibold">{entity.name}</span>
-      {!compact && entity.status !== "confirmed" && (
-        <ConfidenceChip confidence={entity.confidence} />
+      <StatusBadge status={entityDisplayStatus(entity)} size={16} confidence={entity.confidence} />
+      <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-[#161919]">
+        {entity.name}
+      </span>
+      {!compact && entityDisplayStatus(entity) === "suggested" && (
+        <span className="shrink-0 rounded-full bg-[#e3e5e4] px-1.5 py-px text-[12px] text-[#252828]">
+          {Math.round(entity.confidence * 100)}%
+        </span>
       )}
     </button>
+  );
+}
+
+/**
+ * The Connected Entities lane's own pinned "(self)" row (Figma node 424:19591, "Entity-01") —
+ * Focus Entity shown at the top of its OWN Related Entities lane, labeled "self", so the relation
+ * lines drawn from this lane still have a visible anchor even though Focus Entity's full card
+ * lives in the Current Entity lane instead. Same pill shape as `CompactEntity`'s own row (plain
+ * white, not a teal tint — the "self" caption line underneath the name is the only thing that
+ * marks this row as different, not its own background color). Non-interactive (no click/drag/
+ * select) since Focus Entity is already open in its own lane right next to this one — nothing for
+ * clicking "self" to do.
+ */
+function SelfEntityRow({
+  entity,
+  rowRef,
+  dimmed,
+}: {
+  entity: Entity;
+  rowRef?: (element: HTMLElement | null) => void;
+  dimmed?: boolean;
+}) {
+  return (
+    <div
+      ref={rowRef}
+      className={cn(
+        "relative z-20 flex h-10 w-full max-w-[340px] shrink-0 items-center gap-2.5 rounded-[38px] border border-[#e3e5e4] bg-white px-3 transition-opacity duration-150",
+        dimmed && "opacity-40",
+      )}
+    >
+      <StatusBadge status={entityDisplayStatus(entity)} size={16} confidence={entity.confidence} />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[14px] font-medium text-[#161919]">{entity.name}</span>
+        <span className="block text-[12px] text-[#6d7472]">self</span>
+      </span>
+      {entityDisplayStatus(entity) === "suggested" && (
+        <span className="shrink-0 rounded-full bg-[#e3e5e4] px-1.5 py-px text-[12px] text-[#252828]">
+          {Math.round(entity.confidence * 100)}%
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -2118,6 +3540,15 @@ function ExpandedEntity({
   onStartAddProperty,
   onSubmitAddProperty,
   onCancelAddProperty,
+  onBodyScroll,
+  bodyRef,
+  closeLabel = "Back to Entities",
+  hoveredPropertyId,
+  onPropertyHoverChange,
+  onSetPropertyRef,
+  propertyOffscreenDirections,
+  onNavigateToOffscreenProperty,
+  isPropertyDimmed,
 }: {
   entity: Entity;
   // The rendered rows, already filtered (Mapped/Unmapped/Only Identifier / search) and, once
@@ -2143,44 +3574,66 @@ function ExpandedEntity({
   onStartAddProperty: () => void;
   onSubmitAddProperty: (name: string) => void;
   onCancelAddProperty: () => void;
+  onBodyScroll?: () => void;
+  // Connector hooks, used by Table mode to draw Property -> Column lines from this card.
+  bodyRef?: React.RefObject<HTMLDivElement | null>;
+  closeLabel?: string;
+  hoveredPropertyId?: string | null;
+  onPropertyHoverChange?: (propertyId: string, hovering: boolean) => void;
+  onSetPropertyRef?: (propertyId: string, el: HTMLElement | null) => void;
+  propertyOffscreenDirections?: Record<string, "up" | "down">;
+  onNavigateToOffscreenProperty?: (propertyId: string) => void;
+  isPropertyDimmed?: (propertyId: string) => boolean;
 }) {
+  const [scrolledFromTop, setScrolledFromTop] = useState(false);
   return (
     <div
-      className={cn(
-        "flex max-h-[660px] flex-col overflow-hidden rounded-[14px] border border-[#7c5eff] bg-white shadow-[0_4px_14px_rgba(46,35,110,0.12)]",
-        selected && "shadow-[0_0_0_1.5px_#00ded8]",
-      )}
-      onDragOver={(e) => e.preventDefault()}
+      className="relative flex h-full min-h-0 flex-col overflow-hidden bg-[#f3f3f3]"
+      onDragOver={(event) => event.preventDefault()}
       onDrop={onDropProperties}
     >
-      <button
+      <div
         ref={titleRef}
-        type="button"
-        onClick={(e) => {
-          if (e.shiftKey || e.metaKey || e.ctrlKey) {
-            onSelect({ shiftKey: e.shiftKey, metaKey: e.metaKey, ctrlKey: e.ctrlKey });
-            return;
+        onClick={(event) => {
+          if (event.shiftKey || event.metaKey || event.ctrlKey) {
+            onSelect({
+              shiftKey: event.shiftKey,
+              metaKey: event.metaKey,
+              ctrlKey: event.ctrlKey,
+            });
           }
-          onClose();
         }}
         className={cn(
-          "flex h-[50px] shrink-0 items-center gap-3 bg-[#f1edff] px-3 text-left",
-          selected && "bg-[#00ded8]/10",
+          "relative z-20 flex h-8 shrink-0 items-center gap-2 border-b border-[#e3e5e4] bg-[#3c4140] px-4 text-left",
+          selected && "ring-1 ring-inset ring-[#00ded8]",
         )}
       >
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onClose();
+          }}
+          className="flex size-6 shrink-0 items-center justify-center rounded-full bg-[#6d7472] text-white hover:bg-[#555b59]"
+          aria-label={closeLabel}
+        >
+          <Undo2 className="size-4" />
+        </button>
         <StatusBadge
           status={entityDisplayStatus(entity)}
-          size={22}
+          size={16}
           confidence={entity.confidence}
         />
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-[14px] font-semibold">{entity.name}</span>
-          <span className="block text-[10px] text-muted-foreground">
-            {entity.properties.length} props · {tablesUsedByEntity(entity).length} table
-          </span>
+        <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-[#fafafa]">
+          {entity.name}
         </span>
-        {entity.status !== "confirmed" && <ConfidenceChip confidence={entity.confidence} />}
-      </button>
+        <span className="shrink-0 text-[14px] text-[#fafafa]">{entity.properties.length}</span>
+        {entityDisplayStatus(entity) === "suggested" && (
+          <span className="shrink-0 rounded-full bg-[#e3e5e4] px-1.5 py-px text-[12px] text-[#252828]">
+            {Math.round(entity.confidence * 100)}%
+          </span>
+        )}
+      </div>
       <ListControls
         filter={filter}
         onFilterChange={onFilterChange}
@@ -2190,26 +3643,55 @@ function ExpandedEntity({
         onSearchChange={onSearchChange}
         searchPlaceholder="Search properties…"
       />
-      <div className="min-h-0 flex-1 overflow-y-auto py-1.5">
-        {visibleProperties.map((property) => (
-          <PropertyListRow
-            key={property.id}
-            property={property}
-            entityId={entity.id}
-            selected={suggestionSelection.has(
-              suggestionKey({ kind: "property", entityId: entity.id, propertyId: property.id }),
-            )}
-            onSelect={(mods) => onSelectProperty(property.id, mods)}
-            draggablePropertyIds={selectedPropertyIdsFor}
+      <div
+        ref={bodyRef}
+        onScroll={(event) => {
+          setScrolledFromTop(event.currentTarget.scrollTop > 1);
+          onBodyScroll?.();
+        }}
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-[72px] pt-8"
+      >
+        <div className="flex w-full min-h-full flex-col items-center justify-center-safe gap-3 px-8">
+          {visibleProperties.map((property) => (
+            <PropertyListRow
+              key={property.id}
+              property={property}
+              entityId={entity.id}
+              hovered={hoveredPropertyId === property.id}
+              onHoverChange={(hovering) => onPropertyHoverChange?.(property.id, hovering)}
+              setRef={(el) => onSetPropertyRef?.(property.id, el)}
+              offscreenDirection={propertyOffscreenDirections?.[property.id]}
+              onNavigateToOffscreen={() => onNavigateToOffscreenProperty?.(property.id)}
+              dimmed={isPropertyDimmed?.(property.id) ?? false}
+              selected={suggestionSelection.has(
+                suggestionKey({ kind: "property", entityId: entity.id, propertyId: property.id }),
+              )}
+              onSelect={(mods) => onSelectProperty(property.id, mods)}
+              draggablePropertyIds={selectedPropertyIdsFor}
+            />
+          ))}
+          <AddPropertyRow
+            isAdding={isAddingProperty}
+            onStartAdd={onStartAddProperty}
+            onSubmit={onSubmitAddProperty}
+            onCancel={onCancelAddProperty}
           />
-        ))}
-        <AddPropertyRow
-          isAdding={isAddingProperty}
-          onStartAdd={onStartAddProperty}
-          onSubmit={onSubmitAddProperty}
-          onCancel={onCancelAddProperty}
-        />
+        </div>
       </div>
+      {scrolledFromTop && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 top-[68px] z-20 h-[72px]"
+          style={{
+            background: "linear-gradient(to bottom, #f3f3f3 0%, #f3f3f3 50%, #f3f3f300 100%)",
+          }}
+        />
+      )}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 bottom-0 h-[72px]"
+        style={{ background: "linear-gradient(to bottom, #f3f3f300, #f3f3f3 50%)" }}
+      />
     </div>
   );
 }
@@ -2218,6 +3700,7 @@ function CurrentEntityCard({
   entity,
   visibleProperties,
   titleRef,
+  bodyRef,
   hoveredPropertyId,
   onPropertyHoverChange,
   onSetPropertyRef,
@@ -2242,12 +3725,18 @@ function CurrentEntityCard({
   onCancelAddProperty,
   onStartMapDrag,
   onNavigateToMapping,
+  isPropertyDimmed,
 }: {
   entity: Entity;
   // See `ExpandedEntity`'s own `visibleProperties` doc comment — same rationale, same mirrored
   // shape, just for the Current Entity card instead of a Connected Entity's own expanded one.
   visibleProperties: Property[];
   titleRef?: React.RefObject<HTMLButtonElement | null>;
+  // This lane's own scroll container, now that it's self-contained rather than sitting inside a
+  // generic `Idea4Surface` wrapper — see this component's own top-of-function comment. Read by
+  // `recomputeMappingLines`'s own visibility-clipping math the same way every other lane's scroll
+  // container is.
+  bodyRef?: React.RefObject<HTMLDivElement | null>;
   hoveredPropertyId?: string | null;
   onPropertyHoverChange?: (propertyId: string, hovering: boolean) => void;
   onSetPropertyRef?: (propertyId: string, el: HTMLElement | null) => void;
@@ -2286,14 +3775,47 @@ function CurrentEntityCard({
   // shift/cmd/ctrl multi-select) scrolls that Property's own mapped Column into view instead of
   // leaving the reviewer to hunt for it — see `scrollToColumnForProperty`'s own doc comment.
   onNavigateToMapping?: (propertyId: string) => void;
+  // The Table currently cross-lane-highlighted (see `hoveredTableName` in `Idea4EntityMode`) — any
+  // Property here mapped into it gets a shaded background, matching Figma node 407:6393.
+  hoveredTableName?: string | null;
+  isPropertyDimmed?: (propertyId: string) => boolean;
 }) {
+  const [scrolledFromTop, setScrolledFromTop] = useState(false);
   return (
+    // Rebuilt as a fully self-contained lane surface rather than a floating card wrapped inside
+    // the generic `Idea4Surface` chrome — Figma's "outer container" (node 407:5561) shows ONE
+    // flush panel with its own header/filter-bar/scroll/fade all merged into a single unit, edge
+    // to edge in its grid cell, not a separately-bordered/margined card floating inside a plain
+    // lane background. This card now reproduces that chrome directly (bg, header, scroll
+    // container, gradient fade) instead of relying on `Idea4Surface` for it — see the call site
+    // in `Idea4EntityMode`, which no longer wraps this in `<Idea4Surface active>`.
     <div
       className={cn(
-        "mx-auto mt-4 flex h-[calc(100%-16px)] w-full max-w-[360px] flex-col overflow-hidden rounded-[14px] border border-[#7c5eff] bg-white shadow-[0_4px_14px_rgba(46,35,110,0.12)]",
-        selected && "shadow-[0_0_0_1.5px_#00ded8]",
+        // No explicit height utility — same as `Idea4Surface`'s own root, this relies on the grid
+        // container's default item-stretch to fill its cell, rather than a `h-full` chain that
+        // isn't guaranteed to resolve the same way. `mb-[60px]` reserves the floating AI review
+        // bar's own "60px footprint" (see the comment this replaces, on `Idea4Surface`'s body
+        // padding) as a MARGIN on this box itself, so its `absolute bottom-0` footer/gradient
+        // below land above the bar instead of underneath it — previously this fell out for free
+        // because this card sized itself against an already-shrunk parent (Idea4Surface's own
+        // padded scroll body); now that this card owns its own full grid cell, it has to reserve
+        // that clearance itself.
+        "relative mb-[60px] flex min-w-0 flex-col overflow-hidden bg-[#e7f1f0]",
+        // Inset (not outset) ring so the selection indicator can't get clipped by this panel's
+        // own `overflow-hidden` now that it's flush with its grid cell on every side.
+        selected && "shadow-[inset_0_0_0_1.5px_#00ded8]",
       )}
     >
+      {/* Title, 32px — off Figma "Entity Triggered Editing" selected-lane title (node 424:19677,
+          re-checked — this frame's own title flipped from a neutral `#f3f3f3` gray to
+          `#0891b2`/`--brand-color` cyan since this was first ported, with its name/count text
+          going from dark to light `#fafafa` to match): a 16px `StatusBadge` (not this card's usual
+          20px), the entity's own name (Medium/14px, truncated), its own property count
+          (Regular/14px), and a flat confidence pill matching `Idea4EntityPanel`'s own row pill
+          exactly (not the interactive `ConfidenceChip` this header used before — see that panel's
+          own comment on why a dense/title context gets the plain pill instead; this pill's own
+          dark-on-light coloring is unchanged since Figma still shows it that way even on the new
+          cyan title). */}
       <button
         ref={titleRef}
         type="button"
@@ -2303,24 +3825,26 @@ function CurrentEntityCard({
           }
         }}
         className={cn(
-          "flex h-[62px] shrink-0 items-center gap-3 bg-[#f1edff] px-3 text-left",
+          "flex h-8 shrink-0 items-center gap-2 border-b border-[#e3e5e4] bg-[#0891b2] px-4 text-left",
           selected && "bg-[#00ded8]/10",
         )}
       >
         <StatusBadge
           status={entityDisplayStatus(entity)}
-          size={22}
+          size={16}
           confidence={entity.confidence}
           warningReason={entity.warningReason}
           errorReason={entityErrorReason(entity)}
         />
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-[15px] font-semibold">{entity.name}</p>
-          <p className="mt-0.5 text-[11px] text-muted-foreground">
-            {entity.properties.length} props · {tablesUsedByEntity(entity).length} table
-          </p>
-        </div>
-        {entity.status !== "confirmed" && <ConfidenceChip confidence={entity.confidence} />}
+        <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-[#fafafa]">
+          {entity.name}
+        </span>
+        <span className="shrink-0 text-[14px] text-[#fafafa]">{entity.properties.length}</span>
+        {entityDisplayStatus(entity) === "suggested" && (
+          <span className="shrink-0 rounded-full bg-[#e3e5e4] px-1.5 py-px text-[12px] text-[#252828]">
+            {Math.round(entity.confidence * 100)}%
+          </span>
+        )}
       </button>
       <ListControls
         filter={filter}
@@ -2332,42 +3856,63 @@ function CurrentEntityCard({
         searchPlaceholder="Search properties…"
       />
       <div
+        ref={bodyRef}
         onDragOver={(e) => e.preventDefault()}
         onDrop={onDropProperties}
-        onScroll={onPropertyListScroll}
-        className="min-h-0 flex-1 overflow-y-auto overscroll-contain py-1.5"
+        onScroll={(event) => {
+          setScrolledFromTop(event.currentTarget.scrollTop > 1);
+          onPropertyListScroll?.();
+        }}
+        // `pb-[72px]` matches Figma's own Contents padding (node 424:19685) exactly, clearing the
+        // fade + footer below; `pt-4` (not that same frame's own `pt-32`) since that frame's 32px
+        // exists purely to clear its OWN absolutely-positioned Filter/Sort/Search bar, which this
+        // port keeps in normal document flow (`ListControls` above, already its own real height)
+        // rather than as an overlay — see this file's own note on that deliberate deviation.
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-[72px] pt-4"
       >
-        {visibleProperties.map((property) => (
-          <PropertyListRow
-            key={property.id}
-            property={property}
-            entityId={entity.id}
-            hovered={hoveredPropertyId === property.id}
-            onHoverChange={(hovering) => onPropertyHoverChange?.(property.id, hovering)}
-            setRef={(el) => onSetPropertyRef?.(property.id, el)}
-            selected={suggestionSelection.has(
-              suggestionKey({ kind: "property", entityId: entity.id, propertyId: property.id }),
-            )}
-            onSelect={(mods) => onSelectProperty(property.id, mods)}
-            onStartMapDrag={onStartMapDrag}
-            onNavigateToMapping={onNavigateToMapping}
-          />
-        ))}
-        <AddPropertyRow
-          isAdding={isAddingProperty}
-          onStartAdd={onStartAddProperty}
-          onSubmit={onSubmitAddProperty}
-          onCancel={onCancelAddProperty}
-        />
+        {/* Same alignment rule as every lane: centered vertically until the pills would cross the
+            top/bottom padding, then top-aligned so nothing gets cut off (`justify-center-safe`). */}
+        <div className="flex w-full min-h-full flex-col items-center justify-center-safe gap-3 px-8">
+          {visibleProperties.map((property) => (
+            <PropertyListRow
+              key={property.id}
+              property={property}
+              entityId={entity.id}
+              hovered={hoveredPropertyId === property.id}
+              onHoverChange={(hovering) => onPropertyHoverChange?.(property.id, hovering)}
+              setRef={(el) => onSetPropertyRef?.(property.id, el)}
+              selected={suggestionSelection.has(
+                suggestionKey({ kind: "property", entityId: entity.id, propertyId: property.id }),
+              )}
+              onSelect={(mods) => onSelectProperty(property.id, mods)}
+              onStartMapDrag={onStartMapDrag}
+              onNavigateToMapping={onNavigateToMapping}
+              dimmed={isPropertyDimmed?.(property.id) ?? false}
+            />
+          ))}
+        </div>
       </div>
-      <button
-        ref={footerRef}
-        type="button"
-        onClick={onFooterClick}
-        className="flex h-9 shrink-0 items-center border-t border-black/[0.05] px-4 py-2 text-left text-[10px] text-muted-foreground hover:bg-black/[0.03]"
-      >
-        {footerDirection === "up" ? "↑" : "↓"} More props
-      </button>
+      {scrolledFromTop && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 top-[68px] z-20 h-[72px]"
+          style={{
+            background: "linear-gradient(to bottom, #e7f1f0 0%, #e7f1f0 50%, #e7f1f000 100%)",
+          }}
+        />
+      )}
+      {/* "scroll for more" fade — same recipe as `Idea4Surface`'s own (Figma nodes 407:3672/
+          407:6084), tinted to this card's own mint `#e7f1f0` (re-checked) instead of a lane's
+          plain `#F3F3F3` now that this card provides its own fade rather than inheriting one from
+          that wrapper. The "Add property"/"More props" footer button this area used to also host
+          are removed for now (per explicit request) — `footerRef`/`onFooterClick`/
+          `footerDirection`/`isAddingProperty`/`onStartAddProperty`/`onSubmitAddProperty`/
+          `onCancelAddProperty` stay wired in the props below since removal wasn't asked for. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 bottom-0 h-[72px]"
+        style={{ background: "linear-gradient(to bottom, #e7f1f000, #e7f1f0 50%)" }}
+      />
     </div>
   );
 }
@@ -2473,7 +4018,7 @@ function ListControls({
 }) {
   const [searchOpen, setSearchOpen] = useState(false);
   return (
-    <div className="flex h-9 shrink-0 items-center gap-2 border-b border-black/[0.06] px-3 text-[11px] text-muted-foreground">
+    <div className="relative z-50 flex h-9 shrink-0 items-center gap-2 bg-inherit px-3 text-[11px] text-muted-foreground">
       {searchOpen ? (
         <input
           autoFocus
@@ -2500,7 +4045,6 @@ function ListControls({
           if (searchOpen && search) onSearchChange("");
           setSearchOpen((open) => !open);
         }}
-        title={searchOpen ? "Close search" : "Search"}
         aria-label={searchOpen ? "Close search" : "Search"}
         className="ml-auto shrink-0 text-muted-foreground hover:text-foreground"
       >
@@ -2534,7 +4078,10 @@ function AddPropertyRow({
           e.stopPropagation();
           onStartAdd();
         }}
-        className="mt-1 flex w-full items-center gap-1.5 rounded-[10px] px-3 py-2 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent"
+        // No horizontal margin of its own — both callers now provide their own container padding
+        // directly (`CurrentEntityCard`'s `px-8`, `ExpandedEntity`'s `px-3`), matching whatever
+        // inset `PropertyListRow`'s own pills sit at above it.
+        className="mt-1 flex items-center gap-1.5 rounded-[10px] px-3 py-2 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent"
       >
         <Plus className="size-3.5" /> Add property
       </button>
@@ -2559,9 +4106,26 @@ function AddPropertyRow({
         }
       }}
       placeholder="Property name…"
-      className="mt-1 w-full rounded-[10px] border border-dashed border-input bg-background px-3 py-2 text-[11px] outline-none focus:border-primary"
+      className="mt-1 rounded-[10px] border border-dashed border-input bg-background px-3 py-2 text-[11px] outline-none focus:border-primary"
     />
   );
+}
+
+// Figma's own "type-icon" (node 426:30479 et al.) is a bare empty 16px square — a placeholder,
+// not a real glyph — so this picks a real one per Property type instead of copying the empty box
+// literally. Matched by loose substring on the (free-form) type string, not an exhaustive enum,
+// since `Property.type` isn't a closed set; anything unrecognized falls back to the generic "Aa"
+// type glyph rather than showing nothing.
+function propertyTypeIcon(type: string) {
+  const t = type.toLowerCase();
+  if (t.includes("bool")) return ToggleLeft;
+  if (t.includes("date") || t.includes("time")) return Calendar;
+  if (t.includes("enum")) return List;
+  if (t.includes("uuid")) return Fingerprint;
+  if (t.includes("int") || t.includes("decimal") || t.includes("numeric") || t.includes("float")) {
+    return Hash;
+  }
+  return TypeIcon;
 }
 
 function PropertyListRow({
@@ -2575,6 +4139,9 @@ function PropertyListRow({
   draggablePropertyIds,
   onStartMapDrag,
   onNavigateToMapping,
+  offscreenDirection,
+  onNavigateToOffscreen,
+  dimmed,
 }: {
   property: Entity["properties"][number];
   entityId: string;
@@ -2592,11 +4159,18 @@ function PropertyListRow({
   // Plain click (no modifier — see below) on a mapped row scrolls its own Column into view, same
   // scope as `onStartMapDrag` above.
   onNavigateToMapping?: ((propertyId: string) => void) | undefined;
+  // Set when this row's mapped Column is scrolled out of view — hovering then shows a scroll
+  // arrow, same interaction as `CompactTable`'s.
+  offscreenDirection?: "up" | "down" | undefined;
+  onNavigateToOffscreen?: () => void;
+  dimmed?: boolean;
 }) {
   const mapped = !!property.mapping;
   return (
     <div
       ref={setRef}
+      data-connector-hover
+      data-connector-property-id={property.id}
       onClick={(e) => {
         if (e.shiftKey || e.metaKey || e.ctrlKey) {
           onSelect({ shiftKey: e.shiftKey, metaKey: e.metaKey, ctrlKey: e.ctrlKey });
@@ -2607,13 +4181,20 @@ function PropertyListRow({
       onMouseEnter={() => onHoverChange?.(true)}
       onMouseLeave={() => onHoverChange?.(false)}
       className={cn(
-        "group/prop relative flex h-[30px] items-center gap-2 px-3 text-[11px]",
+        // Pill shape (rounded-full, not the earlier rounded-sm card) sampled directly off the
+        // Figma "Entity Triggered Editing" Selected Entity lane (node 424:19685) — same visual
+        // family as the Related Entities/Relations/Data Tables pills this whole pass reskinned.
+        // Selected/hovered-mapped tinting is unchanged (an existing, established app convention
+        // this frame's sample data doesn't show either state for).
+        "group/prop relative z-20 flex w-full max-w-[340px] items-center gap-2 rounded-full border border-[#e3e5e4] px-2 py-1.5 text-[12px] hover:!border-[#161919] hover:!bg-white",
         selected
           ? "bg-[#00ded8]/10 shadow-[0_0_0_1px_#00ded8]"
           : hovered && mapped
-            ? "bg-[#00ded8]/10"
-            : "hover:bg-black/[0.035]",
+            ? "bg-white"
+            : "bg-white",
         mapped && onNavigateToMapping && "cursor-pointer",
+        "transition-opacity duration-150",
+        dimmed && "opacity-40",
       )}
     >
       <span
@@ -2628,33 +4209,47 @@ function PropertyListRow({
           );
         }}
         className="cursor-grab text-[12px] text-black/25 active:cursor-grabbing"
-        title="Drag onto another visible Entity to move this property there"
       >
         ⠿
       </span>
       <span
         className="size-1.5 shrink-0 rounded-full"
-        style={{ background: propertyDot(propertyStatus(property)) }}
+        style={{ background: reviewStatusDot(propertyStatus(property)) }}
       />
-      {isIdentifierProperty(property) && <span title="Identifier">🔑</span>}
-      <span className="min-w-0 flex-1 truncate font-medium">{property.name}</span>
-      <span className="max-w-12 truncate font-mono text-[10px] text-muted-foreground">
-        {property.type}
-      </span>
-      {property.status !== "confirmed" && <ConfidenceChip confidence={property.confidence} />}
-      {onStartMapDrag && (
-        <button
-          type="button"
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            onStartMapDrag(property.id, e.clientX, e.clientY);
-          }}
-          title={mapped ? "Drag onto a column to remap" : "Drag onto a column to map"}
-          className="ml-0.5 flex size-4 shrink-0 cursor-grab items-center justify-center rounded-full text-black/25 opacity-0 outline-none transition-opacity hover:text-[#00ded8] focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-[#00DED8] group-hover/prop:opacity-100 active:cursor-grabbing"
-        >
-          <Link2 className="size-3" />
-        </button>
+      {isIdentifierProperty(property) && (
+        <span role="img" aria-label="Identifier">
+          🔑
+        </span>
+      )}
+      <span className="min-w-0 flex-1 truncate text-[12px] text-[#161919]">{property.name}</span>
+      {(() => {
+        const TypeGlyph = propertyTypeIcon(property.type);
+        return <TypeGlyph className="size-4 shrink-0 text-[#535353]" aria-label={property.type} />;
+      })()}
+      {propertyStatus(property) === "suggested" && (
+        <span className="shrink-0 rounded-full bg-[#e3e5e4] px-1.5 py-px text-[12px] text-[#252828]">
+          {Math.round(property.confidence * 100)}%
+        </span>
+      )}
+      {hovered && offscreenDirection && (
+        // `pl-1` bridges the gap to the pill so moving onto the arrow doesn't end the hover.
+        <span className="absolute left-full top-1/2 flex -translate-y-1/2 pl-1">
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onNavigateToOffscreen?.();
+            }}
+            className="flex size-6 items-center justify-center rounded-full border border-[#e3e5e4] bg-white text-[#535353] hover:border-[#161919]"
+            aria-label={`Scroll to mapped column ${offscreenDirection}`}
+          >
+            {offscreenDirection === "up" ? (
+              <ArrowUp className="size-3.5" />
+            ) : (
+              <ArrowDown className="size-3.5" />
+            )}
+          </button>
+        </span>
       )}
     </div>
   );
@@ -2665,26 +4260,79 @@ function CompactTable({
   entities,
   onOpen,
   rowRef,
+  highlighted,
+  onHoverChange,
+  offscreenDirection,
+  onNavigateToOffscreen,
+  dimmed,
 }: {
   table: TableSchema;
   entities: Entity[];
   onOpen: () => void;
   rowRef?: (el: HTMLElement | null) => void;
+  // Cross-lane counterpart of `PropertyListRow`'s own `hoveredTableName` — true while this Table
+  // is the current highlight target (hovering this row itself, or a Property mapped into it over
+  // in Current Entity), per Figma node 407:6938's solid-bordered "(hover)table-01" row.
+  highlighted?: boolean;
+  onHoverChange?: (hovering: boolean) => void;
+  offscreenDirection?: "up" | "down" | undefined;
+  onNavigateToOffscreen?: () => void;
+  dimmed?: boolean;
 }) {
   return (
-    <button
-      ref={rowRef}
-      type="button"
-      onClick={onOpen}
-      className="flex h-12 w-full items-center gap-3 rounded-xl border border-black/[0.08] bg-white px-4 text-left shadow-[0_1px_2px_rgba(0,0,0,0.04)] hover:border-[#24bd72]/40"
+    <div
+      data-connector-hover
+      data-connector-table-name={table.name}
+      onMouseEnter={() => onHoverChange?.(true)}
+      onMouseLeave={() => onHoverChange?.(false)}
+      className={cn(
+        "flex w-full max-w-[372px] items-center justify-center gap-1 transition-opacity duration-150",
+        dimmed && "opacity-40",
+      )}
     >
-      <MappingStatusBadge
-        status={tableMappingStatus(table.name, entities)}
-        {...tableMappingCompleteness(table.name, entities)}
-        size={20}
-      />
-      <span className="min-w-0 flex-1 truncate text-[14px] font-semibold">{table.name}</span>
-    </button>
+      <button
+        ref={rowRef}
+        data-connector-hover
+        data-connector-table-name={table.name}
+        type="button"
+        onClick={onOpen}
+        // Pill shape (rounded-full, not the earlier rounded-md/h-12 card) sampled directly off the
+        // Figma "Entity Triggered Editing" Data Tables lane (node 424:20225) — same visual family as
+        // the Related Entities/Relations/Selected-Entity-Properties pills this whole pass reskinned.
+        className={cn(
+          "relative z-20 flex h-10 w-full max-w-[340px] items-center gap-2.5 rounded-full border bg-white px-3 text-left hover:!border-[#161919] hover:!bg-white",
+          highlighted ? "border-[#161919]" : "border-[#e3e5e4]",
+        )}
+      >
+        <MappingStatusBadge
+          status={tableMappingStatus(table.name, entities)}
+          {...tableMappingCompleteness(table.name, entities)}
+          size={20}
+        />
+        <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-[#161919]">
+          {table.name}
+        </span>
+      </button>
+      {offscreenDirection && highlighted && (
+        <button
+          type="button"
+          data-connector-hover
+          data-connector-table-name={table.name}
+          onClick={(event) => {
+            event.stopPropagation();
+            onNavigateToOffscreen?.();
+          }}
+          className="relative z-20 flex size-8 shrink-0 items-center justify-center rounded-full border border-[#e3e5e4] bg-white text-[#535353] hover:border-[#161919]"
+          aria-label={`Scroll to mapped Property ${offscreenDirection}`}
+        >
+          {offscreenDirection === "up" ? (
+            <ArrowUp className="size-4" />
+          ) : (
+            <ArrowDown className="size-4" />
+          )}
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -2701,8 +4349,6 @@ function ExpandedTable({
   onColumnListScroll,
   columnOrderHint,
   columnMappings,
-  onAcceptMapping,
-  onRejectMapping,
   sort,
   onSortChange,
   hasExplicitSort,
@@ -2714,6 +4360,7 @@ function ExpandedTable({
   hoveredColumnKey,
   onColumnHoverChange,
   onNavigateToProperty,
+  isColumnDimmed,
 }: {
   table: TableSchema;
   entities: Entity[];
@@ -2731,6 +4378,7 @@ function ExpandedTable({
   // Clicking a mapped Column row scrolls its own Property into view in Current Entity — the
   // reverse direction of `PropertyListRow`'s own `onNavigateToMapping`.
   onNavigateToProperty?: (propertyId: string) => void;
+  isColumnDimmed?: (columnKey: string) => boolean;
   titleRef?: (el: HTMLElement | null) => void;
   cardRef?: (el: HTMLElement | null) => void;
   footerRef?: (el: HTMLElement | null) => void;
@@ -2748,14 +4396,12 @@ function ExpandedTable({
   // dense, crossing tangle instead of a roughly parallel one. Reordering just the MAPPED columns to
   // follow Property order (unmapped columns keep their original relative order, after) straightens
   // the ladder out without otherwise touching this Table's own column order.
-  columnOrderHint?: string[] | undefined;
+  columnOrderHint?: (string | null)[] | undefined;
   // Column name -> whichever of Current Entity's own Properties maps into it, so a column backed
   // by a still-Suggested mapping can show its own Accept/Reject control (see below) — a Column
   // can't be dragged (it isn't moveable the way a Property is), so this replaces that slot instead
   // of sharing it.
   columnMappings?: Map<string, Property>;
-  onAcceptMapping?: (propertyId: string) => void;
-  onRejectMapping?: (propertyId: string) => void;
   // Filter/Sort/Search for this Table's own Column list — see `ListControls`'s own doc comment.
   // `hasExplicitSort` distinguishes "never touched" from "explicitly set back to the default", the
   // same way `DetailView.tsx`'s own `hasExplicitColumnSort` does: only once the reviewer has
@@ -2772,12 +4418,17 @@ function ExpandedTable({
     let list = table.columns;
     if (!hasExplicitSort) {
       if (columnOrderHint && columnOrderHint.length > 0) {
-        const orderIndex = new Map(columnOrderHint.map((name, i) => [name, i]));
-        const mapped = list
-          .filter((c) => orderIndex.has(c.name))
-          .sort((a, b) => orderIndex.get(a.name)! - orderIndex.get(b.name)!);
-        const unmapped = list.filter((c) => !orderIndex.has(c.name));
-        list = [...mapped, ...unmapped];
+        const mappedNames = new Set(columnOrderHint.filter((name): name is string => !!name));
+        const byName = new Map(list.map((column) => [column.name, column]));
+        const fillers = list.filter((column) => !mappedNames.has(column.name));
+        const used = new Set<string>();
+        const aligned = columnOrderHint.flatMap((name) => {
+          const column = name ? byName.get(name) : fillers.shift();
+          if (!column || used.has(column.name)) return [];
+          used.add(column.name);
+          return [column];
+        });
+        list = [...aligned, ...list.filter((column) => !used.has(column.name))];
       }
     } else if (sort) {
       list = sortByState(
@@ -2787,8 +4438,12 @@ function ExpandedTable({
         (c) => columnMappings?.get(c.name)?.confidence,
       );
     }
-    if (filter === "mapped") list = list.filter((c) => !!columnMappings?.get(c.name));
-    else if (filter === "unmapped") list = list.filter((c) => !columnMappings?.get(c.name));
+    const confirmed = (c: TableSchema["columns"][number]) => {
+      const property = columnMappings?.get(c.name);
+      return !!property && hasConfirmedMapping(property);
+    };
+    if (filter === "mapped") list = list.filter(confirmed);
+    else if (filter === "unmapped") list = list.filter((c) => !confirmed(c));
     else if (filter === "identifier") {
       list = list.filter((c) => {
         const property = columnMappings?.get(c.name);
@@ -2801,29 +4456,34 @@ function ExpandedTable({
     }
     return list;
   }, [table.columns, columnOrderHint, hasExplicitSort, sort, filter, search, columnMappings]);
+  const [scrolledFromTop, setScrolledFromTop] = useState(false);
   return (
     <div
       ref={cardRef}
-      className="flex max-h-[660px] flex-col overflow-hidden rounded-[14px] border border-[#b9dfca] bg-white shadow-[0_4px_14px_rgba(20,92,56,0.1)]"
+      className="relative flex h-full min-h-0 flex-col overflow-hidden bg-[#f3f3f3]"
     >
-      <button
+      <div
         ref={titleRef}
-        type="button"
-        onClick={onClose}
-        className="flex h-[50px] shrink-0 items-center gap-3 bg-[#edf6f1] px-3 text-left"
+        className="relative z-20 flex h-8 shrink-0 items-center gap-2 border-b border-[#e3e5e4] bg-[#3c4140] px-4"
       >
+        <button
+          type="button"
+          onClick={onClose}
+          className="flex size-6 shrink-0 items-center justify-center rounded-full bg-[#6d7472] text-white hover:bg-[#555b59]"
+          aria-label="Back to Data Tables"
+        >
+          <Undo2 className="size-4" />
+        </button>
         <MappingStatusBadge
           status={tableMappingStatus(table.name, entities)}
           {...tableMappingCompleteness(table.name, entities)}
-          size={20}
+          size={16}
         />
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-[14px] font-semibold">{table.name}</span>
-          <span className="block text-[10px] text-muted-foreground">
-            {table.columns.length} columns
-          </span>
+        <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-[#fafafa]">
+          {table.name}
         </span>
-      </button>
+        <span className="shrink-0 text-[14px] text-[#fafafa]">{table.columns.length}</span>
+      </div>
       <ListControls
         filter={filter ?? "all"}
         onFilterChange={(next) => onFilterChange?.(next)}
@@ -2833,85 +4493,173 @@ function ExpandedTable({
         onSearchChange={(value) => onSearchChange?.(value)}
         searchPlaceholder="Search columns…"
       />
-      <div onScroll={onColumnListScroll} className="min-h-0 flex-1 overflow-y-auto py-1.5">
-        {orderedColumns.map((column) => {
-          const key = `${table.name}.${column.name}`;
-          const mappedProperty = columnMappings?.get(column.name);
-          const isSuggested =
-            !!mappedProperty?.mapping && mappingStatus(mappedProperty.mapping) === "suggested";
-          return (
-            <div
-              key={column.name}
-              ref={(el) => onSetColumnRef?.(key, el)}
-              onMouseEnter={() => onColumnHoverChange?.(key, true)}
-              onMouseLeave={() => onColumnHoverChange?.(key, false)}
-              onClick={() => mappedProperty && onNavigateToProperty?.(mappedProperty.id)}
-              className={cn(
-                "flex h-[30px] items-center gap-2 px-3 text-[11px]",
-                dropTargetColumn === column.name
-                  ? "bg-[#00ded8]/10 shadow-[0_0_0_1.5px_#00ded8] hover:bg-[#00ded8]/10"
-                  : hoveredColumnKey === key && mappedProperty
-                    ? "bg-[#00ded8]/10"
-                    : "hover:bg-black/[0.035]",
-                mappedProperty && onNavigateToProperty && "cursor-pointer",
-              )}
-            >
-              {isSuggested && mappedProperty ? (
-                <span className="flex shrink-0 items-center gap-0.5">
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onAcceptMapping?.(mappedProperty.id);
-                    }}
-                    title="Accept this suggested mapping"
-                    aria-label="Accept this suggested mapping"
-                    className="flex size-4 items-center justify-center rounded-full text-[#0298b2] hover:bg-[#0298b2]/10"
-                  >
-                    <Check className="size-2.5" strokeWidth={3} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onRejectMapping?.(mappedProperty.id);
-                    }}
-                    title="Reject this suggested mapping"
-                    aria-label="Reject this suggested mapping"
-                    className="flex size-4 items-center justify-center rounded-full text-[#f15b15] hover:bg-[#f15b15]/10"
-                  >
-                    <X className="size-2.5" strokeWidth={3} />
-                  </button>
-                </span>
-              ) : (
-                <span className="size-4 shrink-0" />
-              )}
-              <span
-                className="size-1.5 shrink-0 rounded-full"
-                style={{
-                  background:
-                    COLUMN_DOT_COLOR[
-                      !mappedProperty ? "unmapped" : isSuggested ? "suggested" : "mapped"
-                    ],
-                }}
-              />
-              <span className="min-w-0 flex-1 truncate font-medium">{column.name}</span>
-              <span className="max-w-12 truncate font-mono text-[10px] text-muted-foreground">
-                {column.type}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-      <button
-        ref={footerRef}
-        type="button"
-        onClick={onFooterClick}
-        className="flex h-9 shrink-0 items-center border-t border-black/[0.05] px-4 py-2 text-left text-[10px] text-muted-foreground hover:bg-black/[0.03]"
+      <div
+        onScroll={(event) => {
+          setScrolledFromTop(event.currentTarget.scrollTop > 1);
+          onColumnListScroll?.();
+        }}
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-[72px] pt-8"
       >
-        {footerDirection === "up" ? "↑" : "↓"} Mapped columns
+        <div className="flex w-full min-h-full flex-col items-center justify-center-safe gap-3 px-8">
+          {orderedColumns.map((column) => {
+            const key = `${table.name}.${column.name}`;
+            const mappedProperty = columnMappings?.get(column.name);
+            const isSuggested =
+              !!mappedProperty?.mapping && mappingStatus(mappedProperty.mapping) === "suggested";
+            const TypeGlyph = propertyTypeIcon(column.type);
+            return (
+              <div
+                key={column.name}
+                ref={(element) => onSetColumnRef?.(key, element)}
+                data-connector-hover
+                data-connector-column-key={key}
+                onMouseEnter={() => onColumnHoverChange?.(key, true)}
+                onMouseLeave={() => onColumnHoverChange?.(key, false)}
+                onClick={() => mappedProperty && onNavigateToProperty?.(mappedProperty.id)}
+                className={cn(
+                  "relative z-20 flex w-full max-w-[340px] items-center gap-2 rounded-full border border-[#e3e5e4] bg-white py-1.5 pl-3 pr-2 text-[12px] hover:border-[#161919]",
+                  dropTargetColumn === column.name &&
+                    "bg-[#00ded8]/10 shadow-[0_0_0_1.5px_#00ded8]",
+                  mappedProperty && onNavigateToProperty && "cursor-pointer",
+                  "transition-opacity duration-150",
+                  isColumnDimmed?.(key) && "opacity-40",
+                )}
+              >
+                <span
+                  className="size-1.5 shrink-0 rounded-full"
+                  style={{
+                    background:
+                      COLUMN_DOT_COLOR[
+                        !mappedProperty ? "unmapped" : isSuggested ? "suggested" : "mapped"
+                      ],
+                  }}
+                />
+                <span className="min-w-0 flex-1 truncate text-[#161919]">{column.name}</span>
+                <TypeGlyph className="size-4 shrink-0 text-[#535353]" aria-label={column.type} />
+                {isSuggested && mappedProperty && (
+                  <span className="shrink-0 rounded-full bg-[#e3e5e4] px-1.5 py-px text-[12px] text-[#252828]">
+                    {Math.round(mappedProperty.confidence * 100)}%
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <button ref={footerRef} type="button" onClick={onFooterClick} className="sr-only">
+        {footerDirection === "up" ? "Previous" : "Next"} mapped column
+      </button>
+      {scrolledFromTop && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 top-[68px] z-20 h-[72px]"
+          style={{
+            background: "linear-gradient(to bottom, #f3f3f3 0%, #f3f3f3 50%, #f3f3f300 100%)",
+          }}
+        />
+      )}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 bottom-0 h-[72px]"
+        style={{ background: "linear-gradient(to bottom, #f3f3f300, #f3f3f3 50%)" }}
+      />
+    </div>
+  );
+}
+
+/** Sort + Search row shared by the Entity types / Data tables side panels — same search-toggle
+ * behavior as `ListControls` (Escape or X clears and closes), restyled to the panels' own 32px
+ * Figma row. */
+function SidePanelListControls({
+  sort,
+  onSortChange,
+  search,
+  onSearchChange,
+  searchPlaceholder,
+}: {
+  sort: SortState;
+  onSortChange: (key: SortKey) => void;
+  search: string;
+  onSearchChange: (value: string) => void;
+  searchPlaceholder: string;
+}) {
+  const [searchOpen, setSearchOpen] = useState(false);
+  const closeSearch = () => {
+    onSearchChange("");
+    setSearchOpen(false);
+  };
+  return (
+    <div className="relative z-50 flex h-8 shrink-0 items-center gap-2 border-b border-[#e3e5e4] pl-2.5 pr-3 text-[12px] text-[#6d7472]">
+      {searchOpen ? (
+        <input
+          autoFocus
+          value={search}
+          onChange={(e) => onSearchChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") closeSearch();
+          }}
+          placeholder={searchPlaceholder}
+          aria-label={searchPlaceholder}
+          className="min-w-0 flex-1 bg-transparent px-1.5 text-[12px] text-[#161919] outline-none placeholder:text-[#9ea3a2]"
+        />
+      ) : (
+        <SortDropdown sort={sort} onChange={onSortChange} showPrefix={false} />
+      )}
+      <button
+        type="button"
+        onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
+        aria-label={searchOpen ? "Close search" : "Search"}
+        className="ml-auto flex size-6 shrink-0 items-center justify-center rounded hover:bg-black/[0.04] hover:text-[#161919]"
+      >
+        {searchOpen ? <X className="size-4" /> : <Search className="size-4" />}
       </button>
     </div>
+  );
+}
+
+function SidePanelEmpty({ query }: { query: string }) {
+  return (
+    <p className="px-4 py-3 text-[12px] text-[#6d7472]">
+      {query ? `No matches for “${query}”` : "Nothing here yet"}
+    </p>
+  );
+}
+
+/** A side panel's collapsed state — same 44px strip + vertical label as Overview's own collapsed
+ * Data tables panel, so collapsing reads the same in both views. */
+function CollapsedSidePanel({
+  side,
+  label,
+  onExpand,
+}: {
+  side: "left" | "right";
+  label: string;
+  onExpand: () => void;
+}) {
+  const Icon = side === "left" ? PanelLeftOpen : PanelRightOpen;
+  return (
+    <aside
+      className={cn(
+        "flex w-11 shrink-0 flex-col items-center overflow-hidden border-[#e3e5e4] bg-white",
+        side === "left" ? "border-r" : "border-l",
+      )}
+    >
+      <div className="flex h-12 w-full shrink-0 items-center justify-center border-b border-[#e3e5e4]">
+        <button
+          type="button"
+          onClick={onExpand}
+          aria-label={`Expand ${label} panel`}
+          className="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-black/[0.04]"
+        >
+          <Icon className="size-5" />
+        </button>
+      </div>
+      <div className="flex flex-1 items-center justify-center">
+        <span className="text-[11px] font-medium text-muted-foreground [writing-mode:vertical-rl]">
+          {label}
+        </span>
+      </div>
+    </aside>
   );
 }
 
@@ -2924,120 +4672,231 @@ function Idea4EntityPanel({
   focusEntityId?: string;
   workingIds: Set<string>;
 }) {
+  const [open, setOpen] = useState(true);
   const [query, setQuery] = useState("");
-  const rows = app.entities.filter((entity) =>
-    entity.name.toLowerCase().includes(query.toLowerCase()),
+  const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
+  const rows = useMemo(
+    () =>
+      sortByState(
+        app.entities.filter((entity) => entity.name.toLowerCase().includes(query.toLowerCase())),
+        sort,
+        (entity) => entity.name,
+        (entity) => entity.confidence,
+      ),
+    [app.entities, query, sort],
   );
+  if (!open) {
+    return <CollapsedSidePanel side="left" label="Entity types" onExpand={() => setOpen(true)} />;
+  }
   return (
-    <aside className="flex w-60 shrink-0 flex-col overflow-hidden border-r border-black/[0.08] bg-white">
-      <div className="flex h-10 items-center justify-between border-b border-black/[0.08] px-4 text-[14px] font-medium leading-none">
-        <span className="flex items-center gap-1.5">
-          <span className="size-[14px] shrink-0 text-muted-foreground">
-            <EntitiesIcon />
-          </span>
-          Entity types
-        </span>
-        <ChevronLeft className="size-4 shrink-0 text-muted-foreground" />
+    // Rebuilt directly off the Figma "Panel-Entity types" node (406:5388, fetched in full — not
+    // just its screenshot) — see the per-element comments below for what each value is sampled
+    // from.
+    <aside className="flex w-60 shrink-0 flex-col overflow-hidden border-r border-[#e3e5e4] bg-white">
+      {/* Title, 48px — collapse glyph is lucide's `PanelLeftClose`, the closest existing icon to
+          Figma's own "IconSidebarWideLeftArrow" asset. */}
+      <div className="flex h-12 shrink-0 items-center justify-between border-b border-[#e3e5e4] pl-4 pr-3">
+        <span className="text-[14px] font-medium leading-none text-[#161919]">Entity types</span>
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          aria-label="Collapse Entity types panel"
+          className="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-black/[0.04]"
+        >
+          <PanelLeftClose className="size-5" />
+        </button>
       </div>
-      <div className="flex h-9 items-center gap-2 border-b border-black/[0.06] px-4 text-[11px] text-muted-foreground">
-        <span>Name ⇅</span>
-        <Search className="ml-auto size-3.5" />
-      </div>
-      <input
-        value={query}
-        onChange={(event) => setQuery(event.target.value)}
-        aria-label="Filter entity types"
-        className="sr-only"
+      <SidePanelListControls
+        sort={sort}
+        onSortChange={(key) => setSort((prev) => nextSortState(prev, key))}
+        search={query}
+        onSearchChange={setQuery}
+        searchPlaceholder="Search entity types…"
       />
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {rows.map((entity) => (
-          <button
-            key={entity.id}
-            type="button"
-            draggable
-            onDragStart={(e) => {
-              e.dataTransfer.setData(ENTITY_PANEL_DND_TYPE, entity.id);
-            }}
-            onClick={() => app.openDetail("entity", entity.id)}
-            title="Click to open, or drag onto Connected Entities to relate it to the current Focus"
-            className={cn(
-              "flex w-full items-center gap-2 border-b border-white px-4 py-2 text-left hover:bg-[#eef6f5]",
-              (entity.id === focusEntityId || workingIds.has(entity.id)) && "bg-[#F1F9FF]",
-            )}
-          >
-            <span className="cursor-grab text-black/25 active:cursor-grabbing">⠿</span>
-            <StatusBadge
-              status={entityDisplayStatus(entity)}
-              size={18}
-              confidence={entity.confidence}
-            />
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-[11px] font-semibold">{entity.name}</span>
-              <span className="block text-[10px] text-muted-foreground">
-                {entity.properties.length} props · {tablesUsedByEntity(entity).length} table
+      {rows.length === 0 && <SidePanelEmpty query={query} />}
+      {/* Row list — rebuilt off Figma "Entity Triggered Editing" (node 424:20251), which shows
+          THREE distinct row states, each a genuinely different shape rather than one shared
+          accent toggling color: the true focus/current entity gets a RIGHT-edge 3px `#00ded8`
+          border + `#ecf3f2` bg (node 424:20761); any OTHER entity currently working in the
+          workspace gets a LEFT-edge 3px `#6d7472` border with no bg tint (node 424:20796 — the
+          opposite side from focus, not a mistake: it's a deliberately secondary indicator, never
+          confusable with the primary one); everything else is plain white with no border at all
+          (node 424:23924). Each row is a single 28px-tall line — no secondary "N props · M table"
+          line, matching that frame's own row height exactly. 2px gap between rows, no dividers. */}
+      <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
+        {rows.map((entity) => {
+          const isFocus = entity.id === focusEntityId;
+          const isRelated = !isFocus && workingIds.has(entity.id);
+          return (
+            <button
+              key={entity.id}
+              type="button"
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.setData(ENTITY_PANEL_DND_TYPE, entity.id);
+              }}
+              onClick={() => app.openDetail("entity", entity.id)}
+              className={cn(
+                "flex w-full items-center gap-2 py-1 text-left",
+                isFocus
+                  ? "border-l-[3px] border-[#00ded8] bg-[#ecf3f2] pl-[13px] pr-3"
+                  : isRelated
+                    ? "border-l-[3px] border-[#6d7472] bg-white pl-[13px] pr-3 hover:bg-[#e3e5e4]"
+                    : "bg-white pl-4 pr-3 hover:bg-[#e3e5e4]",
+              )}
+            >
+              <span
+                className="shrink-0 text-[12px] leading-none text-[#9EA3A2] active:cursor-grabbing"
+                style={{ cursor: "grab" }}
+              >
+                ⠿
               </span>
-            </span>
-          </button>
-        ))}
+              <StatusBadge
+                status={entityDisplayStatus(entity)}
+                size={16}
+                confidence={entity.confidence}
+                warningReason={entity.warningReason}
+                errorReason={entityErrorReason(entity)}
+              />
+              <span className="flex min-w-0 flex-1 items-center gap-1 whitespace-nowrap">
+                <span className="min-w-0 flex-1 truncate text-[14px] font-normal text-[#161919]">
+                  {entity.name}
+                </span>
+                <span className="shrink-0 text-[14px] text-[#6d7472]">
+                  {entity.properties.length}
+                </span>
+              </span>
+              {entityDisplayStatus(entity) === "suggested" && (
+                <span className="shrink-0 rounded-full bg-[#e3e5e4] px-1.5 py-px text-[12px] text-[#252828]">
+                  {Math.round(entity.confidence * 100)}%
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
     </aside>
   );
 }
 
-function Idea4TablePanel({ app, activeNames }: { app: OntologyApp; activeNames: Set<string> }) {
+function Idea4TablePanel({
+  app,
+  activeNames,
+  focusName,
+}: {
+  app: OntologyApp;
+  activeNames: Set<string>;
+  // The table this workspace is open on — same focus treatment as `Idea4EntityPanel`'s own focus
+  // row (teal left bar + tint), distinct from the gray bar for tables merely on canvas.
+  focusName?: string;
+}) {
+  // Rebuilt directly off the Figma "Panel-Data tables" node (417:13975) — the same reskin pass
+  // `Idea4EntityPanel` above already got off its own "Panel-Entity types" node, just mirrored:
+  // this panel sits on the workspace's right edge (`border-l`, not `border-r`), so its collapse
+  // glyph is lucide's `PanelRightClose` (the mirror of that panel's `PanelLeftClose`) rather than
+  // the same icon reused verbatim.
+  const [open, setOpen] = useState(true);
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
+  // Tables have no confidence of their own — "Confidence" sorts by the strongest mapping into
+  // each table, the same proxy Overview's own Data tables panel sorts by.
+  const rows = useMemo(
+    () =>
+      sortByState(
+        app.tables.filter((table) => table.name.toLowerCase().includes(query.toLowerCase())),
+        sort,
+        (table) => table.name,
+        (table) => tableHighestMappingConfidence(table.name, app.entities),
+      ),
+    [app.tables, app.entities, query, sort],
+  );
+  if (!open) {
+    return <CollapsedSidePanel side="right" label="Data tables" onExpand={() => setOpen(true)} />;
+  }
   return (
-    <aside className="flex w-60 shrink-0 flex-col overflow-hidden border-l border-black/[0.08] bg-white">
-      <div className="flex h-10 items-center gap-3 border-b border-black/[0.08] px-4 text-[14px] font-medium leading-none">
-        <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
-        <span className="flex items-center gap-1.5">
-          <span className="size-[14px] shrink-0 text-muted-foreground">
-            <TablesIcon />
-          </span>
-          Data tables
-        </span>
+    <aside className="flex w-60 shrink-0 flex-col overflow-hidden border-l border-[#e3e5e4] bg-white">
+      <div className="flex h-12 shrink-0 items-center justify-between border-b border-[#e3e5e4] pl-4 pr-3">
+        <span className="text-[14px] font-medium leading-none text-[#161919]">Data tables</span>
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          aria-label="Collapse Data tables panel"
+          className="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-black/[0.04]"
+        >
+          <PanelRightClose className="size-5" />
+        </button>
       </div>
-      <div className="flex h-9 items-center gap-2 border-b border-black/[0.06] px-4 text-[11px] text-muted-foreground">
-        <span>Name ⇅</span>
-        <Search className="ml-auto size-3.5" />
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {app.tables.map((table) => (
-          <button
-            key={table.name}
-            type="button"
-            draggable
-            onDragStart={(e) => {
-              e.dataTransfer.setData(TABLE_PANEL_DND_TYPE, table.name);
-            }}
-            onClick={() => app.openDetail("table", table.name)}
-            title="Click to open, or drag onto Data Tables to add it to the current workspace"
-            className={cn(
-              "flex w-full items-center gap-2 border-b border-white px-4 py-2 text-left hover:bg-[#eef6f5]",
-              activeNames.has(table.name) && "bg-[#F1F9FF]",
-            )}
-          >
-            <span className="cursor-grab text-black/25 active:cursor-grabbing">⠿</span>
-            <MappingStatusBadge
-              status={tableMappingStatus(table.name, app.entities)}
-              {...tableMappingCompleteness(table.name, app.entities)}
-              size={16}
-            />
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-[11px] font-semibold">{table.name}</span>
-              <span className="block text-[10px] text-muted-foreground">
-                {table.columns.length} columns
+      <SidePanelListControls
+        sort={sort}
+        onSortChange={(key) => setSort((prev) => nextSortState(prev, key))}
+        search={query}
+        onSearchChange={setQuery}
+        searchPlaceholder="Search data tables…"
+      />
+      {rows.length === 0 && <SidePanelEmpty query={query} />}
+      <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
+        {rows.map((table) => {
+          // A related/on-canvas table gets the same left-border-only indicator (no bg tint) as
+          // every other "related but not focused" row in this file (re-checked against Figma node
+          // 424:20441 — most rows in that panel's own mock data carry this exact `border-l-3
+          // #6d7472`, not a background tint); `pl-[13px]` (16px minus the 3px border) keeps the
+          // name text flush with the non-bordered rows instead of visibly shifting right.
+          const isFocus = table.name === focusName;
+          const isRelated = !isFocus && activeNames.has(table.name);
+          return (
+            <button
+              key={table.name}
+              type="button"
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.setData(TABLE_PANEL_DND_TYPE, table.name);
+              }}
+              onClick={() => app.openDetail("table", table.name)}
+              className={cn(
+                "flex w-full items-center gap-2 py-1 pr-3 text-left",
+                isFocus
+                  ? "border-l-3 border-[#00ded8] bg-[#ecf3f2] pl-[13px]"
+                  : isRelated
+                    ? "border-l-3 border-[#6d7472] bg-white pl-[13px] hover:bg-[#e3e5e4]"
+                    : "bg-white pl-4 hover:bg-[#e3e5e4]",
+              )}
+            >
+              <span className="text-[#9EA3A2] active:cursor-grabbing" style={{ cursor: "grab" }}>
+                ⠿
               </span>
-            </span>
-          </button>
-        ))}
+              <MappingStatusBadge
+                status={tableMappingStatus(table.name, app.entities)}
+                {...tableMappingCompleteness(table.name, app.entities)}
+                size={16}
+              />
+              {/* Single line (re-checked — this panel's own row no longer shows a second "N
+                  columns" line, just the bare column count at 14px on the same row as the name). */}
+              <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
+                <span className="min-w-0 truncate text-[14px] leading-5 text-[#161919]">
+                  {table.name}
+                </span>
+                <span className="shrink-0 text-[14px] leading-5 text-[#6d7472]">
+                  {table.columns.length}
+                </span>
+              </span>
+            </button>
+          );
+        })}
       </div>
     </aside>
   );
 }
 
-function propertyDot(status: ReturnType<typeof propertyStatus>) {
-  if (status === "confirmed") return "#0298b2";
+// Small 6px review-status dot — used for a Property row (see `propertyStatus` below) and for a
+// Relation row in the Relations lane (see `RelationCard`/`RelationStatusIcon`), which Figma shows
+// styled as the exact same plain dot rather than the prototype's original circle+glyph badge.
+// Suggested/Confirmed sampled directly off Figma (`--purple/600` #9333ea from the Category card's
+// own property rows, node 407:5561; `--cyan/700` #0e7490 from the Relations lane, node 406:4970 —
+// also matches `StatusBadge`'s own Confirmed icon color). Warning/Error aren't shown as a dot
+// anywhere in this design, so they're left as this app's existing StatusBadge-family colors.
+function reviewStatusDot(status: ReviewStatus) {
+  if (status === "confirmed") return "#0e7490";
   if (status === "warning") return "#e6c200";
   if (status === "error") return "#f15b15";
-  return "#7c5eff";
+  return "#9333ea";
 }

@@ -245,7 +245,6 @@ function IssuesControl({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        title={`${warnings.length} warning${warnings.length === 1 ? "" : "s"}, ${errors.length} error${errors.length === 1 ? "" : "s"}`}
         aria-label="Show warnings and errors"
         className={cn(
           "flex h-8 shrink-0 items-center gap-2 rounded-[4px] px-2 transition-colors",
@@ -515,7 +514,7 @@ export function Header({
           Overview or a contained Editing session — no Entity/Table name and no "Editing" label
           here at all: the Editing workspace's own containment (the rounded, inset boundary it
           transforms into, see routes/index.tsx) is what communicates the mode change. */}
-      <div className="flex h-10 w-full shrink-0 items-center justify-between border-b border-[rgba(28,28,24,0.08)] px-4">
+      <div className="flex h-14 w-full shrink-0 items-center justify-between border-b border-[rgba(28,28,24,0.08)] px-4">
         <div className="flex shrink-0 items-center gap-4">
           <button
             type="button"

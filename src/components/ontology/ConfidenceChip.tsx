@@ -58,7 +58,10 @@ export function ConfidenceChip({
       <TooltipTrigger asChild>
         <span
           tabIndex={0}
-          className="inline-flex shrink-0 cursor-default items-center justify-center gap-2.5 rounded-[10px] bg-black/[0.08] px-[6px] text-center text-[10px] font-normal leading-[16px] tracking-[-0.076px] text-[#3C3C3C] outline-none focus-visible:ring-2 focus-visible:ring-[#00DED8]"
+          // Solid zinc-200/zinc-800 rounded-full pill, per the "N%" chip sampled directly off the
+          // Zaimler Figma spec (frame "Entity Triggered Editing", node 406:4814) — replaces the
+          // prototype's original translucent-black/rounded-[10px] pill.
+          className="inline-flex shrink-0 cursor-default items-center justify-center gap-2.5 rounded-full bg-[#e3e5e4] px-[6px] py-px text-center text-[10px] font-normal leading-[16px] tracking-[-0.076px] text-[#252828] outline-none focus-visible:ring-2 focus-visible:ring-[#00DED8]"
         >
           {pct != null ? `${pct}%` : "—"}
         </span>

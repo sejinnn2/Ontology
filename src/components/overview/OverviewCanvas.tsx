@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Search as SearchIcon, X } from "lucide-react";
+import { PanelRightClose, PanelRightOpen, Search as SearchIcon, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { sideBetween, pointInRect, distanceToSegment } from "@/lib/geometry";
 import type { Pt, Rect, Side } from "@/lib/geometry";
@@ -2013,7 +2013,6 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                 return (
                   <div
                     key={r.id}
-                    title={relationLabel(r)}
                     style={{
                       left: mid.x,
                       top: mid.y,
@@ -2140,11 +2139,6 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                   <button
                     type="button"
                     disabled={!marker.restorable}
-                    title={
-                      marker.restorable
-                        ? "Select or deselect this change for restore"
-                        : "This change can't be restored"
-                    }
                     onMouseEnter={() => setHistoryInspectionHoveredNumber(marker.number)}
                     onMouseLeave={() =>
                       setHistoryInspectionHoveredNumber((cur) =>
@@ -2301,43 +2295,43 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
         style={{ width: tablePanelOpen ? TABLE_PANEL_OPEN_W : TABLE_PANEL_COLLAPSED_W }}
         className="relative flex shrink-0 flex-col overflow-hidden border-l border-[#E3E5E4] bg-node transition-[width]"
       >
-        <div className="flex shrink-0 items-center gap-1 border-b border-node-border py-3 pl-2 pr-4">
+        <div className="flex h-12 shrink-0 items-center gap-1 border-b border-[#e3e5e4] pl-4 pr-3">
           <button
             type="button"
             onClick={() => setTablePanelOpen((v) => !v)}
             aria-label={tablePanelOpen ? "Collapse Data Tables panel" : "Expand Data Tables panel"}
-            title={tablePanelOpen ? "Collapse" : "Expand"}
-            className="flex size-6 shrink-0 items-center justify-center rounded-[10px] text-muted-foreground hover:bg-accent"
+            className="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-black/[0.04]"
           >
             {tablePanelOpen ? (
-              <ChevronRight className="size-4" />
+              <PanelRightClose className="size-5" />
             ) : (
-              <ChevronLeft className="size-4" />
+              <PanelRightOpen className="size-5" />
             )}
           </button>
           {tablePanelOpen && (
-            <span className="truncate text-base font-medium text-foreground">
+            <span className="truncate text-[14px] font-medium leading-none text-[#161919]">
               {selectedEntityForTables
-                ? `Data Tables connected to '${selectedEntityForTables.name || "Untitled entity"}'`
-                : "Data Tables"}
+                ? `Data tables connected to '${selectedEntityForTables.name || "Untitled entity"}'`
+                : "Data tables"}
             </span>
           )}
         </div>
         {!tablePanelOpen && (
           <div className="flex flex-1 items-center justify-center">
             <span className="text-[11px] font-medium text-muted-foreground [writing-mode:vertical-rl]">
-              Data Tables
+              Data tables
             </span>
           </div>
         )}
         {tablePanelOpen && (
           <>
-            <div className="flex shrink-0 items-center justify-between px-2.5 pb-1.5 pt-1.5">
+            <div className="flex h-8 shrink-0 items-center justify-between border-b border-[#e3e5e4] pl-2.5 pr-3">
               <SortDropdown
                 sort={tableSort}
                 onChange={(k) => setTableSort((s) => nextSortState(s, k))}
                 showPrefix={false}
               />
+              <SearchIcon className="size-4 shrink-0 text-[#6d7472]" />
             </div>
             <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
               {(selectedEntityTableNames
@@ -2345,8 +2339,9 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                 : sortedTables
               ).map((t) => {
                 const isSelected = selection?.kind === "table" && selection.id === t.name;
-                const isSearchFocused = searchContext?.tableNames.has(t.name) ?? false;
-                const isEntityFocused = activeEntityTableNames?.has(t.name) ?? false;
+                const isRelated =
+                  (searchContext?.tableNames.has(t.name) ?? false) ||
+                  (activeEntityTableNames?.has(t.name) ?? false);
                 const entityCount = entitiesUsingTable(t.name, entities).length;
                 // Tables have no Confidence/ReviewStatus of their own — derived from whichever
                 // Property↔Column Mapping(s) touch it instead (see `isTableInScope`'s own doc
@@ -2369,18 +2364,13 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                         setHoveredTableName((cur) => (cur === t.name ? null : cur))
                       }
                       className={cn(
-                        "flex w-full shrink-0 items-center gap-2 py-1 pl-4 pr-3 font-normal text-left transition-colors",
+                        "flex w-full shrink-0 items-center gap-2 py-2 pl-4 pr-3 font-normal text-left transition-colors",
                         historyPanelOpen && "cursor-default",
-                        isSelected
-                          ? "bg-[#eff6ff]"
-                          : isSearchFocused || isEntityFocused
-                            ? "bg-muted"
-                            : "bg-white",
-                        !isSelected &&
-                          !isSearchFocused &&
-                          !isEntityFocused &&
-                          !historyPanelOpen &&
-                          "hover:bg-muted",
+                        // `bg-primary/10` (the app's teal "selected" token) replaces this row's
+                        // original `#eff6ff` — a leftover prototype blue from before the Zaimler
+                        // re-theme (see CLAUDE.md's Figma accent palette note on migrating those).
+                        isSelected ? "bg-primary/10" : isRelated ? "bg-[#f4f4f4]" : "bg-white",
+                        !isSelected && !isRelated && !historyPanelOpen && "hover:bg-[#e3e5e4]",
                       )}
                     >
                       <MappingStatusBadge
@@ -2388,11 +2378,16 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                         {...tableMappingCompleteness(t.name, entities)}
                         size={20}
                       />
+                      {/* Re-checked against Figma node 427:5824 — this row's own type scale sits a
+                          step below the right "Data tables" toolbox panel's (12px/10px, not
+                          14px/12px), and the secondary line is a flat `#909090` regardless of
+                          related state (that panel's own two-tone `isRelated` color didn't survive
+                          this re-check, so it's dropped here rather than kept as a stale variant). */}
                       <span className="flex min-w-0 flex-1 flex-col items-start justify-center gap-1">
-                        <span className="block w-full truncate text-sm font-medium leading-6 text-foreground">
+                        <span className="block w-full truncate text-[12px] font-medium leading-[16.5px] text-[#171b22]">
                           {t.name}
                         </span>
-                        <span className="block w-full truncate text-xs font-normal leading-5 text-muted-foreground">
+                        <span className="block w-full truncate text-[10px] font-normal leading-[10px] text-[#909090]">
                           {t.columns.length} columns · {entityCount} entit
                           {entityCount === 1 ? "y" : "ies"}
                         </span>

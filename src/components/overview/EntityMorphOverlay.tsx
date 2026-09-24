@@ -198,7 +198,7 @@ export function EntityMorphOverlay({
       >
         {name}
       </div>
-      {status !== "confirmed" && (
+      {status === "suggested" && (
         <div style={{ position: "fixed", ...fadeInStyle(target?.confidenceRect) }}>
           <ConfidenceChip confidence={confidence} />
         </div>

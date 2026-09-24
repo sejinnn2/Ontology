@@ -22,9 +22,14 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
  * no trigger logic for them exists yet, by design.
  */
 
+// Suggested/Confirmed badge colors match the Zaimler Figma spec (frame "Entity Triggered
+// Editing", node 406:4814 — the `--purple/300`/`--purple/600` and `--cyan/200`/`--cyan/700`
+// circle fill + icon color sampled directly off that frame's exported assets). Warning/Error
+// are untouched: that frame doesn't produce either status, so there's no design evidence to
+// update them from — see CLAUDE.md's Figma accent palette table.
 const STATUS_STYLE: Record<ReviewStatus, { border: string; badgeBg: string; iconColor: string }> = {
-  suggested: { border: "#7c5eff", badgeBg: "#e1daff", iconColor: "#553eb7" },
-  confirmed: { border: "#0298b2", badgeBg: "#c7eef5", iconColor: "#007287" },
+  suggested: { border: "#7c5eff", badgeBg: "#d8b4fe", iconColor: "#9333ea" },
+  confirmed: { border: "#0298b2", badgeBg: "#a5f3fc", iconColor: "#0e7490" },
   warning: { border: "#e6c200", badgeBg: "#faebb0", iconColor: "#967700" },
   error: { border: "#f15b15", badgeBg: "#ffd6c3", iconColor: "#9c461e" },
 };

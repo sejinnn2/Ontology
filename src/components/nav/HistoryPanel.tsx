@@ -181,7 +181,6 @@ function InspectionDetail({
                   disabled={!c.restorable}
                   onChange={() => onToggleChange(c.number)}
                   onClick={(e) => e.stopPropagation()}
-                  title={c.restorable ? undefined : "This change can't be restored."}
                   className="mt-[3px] size-3.5 shrink-0 accent-[#00ded8] disabled:opacity-30"
                 />
                 <span
@@ -216,7 +215,6 @@ function InspectionDetail({
                       e.stopPropagation();
                       onLocate(c.ref!);
                     }}
-                    title="Locate on the canvas"
                     aria-label="Locate on the canvas"
                     className="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground"
                   >
@@ -322,7 +320,6 @@ export function HistoryPanel({
       <button
         type="button"
         onClick={() => onPanelOpenChange(!panelOpen)}
-        title="History"
         aria-label="History"
         className={cn(
           "flex size-8 shrink-0 items-center justify-center rounded-[4px] text-[#171b22] transition-colors",
@@ -355,7 +352,6 @@ export function HistoryPanel({
                   type="button"
                   onClick={handleClose}
                   aria-label="Close History"
-                  title="Close History"
                   className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
                 >
                   <X className="size-4" />

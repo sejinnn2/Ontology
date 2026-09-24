@@ -32,7 +32,6 @@ export function DeleteButton({
         onClick();
       }}
       aria-label={ariaLabel}
-      title={title}
       className={cn(
         "flex shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[#ffe6db] hover:text-[#9c461e]",
         className,

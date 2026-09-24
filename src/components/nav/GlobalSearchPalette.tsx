@@ -144,7 +144,6 @@ export function GlobalSearchPalette({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        title="Search ontology & data"
         aria-label="Search ontology & data"
         className={cn(
           "flex size-8 shrink-0 items-center justify-center rounded-[4px] transition-colors",

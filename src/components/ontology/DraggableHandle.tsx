@@ -31,7 +31,6 @@ export function DraggableHandle({
         if (!e.shiftKey && !e.metaKey && !e.ctrlKey) e.stopPropagation();
       }}
       aria-label={ariaLabel}
-      title={title}
       className={cn(
         "inline-flex size-[10px] shrink-0 cursor-grab items-center justify-center active:cursor-grabbing",
         className,

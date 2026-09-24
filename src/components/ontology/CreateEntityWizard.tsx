@@ -21,7 +21,6 @@ function IdentifierIcon() {
   return (
     <span
       className="flex size-4 shrink-0 items-center justify-center text-[14px] leading-none"
-      title="Identifier"
       aria-label="Identifier"
     >
       🔑
@@ -205,7 +204,7 @@ export function CreateEntityWizard({
                         role="radio"
                         aria-checked={identifierKey === p.key}
                         disabled={!p.name.trim()}
-                        title={
+                        aria-label={
                           p.name.trim()
                             ? "Set as this Entity's Identifier"
                             : "Name this property first"
@@ -224,7 +223,6 @@ export function CreateEntityWizard({
                     <button
                       type="button"
                       onClick={() => removeProperty(p.key)}
-                      title="Remove this property"
                       aria-label="Remove this property"
                       disabled={properties.length === 1}
                       className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"

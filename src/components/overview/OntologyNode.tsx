@@ -409,7 +409,6 @@ export function OntologyNode({
                     onStartConnect(side, e.clientX, e.clientY);
                   }}
                   aria-label={`Drag from ${entity.name || "this entity"} to connect to another entity, or drop on empty canvas to create a new connected one`}
-                  title="Drag to connect — drop on empty canvas to create a new connected Entity Type"
                   className={cn(
                     "absolute z-10 opacity-0 transition-opacity",
                     SIDE_POSITION[side],
@@ -432,7 +431,7 @@ export function OntologyNode({
             >
               {entity.name}
             </span>
-            {detailed && entity.status !== "confirmed" && (
+            {detailed && entityDisplayStatus(entity) === "suggested" && (
               <ConfidenceChip confidence={entity.confidence} />
             )}
           </span>
@@ -457,7 +456,6 @@ export function OntologyNode({
                     key={summaryStatus}
                     style={{ backgroundColor: PROPERTY_RING_COLORS[summaryStatus] }}
                     className="inline-flex size-4 items-center justify-center rounded-full text-[9px] font-semibold leading-none text-white"
-                    title={`${count} ${summaryStatus} ${count === 1 ? "property" : "properties"}`}
                   >
                     {count}
                   </span>

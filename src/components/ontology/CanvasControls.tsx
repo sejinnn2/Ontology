@@ -201,7 +201,6 @@ export function CanvasToolStack({
         onClick={() => onToolChange("select")}
         aria-pressed={tool === "select"}
         aria-label="Select tool"
-        title="Select"
         className={cn(
           toolButton,
           tool === "select" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent",
@@ -214,7 +213,6 @@ export function CanvasToolStack({
         onClick={() => onToolChange("pan")}
         aria-pressed={tool === "pan"}
         aria-label="Pan tool"
-        title="Pan"
         className={cn(
           toolButton,
           tool === "pan" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent",
@@ -233,7 +231,6 @@ export function CanvasToolStack({
           !canUndo && "pointer-events-none opacity-30",
         )}
         aria-label="Undo"
-        title="Undo"
       >
         <Undo2 className={historyIconSize} />
       </button>
@@ -247,7 +244,6 @@ export function CanvasToolStack({
           !canRedo && "pointer-events-none opacity-30",
         )}
         aria-label="Redo"
-        title="Redo"
       >
         <Redo2 className={historyIconSize} />
       </button>
@@ -351,7 +347,6 @@ export function CanvasToolStack({
               "flex shrink-0 items-center justify-center text-center text-muted-foreground",
               horizontal ? "h-8 w-8 text-xs" : "h-7 w-7 font-mono text-[10px]",
             )}
-            title="Zoom level"
           >
             {zoomPercent}%
           </span>
@@ -363,7 +358,6 @@ export function CanvasToolStack({
             className={squareButton}
             onClick={onFitToContent}
             aria-label="Fit to content"
-            title="Fit to content"
           >
             <Maximize2 className="size-3.5" />
           </button>
