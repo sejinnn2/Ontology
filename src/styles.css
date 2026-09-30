@@ -268,3 +268,33 @@
   border: 1px solid var(--node-border);
   box-shadow: var(--shadow-node);
 }
+
+/* Editing canvas level of detail (`canvasLod` in editing-canvas.tsx). Zoomed out, canvas rows
+   shed detail in reverse order of importance — extras (.lod-detail), then the confidence score
+   (.lod-confidence), then type/status icons (.lod-type) — keeping only names, which grow so they
+   stay readable at the smaller scale. Unlayered on purpose so it wins over Tailwind utilities. */
+[data-canvas-lod="compact"] .lod-detail,
+[data-canvas-lod="minimal"] :is(.lod-detail, .lod-confidence),
+[data-canvas-lod="name"] :is(.lod-detail, .lod-confidence, .lod-type) {
+  display: none !important;
+}
+[data-canvas-lod="compact"] .lod-name {
+  font-size: 16px;
+  line-height: 24px;
+}
+[data-canvas-lod="minimal"] .lod-name {
+  font-size: 20px;
+  line-height: 28px;
+}
+[data-canvas-lod="name"] .lod-name {
+  font-size: 28px;
+  line-height: 36px;
+}
+[data-canvas-lod="minimal"] .lod-title {
+  font-size: 22px;
+  line-height: 30px;
+}
+[data-canvas-lod="name"] .lod-title {
+  font-size: 32px;
+  line-height: 40px;
+}

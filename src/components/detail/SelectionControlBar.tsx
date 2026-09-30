@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { GitMerge, Scissors } from "lucide-react";
+import { Copy, SquareSplitHorizontal } from "lucide-react";
 import type { Entity, Property, Relation } from "@/lib/mock-data";
 import {
   Dialog,
@@ -14,6 +14,7 @@ import {
   SelectionBarDeclineIcon,
   SelectionBarAcceptIcon,
 } from "@/components/nav/nav-icons";
+import { cn } from "@/lib/utils";
 
 /**
  * Editing Mode's one contextual selection control — every multi-selection action (Merge, Split,
@@ -41,12 +42,14 @@ import {
  * current selection — see this file's own `actionLabel` — so a pure, single-status selection reads
  * as a plain "Delete"/"Accept"/"Reject" the same way the single-kind bars used to.
  */
+const BAR_BUTTON =
+  "flex h-8 min-w-16 shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-[4px] bg-white px-2 text-[14px] font-medium leading-6 text-[#161919] transition-colors hover:bg-[#f4f4f4]";
+
 export function SelectionControlBar({
   entities,
   properties,
   relations,
   mappingCount = 0,
-  onClear,
   onMerge,
   onSplit,
   onDelete,
@@ -55,12 +58,14 @@ export function SelectionControlBar({
   acceptCount,
   onReject,
   rejectCount,
+  activeAction = null,
 }: {
   entities: Entity[];
   properties: { entity: Entity; property: Property }[];
   relations: Relation[];
   mappingCount?: number;
-  onClear: () => void;
+  // The action whose naming card is open above the bar (its button reads as pressed).
+  activeAction?: "merge" | "split" | null | undefined;
   /** Present only when 2+ Entities are selected — Merge's only real eligibility rule. */
   onMerge?: (() => void) | undefined;
   /** Present only when every selected Property belongs to one Entity and splitting them off
@@ -114,67 +119,63 @@ export function SelectionControlBar({
 
   return (
     <>
+      {/* Figma 501:101237: the count, a divider, then the actions (Merge / Split plain, Reject /
+          Accept outlined), each with its icon. Clicking the canvas or Esc clears the selection. */}
       <div
         onPointerDown={(e) => e.stopPropagation()}
-        className="flex h-12 items-center gap-4 rounded-[6px] border border-border bg-white pl-4 pr-2 shadow-[0px_1px_1px_rgba(0,0,0,0.05)]"
+        className="flex h-12 items-center gap-2 rounded-lg border border-[#e3e5e4] bg-white pl-4 pr-2 shadow-[0_1px_2px_0_rgba(0,0,0,0.05)]"
       >
-        <span className="whitespace-nowrap text-sm text-foreground">
+        <span className="whitespace-nowrap text-[14px] leading-6 text-[#161919]">
           {compositionLabel} selected
         </span>
-        <div className="flex shrink-0 items-center gap-2">
+        <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-[#e3e5e4]" />
+        {onMerge && (
           <button
             type="button"
-            onClick={onClear}
-            className="flex h-8 min-w-[64px] shrink-0 items-center justify-center whitespace-nowrap px-2 text-sm font-medium text-muted-foreground transition-opacity hover:opacity-70"
+            onClick={onMerge}
+            aria-pressed={activeAction === "merge"}
+            className={cn(BAR_BUTTON, activeAction === "merge" && "bg-[#e3e5e4]")}
           >
-            Clear selection
+            <Copy className="size-4 -scale-x-100" strokeWidth={1.5} /> Merge
           </button>
-          {onMerge && (
-            <button
-              type="button"
-              onClick={onMerge}
-              className="flex h-8 min-w-[64px] shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-[4px] px-2 text-sm font-medium text-[#161919] transition-colors hover:bg-accent"
-            >
-              <GitMerge className="size-3.5" /> Merge
-            </button>
-          )}
-          {onSplit && (
-            <button
-              type="button"
-              onClick={onSplit}
-              className="flex h-8 min-w-[64px] shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-[4px] px-2 text-sm font-medium text-[#161919] transition-colors hover:bg-accent"
-            >
-              <Scissors className="size-3.5" /> Split
-            </button>
-          )}
-          {onDelete && deleteCount > 0 && (
-            <button
-              type="button"
-              onClick={onDelete}
-              className="flex h-8 min-w-[64px] shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-[4px] px-2 text-sm font-medium text-destructive transition-colors hover:bg-accent"
-            >
-              <SelectionBarDeleteIcon size={16} /> {actionLabel("Delete", deleteCount)}
-            </button>
-          )}
-          {onReject && rejectCount > 0 && (
-            <button
-              type="button"
-              onClick={onReject}
-              className="flex h-8 min-w-[64px] shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-[4px] border border-border bg-white px-2 text-sm font-medium text-[#161919] transition-colors hover:bg-accent"
-            >
-              <SelectionBarDeclineIcon size={16} /> {actionLabel("Reject", rejectCount)}
-            </button>
-          )}
-          {onAccept && acceptCount > 0 && (
-            <button
-              type="button"
-              onClick={handleAcceptClick}
-              className="flex h-8 min-w-[64px] shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-[4px] border border-border bg-white px-2 text-sm font-medium text-[#161919] transition-colors hover:bg-accent"
-            >
-              <SelectionBarAcceptIcon size={16} /> {actionLabel("Accept", acceptCount)}
-            </button>
-          )}
-        </div>
+        )}
+        {onSplit && (
+          <button
+            type="button"
+            onClick={onSplit}
+            aria-pressed={activeAction === "split"}
+            className={cn(BAR_BUTTON, activeAction === "split" && "bg-[#e3e5e4]")}
+          >
+            <SquareSplitHorizontal className="size-4" strokeWidth={1.5} /> Split
+          </button>
+        )}
+        {onDelete && deleteCount > 0 && (
+          <button
+            type="button"
+            onClick={onDelete}
+            className={cn(BAR_BUTTON, "border border-[#e3e5e4] text-destructive")}
+          >
+            <SelectionBarDeleteIcon size={16} /> {actionLabel("Delete", deleteCount)}
+          </button>
+        )}
+        {onReject && rejectCount > 0 && (
+          <button
+            type="button"
+            onClick={onReject}
+            className={cn(BAR_BUTTON, "border border-[#e3e5e4]")}
+          >
+            <SelectionBarDeclineIcon size={16} /> {actionLabel("Reject", rejectCount)}
+          </button>
+        )}
+        {onAccept && acceptCount > 0 && (
+          <button
+            type="button"
+            onClick={handleAcceptClick}
+            className={cn(BAR_BUTTON, "border border-[#e3e5e4]")}
+          >
+            <SelectionBarAcceptIcon size={16} /> {actionLabel("Accept", acceptCount)}
+          </button>
+        )}
       </div>
       <Dialog open={acceptWarningsOpen} onOpenChange={setAcceptWarningsOpen}>
         <DialogContent className="max-w-sm">

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { PanelRightClose, PanelRightOpen, Search as SearchIcon, X } from "lucide-react";
+import { PanelRightClose, Search as SearchIcon, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import sidebarCollapseIcon from "@/assets/icons/sidebar-wide-left-arrow-20.svg";
 import { sideBetween, pointInRect, distanceToSegment } from "@/lib/geometry";
 import type { Pt, Rect, Side } from "@/lib/geometry";
 import {
@@ -459,7 +460,6 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
   // always shown at full width alongside it. Collapsing only hides this panel's own content; it
   // never touches canvas content, selection, or the ontology itself.
   const TABLE_PANEL_OPEN_W = 280;
-  const TABLE_PANEL_COLLAPSED_W = 44;
   const [tablePanelOpen, setTablePanelOpen] = useState(true);
 
   const onPointerDown = (e: React.PointerEvent) => {
@@ -2259,7 +2259,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
               live since navigating the canvas to look at markers is exactly what Inspection is
               for. */}
           <CanvasToolStack
-            className="absolute right-3 top-3 z-20"
+            className="absolute left-1/2 top-3 z-20 -translate-x-1/2"
             orientation="horizontal"
             compact
             tool={tool}
@@ -2274,6 +2274,29 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
             canUndo={canUndo && !historyPanelOpen}
             canRedo={canRedo && !historyPanelOpen}
           />
+          {/* The Data tables panel, collapsed (Figma 508:35850): a floating card in the canvas's
+              top-right corner, so the canvas gets the panel's full width. */}
+          {!tablePanelOpen && (
+            <div className="absolute right-3 top-3 z-20 flex h-12 w-60 items-center gap-2 rounded-[6px] border border-[#e3e5e4] bg-white py-[3px] pl-3 pr-4 shadow-[0_1px_1px_0_rgba(0,0,0,0.05)]">
+              <button
+                type="button"
+                onClick={() => setTablePanelOpen(true)}
+                aria-label="Expand Data Tables panel"
+                className="flex size-6 shrink-0 items-center justify-center rounded-[6px] hover:bg-black/[0.04]"
+              >
+                <span aria-hidden className="relative block size-5 shrink-0">
+                  <img
+                    alt=""
+                    src={sidebarCollapseIcon}
+                    className="absolute inset-0 block size-full"
+                  />
+                </span>
+              </button>
+              <span className="min-w-0 flex-1 truncate text-[14px] font-medium leading-none text-[#161919]">
+                Data tables
+              </span>
+            </div>
+          )}
         </div>
       </div>
       {creationRequest && (
@@ -2291,39 +2314,26 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
           onCreate={handleRelationDialogCreate}
         />
       )}
-      <div
-        style={{ width: tablePanelOpen ? TABLE_PANEL_OPEN_W : TABLE_PANEL_COLLAPSED_W }}
-        className="relative flex shrink-0 flex-col overflow-hidden border-l border-[#E3E5E4] bg-node transition-[width]"
-      >
-        <div className="flex h-12 shrink-0 items-center gap-1 border-b border-[#e3e5e4] pl-4 pr-3">
-          <button
-            type="button"
-            onClick={() => setTablePanelOpen((v) => !v)}
-            aria-label={tablePanelOpen ? "Collapse Data Tables panel" : "Expand Data Tables panel"}
-            className="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-black/[0.04]"
-          >
-            {tablePanelOpen ? (
+      {tablePanelOpen && (
+        <div
+          style={{ width: TABLE_PANEL_OPEN_W }}
+          className="relative flex shrink-0 flex-col overflow-hidden border-l border-[#E3E5E4] bg-node"
+        >
+          <div className="flex h-12 shrink-0 items-center gap-1 border-b border-[#e3e5e4] pl-4 pr-3">
+            <button
+              type="button"
+              onClick={() => setTablePanelOpen(false)}
+              aria-label="Collapse Data Tables panel"
+              className="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-black/[0.04]"
+            >
               <PanelRightClose className="size-5" />
-            ) : (
-              <PanelRightOpen className="size-5" />
-            )}
-          </button>
-          {tablePanelOpen && (
+            </button>
             <span className="truncate text-[14px] font-medium leading-none text-[#161919]">
               {selectedEntityForTables
                 ? `Data tables connected to '${selectedEntityForTables.name || "Untitled entity"}'`
                 : "Data tables"}
             </span>
-          )}
-        </div>
-        {!tablePanelOpen && (
-          <div className="flex flex-1 items-center justify-center">
-            <span className="text-[11px] font-medium text-muted-foreground [writing-mode:vertical-rl]">
-              Data tables
-            </span>
           </div>
-        )}
-        {tablePanelOpen && (
           <>
             <div className="flex h-8 shrink-0 items-center justify-between border-b border-[#e3e5e4] pl-2.5 pr-3">
               <SortDropdown
@@ -2398,8 +2408,8 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
               })}
             </div>
           </>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

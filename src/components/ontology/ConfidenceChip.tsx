@@ -259,6 +259,14 @@ function ReasoningCard({ getContent }: { getContent: () => ReasoningContent | nu
   );
 }
 
+// The pill's colors: the standard gray, or the lighter muted one the Graph view's Figma frames
+// use (nodes, relation pills, property panels — Figma 508:43219).
+const PILL_TONE = {
+  default: "bg-[#e3e5e4] text-[#252828]",
+  muted: "bg-[#f4f4f4] text-[#6d7472] leading-4",
+};
+export type ConfidenceTone = keyof typeof PILL_TONE;
+
 const PILL_SIZE = {
   // Overview canvas nodes — same pill as `ConfidenceChip`.
   sm: "px-[6px] py-px text-[10px] leading-[16px] tracking-[-0.076px]",
@@ -276,11 +284,13 @@ function ConfidenceCardChip({
   getContent,
   size,
   width,
+  tone = "default",
 }: {
   confidence: number;
   getContent: () => ReasoningContent | null;
   size: keyof typeof PILL_SIZE;
   width: string;
+  tone?: ConfidenceTone | undefined;
 }) {
   const stop = (event: React.SyntheticEvent) => event.stopPropagation();
   return (
@@ -290,7 +300,8 @@ function ConfidenceCardChip({
           tabIndex={0}
           onClick={stop}
           className={cn(
-            "inline-flex shrink-0 cursor-default items-center justify-center rounded-full bg-[#e3e5e4] text-[#252828] outline-none focus-visible:ring-2 focus-visible:ring-[#00DED8]",
+            "inline-flex shrink-0 cursor-default items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-[#00DED8]",
+            PILL_TONE[tone],
             PILL_SIZE[size],
           )}
         >
@@ -321,9 +332,11 @@ function ConfidenceCardChip({
 export function MappingConfidenceChip({
   entity,
   property,
+  tone,
 }: {
   entity: Entity;
   property: Property;
+  tone?: ConfidenceTone | undefined;
 }) {
   if (!property.mapping) return null;
   return (
@@ -332,6 +345,7 @@ export function MappingConfidenceChip({
       getContent={() => mappingReasoningContent(entity, property)}
       size="md"
       width="w-[380px]"
+      tone={tone}
     />
   );
 }
@@ -340,9 +354,11 @@ export function MappingConfidenceChip({
 export function EntityConfidenceChip({
   entity,
   size = "md",
+  tone,
 }: {
   entity: Entity;
   size?: keyof typeof PILL_SIZE;
+  tone?: ConfidenceTone | undefined;
 }) {
   return (
     <ConfidenceCardChip
@@ -350,12 +366,19 @@ export function EntityConfidenceChip({
       getContent={() => entityReasoningContent(entity)}
       size={size}
       width="w-[420px]"
+      tone={tone}
     />
   );
 }
 
 /** A Property suggestion's confidence. */
-export function PropertyConfidenceChip({ property }: { property: Property }) {
+export function PropertyConfidenceChip({
+  property,
+  tone,
+}: {
+  property: Property;
+  tone?: ConfidenceTone | undefined;
+}) {
   const app = useOntologyAppContext();
   return (
     <ConfidenceCardChip
@@ -363,12 +386,19 @@ export function PropertyConfidenceChip({ property }: { property: Property }) {
       getContent={() => propertyReasoningContent(property, app.entities)}
       size="md"
       width="w-[420px]"
+      tone={tone}
     />
   );
 }
 
 /** A Relation suggestion's confidence. */
-export function RelationConfidenceChip({ relation }: { relation: Relation }) {
+export function RelationConfidenceChip({
+  relation,
+  tone,
+}: {
+  relation: Relation;
+  tone?: ConfidenceTone | undefined;
+}) {
   const app = useOntologyAppContext();
   return (
     <ConfidenceCardChip
@@ -376,6 +406,7 @@ export function RelationConfidenceChip({ relation }: { relation: Relation }) {
       getContent={() => relationReasoningContent(relation, app.entities)}
       size="md"
       width="w-[420px]"
+      tone={tone}
     />
   );
 }

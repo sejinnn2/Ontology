@@ -7,8 +7,9 @@ import {
   HeadContent,
   Scripts,
 } from "@tanstack/react-router";
-import { useEffect, type ReactNode } from "react";
-import { Agentation } from "agentation";
+import { useEffect, useState, type ReactNode } from "react";
+import { DialRoot } from "dialkit";
+import "dialkit/styles.css";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
@@ -122,11 +123,18 @@ function RootShell({ children }: { children: ReactNode }) {
       </head>
       <body>
         {children}
-        {import.meta.env.DEV && <Agentation endpoint="http://localhost:8080" />}
         <Scripts />
       </body>
     </html>
   );
+}
+
+/** DialKit's live-tuning panel (e.g. the editing lanes' widths). Mounted after hydration so it
+ * never differs between the server and client render; DialRoot itself hides in production. */
+function DevDials() {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  return mounted ? <DialRoot position="top-right" defaultOpen={false} /> : null;
 }
 
 function RootComponent() {
@@ -147,6 +155,7 @@ function RootComponent() {
               <OntologyRoutes />
             </div>
           </div>
+          <DevDials />
         </OntologyAppProvider>
       </TooltipProvider>
     </QueryClientProvider>

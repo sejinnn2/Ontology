@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { ArrowUpDown } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import arrowBottomTopIcon from "@/assets/icons/arrow-bottom-top-16.svg";
 
 // --- Sorting, shared by every list this feature touches (Entity types / Data Tables toolboxes,
 // a card's own Properties, a table's own Columns). Purely a display-order concern — it reorders
 // what a list renders, never an item's canvas x/y, so it can never move a node. ------------------
-export type SortKey = "name" | "confidence";
+export type SortKey = "relevance" | "name" | "confidence";
 export type SortDir = "asc" | "desc";
 export type SortState = { key: SortKey; dir: SortDir };
 export const DEFAULT_SORT: SortState = { key: "name", dir: "asc" };
@@ -25,6 +27,7 @@ export function sortByState<T>(
   confidence: (item: T) => number | undefined,
 ): T[] {
   const sorted = [...items].sort((a, b) => {
+    if (state.key === "relevance") return 0;
     if (state.key === "name") return name(a).localeCompare(name(b));
     return (confidence(a) ?? -1) - (confidence(b) ?? -1);
   });
@@ -44,46 +47,60 @@ export function SortDropdown({
   onChange,
   className,
   showPrefix = true,
+  variant = "default",
+  options = ["name", "confidence"],
 }: {
   sort: SortState;
   onChange: (key: SortKey) => void;
   className?: string;
-  /** Whether the trigger reads "Sort: Name" (default, matching every other panel that uses this
-   * control) or just "Name" on its own — the Data Tables panel's own Figma spec omits the prefix. */
   showPrefix?: boolean;
+  variant?: "default" | "figma";
+  options?: readonly SortKey[] | undefined;
 }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (e: PointerEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    window.addEventListener("pointerdown", onPointerDown);
-    return () => window.removeEventListener("pointerdown", onPointerDown);
-  }, [open]);
 
   return (
-    <div ref={ref} className={cn("relative shrink-0", className)}>
-      <button
-        type="button"
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={() => setOpen((v) => !v)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        className="flex items-center rounded-[4px] px-1.5 py-0.5 text-xs font-normal text-muted-foreground transition-colors hover:bg-accent"
-      >
-        {showPrefix && "Sort: "}
-        {sort.key === "name" ? "Name" : "Confidence"}
-        <ArrowUpDown className={cn("size-3", sort.dir === "desc" && "-scale-y-100")} />
-      </button>
-      {open && (
-        <div
-          role="menu"
-          onPointerDown={(e) => e.stopPropagation()}
-          className="absolute left-0 top-full z-30 mt-1 flex w-32 flex-col gap-0.5 rounded-lg border border-node-border bg-node p-1 shadow-[var(--shadow-node-lift)]"
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          onPointerDown={(event) => event.stopPropagation()}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          className={cn(
+            variant === "figma"
+              ? "flex h-6 items-center gap-2 rounded-[4.77px] px-1.5 text-[14px] font-medium leading-6 text-[#6d7472] transition-colors hover:bg-black/[0.08]"
+              : "flex items-center rounded-[4px] px-1.5 py-0.5 text-xs font-normal text-muted-foreground transition-colors hover:bg-accent",
+            className,
+          )}
         >
-          {(["name", "confidence"] as const).map((key) => (
+          {showPrefix && "Sort: "}
+          {sort.key === "relevance"
+            ? options.includes("relevance")
+              ? "Relevance"
+              : "Sort"
+            : sort.key === "name"
+              ? "Name"
+              : "Confidence"}
+          {variant === "figma" ? (
+            <span className={cn("relative size-4 shrink-0", sort.dir === "desc" && "-scale-y-100")}>
+              <img alt="" src={arrowBottomTopIcon} className="absolute inset-0 block size-full" />
+            </span>
+          ) : (
+            <ArrowUpDown className={cn("size-3", sort.dir === "desc" && "-scale-y-100")} />
+          )}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        side="bottom"
+        sideOffset={4}
+        onOpenAutoFocus={(event) => event.preventDefault()}
+        onPointerDown={(event) => event.stopPropagation()}
+        className="z-[100] w-32 rounded-lg border border-node-border bg-node p-1 shadow-[var(--shadow-node-lift)]"
+      >
+        <div role="menu" className="flex flex-col gap-0.5">
+          {options.map((key) => (
             <button
               key={key}
               type="button"
@@ -100,14 +117,14 @@ export function SortDropdown({
                   : "text-muted-foreground hover:bg-accent",
               )}
             >
-              {key === "name" ? "Name" : "Confidence"}
+              {key === "relevance" ? "Relevance" : key === "name" ? "Name" : "Confidence"}
               {sort.key === key && (
                 <ArrowUpDown className={cn("size-2.5", sort.dir === "desc" && "-scale-y-100")} />
               )}
             </button>
           ))}
         </div>
-      )}
-    </div>
+      </PopoverContent>
+    </Popover>
   );
 }

@@ -979,6 +979,42 @@ export function useOntologyApp() {
     [updateProperty],
   );
 
+  // Moves one Property's column mapping onto another Property (dragging the Property end of a
+  // mapping line onto a different Property row) as ONE History step — two separate
+  // `updateMapping` calls would need two undos to reverse a single gesture. The receiving Property
+  // replaces any mapping it had; the move itself confirms the mapping ("mapped").
+  const moveMapping = useCallback(
+    (
+      from: { entityId: string; propertyId: string },
+      to: { entityId: string; propertyId: string },
+    ) => {
+      const mapping = entitiesRef.current
+        .find((e) => e.id === from.entityId)
+        ?.properties.find((p) => p.id === from.propertyId)?.mapping;
+      if (!mapping || (from.entityId === to.entityId && from.propertyId === to.propertyId)) return;
+      pushHistory();
+      setEntities((es) =>
+        es.map((e) =>
+          e.id !== from.entityId && e.id !== to.entityId
+            ? e
+            : {
+                ...e,
+                properties: e.properties.map((p) => {
+                  if (e.id === from.entityId && p.id === from.propertyId) {
+                    return { ...p, mapping: null };
+                  }
+                  if (e.id === to.entityId && p.id === to.propertyId) {
+                    return { ...p, mapping: { ...mapping, status: "mapped" as const } };
+                  }
+                  return p;
+                }),
+              },
+        ),
+      );
+    },
+    [pushHistory],
+  );
+
   // Accepts a Suggested Mapping — "Suggested Mapping → Mapped" (see `ColumnRef`'s own doc
   // comment), WITHOUT touching the owning Property's own ontology `status` at all. Deliberately
   // separate from `acceptSuggestions`: a mapping's own confirmation state and its Property's
@@ -2093,7 +2129,8 @@ export function useOntologyApp() {
   // weren't selected, a new entity (name left blank for immediate editing later) takes the rest.
   // No-ops if `moveIds` would empty out either side.
   const splitEntity = useCallback(
-    (entityId: string, moveIds: string[]) => {
+    // `name` names the new entity right away (the Split card asks for it); otherwise it's unnamed.
+    (entityId: string, moveIds: string[], name?: string) => {
       const original = entities.find((e) => e.id === entityId);
       if (!original) return null;
       const moveSet = new Set(moveIds);
@@ -2104,7 +2141,7 @@ export function useOntologyApp() {
       const newId = entityUid();
       const newEntity: Entity = {
         id: newId,
-        name: "",
+        name: name?.trim() ?? "",
         description: "",
         confidence: original.confidence,
         status: "confirmed",
@@ -2523,6 +2560,7 @@ export function useOntologyApp() {
     updateEntity,
     updateProperty,
     updateMapping,
+    moveMapping,
     confirmMapping,
     updateRelation,
     createEntity,

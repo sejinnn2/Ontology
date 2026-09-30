@@ -82,6 +82,13 @@ export type Entity = {
   x: number;
   y: number;
   properties: Property[];
+  /** How one record of this Entity Type is named, e.g. `{policyNumber} · {holderName}` — each
+   * `{…}` is one of its Properties. Unset falls back to its primary Property. Editing Mode's
+   * detail panel only; nothing else reads it yet. */
+  displayNameTemplate?: string | undefined;
+  /** The Property a record is identified by at a glance ("propertyOne"). Unset falls back to the
+   * Identifier, then the first Property. */
+  primaryPropertyId?: string | undefined;
 } & ReviewFlags;
 
 export type Relation = {
@@ -93,13 +100,25 @@ export type Relation = {
   confidence: number;
   status: ReviewStatus;
   cardinality?: "1:1" | "1:N" | "N:1" | "N:N";
-  sourceMapping?: {
-    fromTable: string;
-    fromColumns: string[];
-    toTable: string;
-    toColumns: string[];
-  };
+  sourceMapping?: RelationJoin;
+  // Every table this Relation's join keys come from — one entry per table (each side's columns
+  // come from that same table). Falls back to `sourceMapping` alone; see `relationJoins`.
+  joins?: RelationJoin[];
 } & ReviewFlags;
+
+/** One table's join keys for a Relation: the from side's column(s) and the to side's. */
+export type RelationJoin = {
+  fromTable: string;
+  fromColumns: string[];
+  toTable: string;
+  toColumns: string[];
+};
+
+/** A Relation's join keys, table by table (`joins`, else its single `sourceMapping`). */
+export function relationJoins(relation: Relation): RelationJoin[] {
+  if (relation.joins?.length) return relation.joins;
+  return relation.sourceMapping ? [relation.sourceMapping] : [];
+}
 
 export type TableColumn = {
   name: string;
@@ -52455,6 +52474,21 @@ export const initialRelations: Relation[] = [
       toTable: "policies",
       toColumns: ["policy_id"],
     },
+    // Also joinable through a second table — the repeated-group case of `relationJoins`.
+    joins: [
+      {
+        fromTable: "policies",
+        fromColumns: ["policy_id"],
+        toTable: "policies",
+        toColumns: ["policy_id"],
+      },
+      {
+        fromTable: "policy_transactions",
+        fromColumns: ["transaction_id"],
+        toTable: "policy_transactions",
+        toColumns: ["policy_id"],
+      },
+    ],
   },
   {
     id: "r_billing_account_is_governed_by_sales_policy",
