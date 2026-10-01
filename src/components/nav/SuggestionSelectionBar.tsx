@@ -1,6 +1,17 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { parseSuggestionKey } from "@/lib/app-state";
-import { mappingStatus, type Entity, type Relation } from "@/lib/mock-data";
+import { isTypingTarget } from "@/components/ontology/CanvasControls";
+import {
+  entityIssue,
+  entityReview,
+  mappingStatus,
+  propertyIssue,
+  propertyReview,
+  relationIssue,
+  relationReview,
+  type Entity,
+  type Relation,
+} from "@/lib/mock-data";
 import {
   Dialog,
   DialogContent,
@@ -10,11 +21,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  SelectionBarDeleteIcon,
-  SelectionBarDeclineIcon,
-  SelectionBarAcceptIcon,
-  SelectionBarGoToEditingIcon,
-} from "./nav-icons";
+  AcceptButton,
+  DeleteButton,
+  GoToEditingButton,
+  RejectButton,
+  SelectionBarShell,
+} from "./selection-bar-ui";
 
 /** The contextual Accept/Decline bar for the AI Suggestions selection workflow — floats above the
  * canvas's own bottom controls (Overview and Detail each render it there, just above their own
@@ -44,12 +56,9 @@ export function SuggestionSelectionBar({
    * other delete in this app) — a stronger action than Decline, which only ever applies to actual
    * pending suggestions; Delete works regardless of status (Confirmed/Warning/Error included). */
   onDeleteSuggestions: (keys: string[]) => void;
-  /** Figma's "Confirmed"/"Suggestion" reference frames (182:50699 / 187:51567) both show a black
-   * "Go to Editing Mode" button here, but a mixed multi-kind selection doesn't always resolve to
-   * one obvious Detail anchor the way a single-Entity selection does (see `EntitySelectionBar`) —
-   * so this stays an opt-in prop a caller only passes once it can resolve a sensible target,
-   * rather than a button that's always present but sometimes navigates nowhere sensible. */
-  onGoToEditingMode?: () => void;
+  /** Figma 361:221554 shows "Go to Editing Mode" here too. A multi-kind selection doesn't always
+   * resolve to one Detail anchor, so the caller passes this only when it found one. */
+  onGoToEditingMode?: (() => void) | undefined;
 }) {
   // A property's own owning Entity Type isn't carried on the selection key itself — this is the
   // one lookup the warning-count check below needs.
@@ -113,11 +122,14 @@ export function SuggestionSelectionBar({
       const ref = parseSuggestionKey(key);
       if (!ref) return;
       if (ref.kind === "entity") {
-        if (entities.find((x) => x.id === ref.id)?.status === "warning") count += 1;
+        const entity = entities.find((x) => x.id === ref.id);
+        if (entity && entityIssue(entity) === "warning") count += 1;
       } else if (ref.kind === "relation") {
-        if (relations.find((x) => x.id === ref.id)?.status === "warning") count += 1;
+        const relation = relations.find((x) => x.id === ref.id);
+        if (relation && relationIssue(relation, entities) === "warning") count += 1;
       } else if (ref.kind === "property") {
-        if (findPropertyOwner(ref.propertyId)?.property.status === "warning") count += 1;
+        const owner = findPropertyOwner(ref.propertyId);
+        if (owner && propertyIssue(owner.property) === "warning") count += 1;
       }
     });
     return count;
@@ -132,21 +144,38 @@ export function SuggestionSelectionBar({
       const ref = parseSuggestionKey(key);
       if (!ref) continue;
       if (ref.kind === "entity") {
-        if (entities.find((x) => x.id === ref.id)?.status === "suggested") return true;
+        const entity = entities.find((x) => x.id === ref.id);
+        if (entity && entityReview(entity) === "suggested") return true;
       } else if (ref.kind === "relation") {
-        if (relations.find((x) => x.id === ref.id)?.status === "suggested") return true;
-      } else if (
-        ref.kind === "property" &&
-        findPropertyOwner(ref.propertyId)?.property.status === "suggested"
-      ) {
-        return true;
+        const relation = relations.find((x) => x.id === ref.id);
+        if (relation && relationReview(relation) === "suggested") return true;
+      } else if (ref.kind === "property") {
+        const owner = findPropertyOwner(ref.propertyId);
+        if (owner && propertyReview(owner.property) === "suggested") return true;
       } else if (ref.kind === "mapping") {
-        const mapping = findPropertyOwner(ref.propertyId)?.property.mapping;
-        if (mapping && mappingStatus(mapping) === "suggested") return true;
+        const mappings = findPropertyOwner(ref.propertyId)?.property.mappings ?? [];
+        const pending = mappings.some(
+          (m) =>
+            mappingStatus(m) === "suggested" &&
+            (!ref.table || (m.table === ref.table && m.column === ref.column)),
+        );
+        if (pending) return true;
       }
     }
     return false;
   }, [suggestionSelection, entities, relations, findPropertyOwner]);
+
+  // Figma's bar has no "Clear selection" button: Esc clears instead (as does clicking empty canvas).
+  const selecting = suggestionSelection.size > 0;
+  useEffect(() => {
+    if (!selecting) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || isTypingTarget(event.target)) return;
+      onClearSuggestionSelection();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selecting, onClearSuggestionSelection]);
 
   const [acceptWarningsOpen, setAcceptWarningsOpen] = useState(false);
   const handleAcceptClick = useCallback(() => {
@@ -161,57 +190,16 @@ export function SuggestionSelectionBar({
   return (
     <>
       {suggestionSelection.size > 0 && (
-        <div
-          onPointerDown={(e) => e.stopPropagation()}
-          className="flex h-12 items-center gap-4 rounded-[6px] border border-border bg-white pl-4 pr-2 shadow-[0px_1px_1px_rgba(0,0,0,0.05)]"
-        >
-          <span className="whitespace-nowrap text-sm text-foreground">
-            {compositionLabel} selected
-          </span>
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              type="button"
-              onClick={onClearSuggestionSelection}
-              className="flex h-8 min-w-[64px] shrink-0 items-center justify-center whitespace-nowrap px-2 text-sm font-medium text-muted-foreground transition-opacity hover:opacity-70"
-            >
-              Clear selection
-            </button>
-            <button
-              type="button"
-              onClick={() => onDeleteSuggestions(Array.from(suggestionSelection))}
-              className="flex h-8 min-w-[64px] shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-[4px] px-2 text-sm font-medium text-destructive transition-colors hover:bg-accent"
-            >
-              <SelectionBarDeleteIcon size={16} /> Delete
-            </button>
-            {hasPendingSuggestion && (
-              <button
-                type="button"
-                onClick={() => onDeclineSuggestions(Array.from(suggestionSelection))}
-                className="flex h-8 min-w-[64px] shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-[4px] border border-border bg-white px-2 text-sm font-medium text-[#161919] transition-colors hover:bg-accent"
-              >
-                <SelectionBarDeclineIcon size={16} /> Reject
-              </button>
-            )}
-            {hasPendingSuggestion && (
-              <button
-                type="button"
-                onClick={handleAcceptClick}
-                className="flex h-8 min-w-[64px] shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-[4px] border border-border bg-white px-2 text-sm font-medium text-[#161919] transition-colors hover:bg-accent"
-              >
-                <SelectionBarAcceptIcon size={16} /> Accept
-              </button>
-            )}
-            {onGoToEditingMode && (
-              <button
-                type="button"
-                onClick={onGoToEditingMode}
-                className="flex h-8 min-w-[64px] shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-[4px] bg-[#161919] px-2 text-sm font-medium text-[#fafafa] transition-opacity hover:opacity-90"
-              >
-                Go to Editing Mode <SelectionBarGoToEditingIcon size={16} />
-              </button>
-            )}
-          </div>
-        </div>
+        <SelectionBarShell label={`${compositionLabel} selected`}>
+          {!hasPendingSuggestion && (
+            <DeleteButton onClick={() => onDeleteSuggestions(Array.from(suggestionSelection))} />
+          )}
+          {hasPendingSuggestion && (
+            <RejectButton onClick={() => onDeclineSuggestions(Array.from(suggestionSelection))} />
+          )}
+          {hasPendingSuggestion && <AcceptButton onClick={handleAcceptClick} />}
+          {onGoToEditingMode && <GoToEditingButton onClick={onGoToEditingMode} />}
+        </SelectionBarShell>
       )}
 
       <Dialog open={acceptWarningsOpen} onOpenChange={setAcceptWarningsOpen}>

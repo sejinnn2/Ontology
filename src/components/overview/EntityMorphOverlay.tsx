@@ -35,6 +35,7 @@ export function EntityMorphOverlay({
   labelOrigin,
   target,
   status,
+  pending,
   confidence,
   name,
   warningReason,
@@ -45,6 +46,8 @@ export function EntityMorphOverlay({
   labelOrigin: MorphRect;
   target: AnchorMorphRects | null;
   status: ReviewStatus;
+  // Still a suggestion (shows its confidence), whatever issue `status` shows.
+  pending: boolean;
   confidence: number;
   name: string;
   warningReason?: string | undefined;
@@ -198,7 +201,7 @@ export function EntityMorphOverlay({
       >
         {name}
       </div>
-      {status === "suggested" && (
+      {pending && (
         <div style={{ position: "fixed", ...fadeInStyle(target?.confidenceRect) }}>
           <ConfidenceChip confidence={confidence} />
         </div>

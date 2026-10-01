@@ -1,33 +1,30 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { PanelRightClose, Search as SearchIcon, X } from "lucide-react";
+import { Search as SearchIcon, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import sidebarCollapseIcon from "@/assets/icons/sidebar-wide-left-arrow-20.svg";
+import panelOpenIcon from "@/assets/icons/side-panel-open-16.svg";
+import { FigmaIcon } from "@/components/detail/list-controls";
+import { ZoomCard } from "@/components/detail/editing-canvas";
 import { sideBetween, pointInRect, distanceToSegment } from "@/lib/geometry";
 import type { Pt, Rect, Side } from "@/lib/geometry";
 import {
-  relationLabel,
-  tableMappingStatus,
-  tableMappingCompleteness,
-  tableColumnUsage,
   entitiesUsingTable,
-  tablesUsedByEntity,
-  entityStatus,
-  propertyStatus,
-  entityErrorReason,
-  isTableInScope,
+  entityReview,
   isReviewItemInScope,
+  isTableInScope,
+  relationLabel,
+  relationReview,
+  tableColumnUsage,
   tableHighestMappingConfidence,
+  tableMappingCompleteness,
+  tableMappingStatus,
+  tablesUsedByEntity,
   type SearchResultRef,
 } from "@/lib/mock-data";
 import { CreateEntityButton } from "@/components/ontology/CreateEntityButton";
 import { CreateEntityWizard } from "@/components/ontology/CreateEntityWizard";
 import { DefineRelationDialog } from "@/components/ontology/DefineRelationDialog";
 import { OntologyNode, ONTOLOGY_NODE_SIZE, ONTOLOGY_NODE_WRAPPER_W } from "./OntologyNode";
-import {
-  CanvasToolStack,
-  useCanvasToolShortcuts,
-  type CanvasTool,
-} from "@/components/ontology/CanvasControls";
+import { useCanvasToolShortcuts, type CanvasTool } from "@/components/ontology/CanvasControls";
 import {
   SortDropdown,
   DEFAULT_SORT,
@@ -394,8 +391,6 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     pushHistory,
     undo,
     redo,
-    canUndo,
-    canRedo,
     view,
     setView,
     confidenceRange,
@@ -425,8 +420,6 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
   // move the view instead. Clicking/dragging any node itself works exactly the same in either
   // tool, regardless of which one is active.
   const [tool, setTool] = useState<CanvasTool>("select");
-  const [propertySuggestionsHighlightActive, setPropertySuggestionsHighlightActive] =
-    useState(false);
   useCanvasToolShortcuts(tool, setTool, undo, redo);
 
   // Relation degree is a visual-density signal only. It never changes graph data or layout:
@@ -467,7 +460,6 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     if (e.target !== e.currentTarget) return;
     select(null);
     clearSuggestionSelection();
-    setPropertySuggestionsHighlightActive(false);
     // Clicking empty canvas is one of Global Search's own "exit this focus state" gestures (see
     // app-state's `searchFocus` doc comment) — harmless to call unconditionally even when no
     // search focus is active, since clearing an already-null value is a no-op.
@@ -740,6 +732,23 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     [openDetail, openDetailWithMorph],
   );
 
+  // Where a multi-selection's "Go to Editing Mode" opens: the first selected Entity Type, or the
+  // one owning the first selected Property / mapping, or the first selected Relation's subject.
+  const selectionEditTarget = useMemo(() => {
+    for (const key of suggestionSelection) {
+      const ref = parseSuggestionKey(key);
+      if (!ref) continue;
+      const id =
+        ref.kind === "entity"
+          ? ref.id
+          : ref.kind === "relation"
+            ? relations.find((r) => r.id === ref.id)?.from
+            : ref.entityId;
+      if (id && entities.some((e) => e.id === id)) return id;
+    }
+    return null;
+  }, [suggestionSelection, entities, relations]);
+
   // A second plain click on the SAME Entity within `DOUBLE_CLICK_MS` resolves as a double-click
   // (see `onUp` below) rather than two independent single-clicks — tracked by hand (not the native
   // `dblclick` event) since this canvas already resolves click-vs-drag itself from raw pointer
@@ -912,8 +921,8 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     [setView],
   );
 
-  // Jumps straight to an exact zoom level (the Zoom menu's own presets — see CanvasToolStack's
-  // `onSetZoomPercent` doc comment) instead of the multiplicative `zoomBy` above, but keeps the
+  // Jumps straight to an exact zoom level (the zoom card's "100%") instead of the multiplicative
+  // `zoomBy` above, but keeps the
   // same viewport-center-preserving math so a preset pick doesn't also re-center the canvas.
   const setZoomPercent = useCallback(
     (pct: number) => {
@@ -951,7 +960,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
   // as non-passive; without it the browser's own page-zoom/back-swipe gestures fight this one.
   // Deliberately NOT gated on `tool`/`historyPanelOpen` — every other pan/zoom-capable canvas app
   // treats wheel/trackpad navigation as always-on regardless of the active tool, and History
-  // Inspection already keeps zoom/pan live (see this file's own `CanvasToolStack` doc comment
+  // Inspection already keeps zoom/pan live (see the zoom card's doc comment
   // above) since navigating to look at markers is exactly what Inspection is for.
   useEffect(() => {
     const el = ref.current;
@@ -998,17 +1007,6 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     });
     return ids;
   }, [suggestionSelection]);
-  const suggestedPropertyEntityIds = useMemo(
-    () =>
-      new Set(
-        entities
-          .filter((candidate) =>
-            candidate.properties.some((property) => propertyStatus(property) === "suggested"),
-          )
-          .map((candidate) => candidate.id),
-      ),
-    [entities],
-  );
   const focusedRelationEntityIds = useMemo(() => {
     const ids = new Set<string>();
     const includeEndpoints = (relationId: string) => {
@@ -1085,7 +1083,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       primaryEntityId = entity.id;
       connectedEntityIds.add(entity.id);
       const property = entity.properties.find((p) => p.id === searchFocus.propertyId);
-      if (property?.mapping) tableNames.add(property.mapping.table);
+      property?.mappings.forEach((m) => tableNames.add(m.table));
     } else if (searchFocus.kind === "relation") {
       const relation = relations.find((r) => r.id === searchFocus.id);
       if (!relation) return null;
@@ -1129,34 +1127,6 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     return null;
   }, [searchContext, hoveredTableName, highlightId, entities]);
   const entityNeighborhoodActive = !!highlightId && !hoveredTableName && !searchContext;
-
-  // The mirror image of `hoveredTableName`'s own entity-highlight above: which Data Table rows to
-  // highlight (a gray background, never hiding the rest — see `selectedEntityTableNames` below for
-  // the stronger, selection-driven FILTER that does hide rows) because the currently "active"
-  // Entity (hover, or the same selection-fallback `highlightId` already uses) maps into them.
-  // Skipped entirely while a table is the one actively hovered — that direction already owns the
-  // highlight in reverse.
-  const activeEntityTableNames = useMemo(() => {
-    if (hoveredTableName || !activeEntityIds) return null;
-    const names = new Set<string>();
-    activeEntityIds.forEach((id) => {
-      const entity = entities.find((e) => e.id === id);
-      if (entity) tablesUsedByEntity(entity).forEach((name) => names.add(name));
-    });
-    return names;
-  }, [hoveredTableName, activeEntityIds, entities]);
-
-  // A SELECTED Entity (a click, never a hover — unlike the plain highlight above) narrows the
-  // whole Data Tables panel down to just the tables it actually maps into, with its own header
-  // ("Data Tables connected to '<name>'" — see the panel's own render below) rather than merely
-  // graying a row out among all of them. `null` (every table shown, plain "Data Tables" header)
-  // the moment nothing's selected, or the selection is a Table/Relation instead of an Entity.
-  const selectedEntityForTables =
-    selection?.kind === "entity" ? (entities.find((e) => e.id === selection.id) ?? null) : null;
-  const selectedEntityTableNames = useMemo(
-    () => (selectedEntityForTables ? new Set(tablesUsedByEntity(selectedEntityForTables)) : null),
-    [selectedEntityForTables],
-  );
 
   const neighborIds = useMemo(() => {
     if (searchContext) {
@@ -1438,12 +1408,8 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       const bothSearchConnected = searchContext
         ? searchContext.connectedEntityIds.has(r.from) && searchContext.connectedEntityIds.has(r.to)
         : false;
-      const propertySuggestionFocusEdge =
-        propertySuggestionsHighlightActive &&
-        (suggestedPropertyEntityIds.has(r.from) || suggestedPropertyEntityIds.has(r.to));
-      const isFocusEdge = propertySuggestionsHighlightActive
-        ? propertySuggestionFocusEdge
-        : suggestionSelection.size > 0
+      const isFocusEdge =
+        suggestionSelection.size > 0
           ? false
           : searchContext
             ? bothSearchConnected
@@ -1452,12 +1418,9 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
               : false;
       const outOfScope =
         !bothSearchConnected &&
-        !isReviewItemInScope(r.status, r.confidence, confidenceRange, statusFilter);
+        !isReviewItemInScope(relationReview(r), r.confidence, confidenceRange, statusFilter);
       const isMuted =
-        outOfScope ||
-        (propertySuggestionsHighlightActive
-          ? !propertySuggestionFocusEdge
-          : activeEntityIds !== null && !isFocusEdge && !entityNeighborhoodActive);
+        outOfScope || (activeEntityIds !== null && !isFocusEdge && !entityNeighborhoodActive);
       return { isZoomEmphasized, isFocusEdge, isMuted };
     },
     [
@@ -1465,8 +1428,6 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       suggestionSelection,
       hoveredRelationId,
       searchContext,
-      propertySuggestionsHighlightActive,
-      suggestedPropertyEntityIds,
       activeEntityIds,
       hoveredTableName,
       confidenceRange,
@@ -1630,12 +1591,10 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     if (
       !searchConnected &&
       entity &&
-      !isReviewItemInScope(entity.status, entity.confidence, confidenceRange, statusFilter)
+      !isReviewItemInScope(entityReview(entity), entity.confidence, confidenceRange, statusFilter)
     ) {
       return "muted" as const;
     }
-    if (propertySuggestionsHighlightActive)
-      return suggestedPropertyEntityIds.has(entityId) ? ("normal" as const) : ("muted" as const);
     if (suggestionSelection.size > 0)
       return multiSelectedEntityIds.has(entityId) ? ("active" as const) : ("normal" as const);
     if (!activeEntityIds) return "normal" as const;
@@ -1867,22 +1826,16 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                     own line rather than needing a separate state. */}
                 <marker
                   id="relation-arrow"
-                  viewBox="0 0 10 10"
-                  refX="8.5"
-                  refY="5"
-                  markerWidth={7}
-                  markerHeight={7}
+                  viewBox="0 0 7.5 8.66"
+                  refX={7.5}
+                  refY={4.33}
+                  markerWidth={7.5}
+                  markerHeight={8.66}
                   markerUnits="userSpaceOnUse"
                   orient="auto"
                 >
-                  <path
-                    d="M2,1.5 L8.5,5 L2,8.5"
-                    fill="none"
-                    stroke="context-stroke"
-                    strokeWidth={1.8}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
+                  {/* Figma Line cap (362:222575): a filled triangle in the line's own color. */}
+                  <path d="M0 0 L7.5 4.33 L0 8.66 Z" fill="context-stroke" stroke="none" />
                 </marker>
               </defs>
               {farRelationZoom
@@ -1899,27 +1852,31 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                     const isZoomEmphasized = states.some((s) => s.isZoomEmphasized);
                     const isFocusEdge = states.some((s) => s.isFocusEdge);
                     const isMuted = states.every((s) => s.isMuted);
+                    // Figma Line "Suggested" only while every bundled Relation is still one.
+                    const suggested = members.every((r) => relationReview(r) === "suggested");
+                    const blue = isZoomEmphasized || isFocusEdge;
                     return (
                       <path
                         key={bundleId}
                         d={bundle.d}
                         fill="none"
-                        strokeLinecap="round"
+                        strokeLinecap={suggested && !blue ? "butt" : "round"}
+                        strokeDasharray={suggested && !blue ? "4 4" : undefined}
                         className={cn(
                           "transition-opacity",
-                          isZoomEmphasized
+                          blue
                             ? "stroke-[#3b82f6]"
-                            : isFocusEdge && !propertySuggestionsHighlightActive
-                              ? "stroke-[#3b82f6]"
-                              : "stroke-zinc-400",
+                            : suggested
+                              ? "stroke-[#A855F7]"
+                              : "stroke-[#9EA3A2]",
                         )}
-                        opacity={isZoomEmphasized || isFocusEdge ? 1 : isMuted ? 0.2 : 0.55}
+                        opacity={isZoomEmphasized || isFocusEdge ? 1 : isMuted ? 0.2 : 1}
                         strokeWidth={
                           isZoomEmphasized
                             ? 2.6
                             : isFocusEdge
                               ? 2
-                              : Math.min(1 + (bundle.count - 1) * 0.8, 5)
+                              : Math.min(1.5 + (bundle.count - 1) * 0.8, 5)
                         }
                         markerEnd={bundle.count === 1 ? "url(#relation-arrow)" : undefined}
                       />
@@ -1931,22 +1888,27 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                     const geo = relationGeometry.get(r.id);
                     if (!a || !b || !geo) return null;
                     const { isZoomEmphasized, isFocusEdge, isMuted } = getRelationVisualState(r);
+                    // Figma Line (362:222575): Suggested is purple, dashed 4 4; Default is gray,
+                    // solid; Deactivated is Default at 0.2. Hover / focus keep the node's blue.
+                    const suggested = relationReview(r) === "suggested";
+                    const blue = isZoomEmphasized || isFocusEdge;
                     return (
                       <path
                         key={r.id}
                         d={geo.d}
                         fill="none"
-                        strokeLinecap="round"
+                        strokeLinecap={suggested && !blue ? "butt" : "round"}
+                        strokeDasharray={suggested && !blue ? "4 4" : undefined}
                         className={cn(
                           "transition-opacity",
-                          isZoomEmphasized
+                          blue
                             ? "stroke-[#3b82f6]"
-                            : isFocusEdge && !propertySuggestionsHighlightActive
-                              ? "stroke-[#3b82f6]"
-                              : "stroke-zinc-400",
+                            : suggested
+                              ? "stroke-[#A855F7]"
+                              : "stroke-[#9EA3A2]",
                         )}
-                        opacity={isZoomEmphasized || isFocusEdge ? 1 : isMuted ? 0.2 : 0.55}
-                        strokeWidth={isZoomEmphasized ? 2.6 : isFocusEdge ? 2 : 1.25}
+                        opacity={isZoomEmphasized || isFocusEdge ? 1 : isMuted ? 0.2 : 1}
+                        strokeWidth={isZoomEmphasized ? 2.6 : isFocusEdge ? 2 : 1.5}
                         markerEnd="url(#relation-arrow)"
                       />
                     );
@@ -1954,15 +1916,23 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
               {/* live preview line while dragging a connector out to a new entity — stays anchored
                   to the exact handle that was grabbed, rather than sliding around the node to
                   chase the pointer. */}
+              {/* Figma "Dot Drag": a solid gray line to a blue dot under the pointer. */}
               {connectDrag && connectPos && (
-                <path
-                  d={`M ${connectDrag.origin.x} ${connectDrag.origin.y} L ${connectPos.x} ${connectPos.y}`}
-                  fill="none"
-                  stroke="#00ded8"
-                  strokeWidth={2}
-                  strokeDasharray="4 3"
-                  opacity={0.9}
-                />
+                <>
+                  <path
+                    d={`M ${connectDrag.origin.x} ${connectDrag.origin.y} L ${connectPos.x} ${connectPos.y}`}
+                    fill="none"
+                    stroke="#9EA3A2"
+                    strokeWidth={1.5}
+                  />
+                  <circle
+                    cx={connectPos.x}
+                    cy={connectPos.y}
+                    r={3.5}
+                    fill="#3b82f6"
+                    stroke="#3b82f6"
+                  />
+                </>
               )}
             </svg>
 
@@ -1988,14 +1958,10 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                   ? searchContext.connectedEntityIds.has(r.from) &&
                     searchContext.connectedEntityIds.has(r.to)
                   : false;
-                const propertySuggestionFocusEdge =
-                  propertySuggestionsHighlightActive &&
-                  (suggestedPropertyEntityIds.has(r.from) || suggestedPropertyEntityIds.has(r.to));
                 // Same table-hover guard as the connector line above — relations only ever light up
                 // for an actual Entity hover/search focus, never for Table hover's own entity set.
-                const isFocusEdge = propertySuggestionsHighlightActive
-                  ? propertySuggestionFocusEdge
-                  : suggestionSelection.size > 0
+                const isFocusEdge =
+                  suggestionSelection.size > 0
                     ? false
                     : searchContext
                       ? bothSearchConnected
@@ -2004,12 +1970,15 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                         : false;
                 const outOfScope =
                   !bothSearchConnected &&
-                  !isReviewItemInScope(r.status, r.confidence, confidenceRange, statusFilter);
+                  !isReviewItemInScope(
+                    relationReview(r),
+                    r.confidence,
+                    confidenceRange,
+                    statusFilter,
+                  );
                 const isMuted =
                   outOfScope ||
-                  (propertySuggestionsHighlightActive
-                    ? !propertySuggestionFocusEdge
-                    : activeEntityIds !== null && !isFocusEdge && !entityNeighborhoodActive);
+                  (activeEntityIds !== null && !isFocusEdge && !entityNeighborhoodActive);
                 return (
                   <div
                     key={r.id}
@@ -2089,10 +2058,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                   detailed={view.z > 1}
                   nodeScale={nodeScaleById.get(entity.id) ?? 1}
                   showLabel={view.z >= FAR_ZOOM_THRESHOLD || farZoomEntityLabelIds.has(entity.id)}
-                  showPropertySummary={view.z > 1.1}
-                  emphasizeSuggestedProperties={
-                    propertySuggestionsHighlightActive && suggestedPropertyEntityIds.has(entity.id)
-                  }
+                  showPropertySummary={view.z > 1}
                   emphasis={emphasisFor(entity.id)}
                   // Editing the canvas while previewing a historical point would silently apply
                   // to CURRENT Ontology underneath — see this feature's own spec on why a preview
@@ -2190,7 +2156,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
               control from the Header's Mapping Status pills. */}
           <div
             className={cn(
-              "absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 flex-col items-center gap-3",
+              "absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 flex-col items-center gap-3",
               // History Mode is strictly inspection-only — the entire AI-review surface (accept/
               // decline, suggestion multi-select, Confidence range, Generate Suggestions) is
               // switched off for its whole duration. It stays VISIBLE (context for what review
@@ -2211,6 +2177,9 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                 onAcceptSuggestions={acceptSuggestions}
                 onDeclineSuggestions={declineSuggestions}
                 onDeleteSuggestions={deleteSuggestionKeys}
+                onGoToEditingMode={
+                  selectionEditTarget ? () => goToEditingMode(selectionEditTarget) : undefined
+                }
               />
             ) : !historyPanelOpen && selectedEntity ? (
               <EntitySelectionBar
@@ -2227,6 +2196,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
             ) : !historyPanelOpen && selectedRelation ? (
               <RelationSelectionBar
                 relation={selectedRelation}
+                entities={entities}
                 onDelete={() => deleteRelation(selectedRelation.id)}
                 onAccept={() =>
                   acceptSuggestions([suggestionKey({ kind: "relation", id: selectedRelation.id })])
@@ -2243,60 +2213,26 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                 confidenceRange={confidenceRange}
                 onConfidenceRangeChange={setConfidenceRange}
                 onSelectSuggestionsInRange={selectSuggestionKeys}
-                propertySuggestionsHighlightActive={propertySuggestionsHighlightActive}
-                onTogglePropertySuggestionsHighlight={() =>
-                  setPropertySuggestionsHighlightActive((active) => !active)
-                }
               />
             )}
           </div>
 
-          {/* The canvas's whole control surface — tool switch, Undo/Redo, and zoom — as one
-              compact horizontal pill at the canvas's own top-right corner, matching Figma's own
-              Overview reference exactly (see CanvasToolStack's own `orientation` doc comment).
-              Undo/Redo specifically are switched off during History Mode (they'd otherwise
-              silently mutate Current Ontology underneath the preview) — Select/Hand/Zoom stay
-              live since navigating the canvas to look at markers is exactly what Inspection is
-              for. */}
-          <CanvasToolStack
-            className="absolute left-1/2 top-3 z-20 -translate-x-1/2"
-            orientation="horizontal"
-            compact
-            tool={tool}
-            onToolChange={setTool}
+          {/* Figma 350:75161 / 350:75436: zoom in the canvas's top-right corner — beside the open
+              Data tables panel, or sharing one card with its expand button once it's collapsed.
+              (Select / Pan and Undo / Redo stay on their keyboard shortcuts.) */}
+          <ZoomCard
+            className="absolute right-3 top-3 z-20"
             zoomPercent={Math.round(view.z * 100)}
-            onZoomOut={() => zoomBy(1 / 1.2)}
             onZoomIn={() => zoomBy(1.2)}
-            onFitToContent={fitToContent}
-            onSetZoomPercent={setZoomPercent}
-            onUndo={undo}
-            onRedo={redo}
-            canUndo={canUndo && !historyPanelOpen}
-            canRedo={canRedo && !historyPanelOpen}
+            onZoomOut={() => zoomBy(1 / 1.2)}
+            onResetZoom={() => setZoomPercent(100)}
+            onFit={fitToContent}
+            collapsedPanel={
+              tablePanelOpen
+                ? undefined
+                : { label: "Data tables", onExpand: () => setTablePanelOpen(true) }
+            }
           />
-          {/* The Data tables panel, collapsed (Figma 508:35850): a floating card in the canvas's
-              top-right corner, so the canvas gets the panel's full width. */}
-          {!tablePanelOpen && (
-            <div className="absolute right-3 top-3 z-20 flex h-12 w-60 items-center gap-2 rounded-[6px] border border-[#e3e5e4] bg-white py-[3px] pl-3 pr-4 shadow-[0_1px_1px_0_rgba(0,0,0,0.05)]">
-              <button
-                type="button"
-                onClick={() => setTablePanelOpen(true)}
-                aria-label="Expand Data Tables panel"
-                className="flex size-6 shrink-0 items-center justify-center rounded-[6px] hover:bg-black/[0.04]"
-              >
-                <span aria-hidden className="relative block size-5 shrink-0">
-                  <img
-                    alt=""
-                    src={sidebarCollapseIcon}
-                    className="absolute inset-0 block size-full"
-                  />
-                </span>
-              </button>
-              <span className="min-w-0 flex-1 truncate text-[14px] font-medium leading-none text-[#161919]">
-                Data tables
-              </span>
-            </div>
-          )}
         </div>
       </div>
       {creationRequest && (
@@ -2319,19 +2255,18 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
           style={{ width: TABLE_PANEL_OPEN_W }}
           className="relative flex shrink-0 flex-col overflow-hidden border-l border-[#E3E5E4] bg-node"
         >
-          <div className="flex h-12 shrink-0 items-center gap-1 border-b border-[#e3e5e4] pl-4 pr-3">
+          {/* Figma 350:75161: the collapse button first, then the title. */}
+          <div className="flex h-12 shrink-0 items-center gap-2 border-b border-[#e3e5e4] pl-3 pr-4">
             <button
               type="button"
               onClick={() => setTablePanelOpen(false)}
-              aria-label="Collapse Data Tables panel"
-              className="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-black/[0.04]"
+              aria-label="Collapse Data tables panel"
+              className="flex size-6 shrink-0 items-center justify-center rounded-[6px] hover:bg-[#e3e5e4]"
             >
-              <PanelRightClose className="size-5" />
+              <FigmaIcon src={panelOpenIcon} />
             </button>
-            <span className="truncate text-[14px] font-medium leading-none text-[#161919]">
-              {selectedEntityForTables
-                ? `Data tables connected to '${selectedEntityForTables.name || "Untitled entity"}'`
-                : "Data tables"}
+            <span className="min-w-0 flex-1 truncate text-[14px] font-medium leading-5 text-[#161919]">
+              Data tables
             </span>
           </div>
           <>
@@ -2344,14 +2279,9 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
               <SearchIcon className="size-4 shrink-0 text-[#6d7472]" />
             </div>
             <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
-              {(selectedEntityTableNames
-                ? sortedTables.filter((t) => selectedEntityTableNames.has(t.name))
-                : sortedTables
-              ).map((t) => {
+              {sortedTables.map((t) => {
                 const isSelected = selection?.kind === "table" && selection.id === t.name;
-                const isRelated =
-                  (searchContext?.tableNames.has(t.name) ?? false) ||
-                  (activeEntityTableNames?.has(t.name) ?? false);
+                const isRelated = searchContext?.tableNames.has(t.name) ?? false;
                 const entityCount = entitiesUsingTable(t.name, entities).length;
                 // Tables have no Confidence/ReviewStatus of their own — derived from whichever
                 // Property↔Column Mapping(s) touch it instead (see `isTableInScope`'s own doc

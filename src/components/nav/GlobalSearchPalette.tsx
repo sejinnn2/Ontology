@@ -6,7 +6,6 @@ import {
   searchResultCount,
   type Entity,
   type Relation,
-  type SearchResult,
   type SearchResultRef,
   type TableSchema,
 } from "@/lib/mock-data";

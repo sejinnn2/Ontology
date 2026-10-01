@@ -6,6 +6,8 @@ import {
   entitiesUsingTable,
   entityDisplayStatus,
   entityErrorReason,
+  entityReview,
+  entityWarningReason,
   tableByName,
   tableHighestMappingConfidence,
   tableMappingCompleteness,
@@ -26,20 +28,26 @@ import {
   type SortState,
 } from "@/components/ontology/SortDropdown";
 import { EditingGraphView, TableGraphView } from "@/components/detail/EditingGraph";
-import { acceptsPropertyDrop, dropPropertiesOn } from "@/components/detail/property-move";
+import {
+  acceptsPropertyDrop,
+  dropPropertiesOn,
+  leftDropTarget,
+  revealProperties,
+} from "@/components/detail/property-move";
 import { ENTITY_PANEL_DND_TYPE, TABLE_PANEL_DND_TYPE } from "@/components/detail/panel-dnd";
 import { ItemEditorModal, type EditorRequest } from "@/components/detail/ItemEditorModal";
 import { CreateButton, FigmaIcon } from "@/components/detail/list-controls";
 import { isTypingTarget } from "@/components/ontology/CanvasControls";
 import {
   SidePanelContext,
-  useReportSidePanel,
+  useSidePanelOpen,
+  FLOATING_CARD,
   useSidePanels,
 } from "@/components/detail/editing-canvas";
 import { cn } from "@/lib/utils";
 import dotGridIcon from "@/assets/icons/dot-grid-2x3-16.svg";
 import searchIcon from "@/assets/icons/magnifying-glass-2-16.svg";
-import sidebarCollapseIcon from "@/assets/icons/sidebar-wide-left-arrow-20.svg";
+import panelOpenIcon from "@/assets/icons/side-panel-open-16.svg";
 
 /**
  * The editing workspace: the Entity types panel, the Graph, and the Data tables panel. Opened on an
@@ -99,8 +107,22 @@ function useNewEntityHighlight() {
 }
 
 /** The create / edit modal every part of the workspace opens, and the requests that open it. */
-function useItemEditor(app: OntologyApp) {
+function useItemEditor(app: OntologyApp, onEntityCreated: (entityId: string) => void) {
   const [editor, setEditor] = useState<EditorRequest | null>(null);
+  // Who asked for the open create-Relation modal and wants to hear how it ended.
+  const doneRef = useRef<((created: boolean) => void) | null>(null);
+  const finish = (created: boolean) => {
+    const done = doneRef.current;
+    doneRef.current = null;
+    done?.(created);
+  };
+  const createRelation = useCallback(
+    (from: string, to: string, done?: (created: boolean) => void) => {
+      doneRef.current = done ?? null;
+      setEditor({ mode: "create", kind: "relation", from, to });
+    },
+    [],
+  );
   const editKey = useCallback((key: string) => {
     const ref = parseSuggestionKey(key);
     if (ref) setEditor({ mode: "edit", ref });
@@ -109,23 +131,37 @@ function useItemEditor(app: OntologyApp) {
     <ItemEditorModal
       app={app}
       request={editor}
-      onClose={() => setEditor(null)}
-      onCreated={(ref) => {
-        // A new Property or Relation opens in the detail panel.
-        if (ref.kind === "property" || ref.kind === "relation") {
-          app.selectSuggestionKeys([suggestionKey(ref)]);
+      onClose={() => {
+        setEditor(null);
+        finish(false); // closed without creating (after a create, `done` has already run)
+      }}
+      onCreated={(refs) => {
+        const first = refs[0];
+        if (!first) return;
+        if (first.kind === "relation") finish(true);
+        // A new Entity Type is pointed out in the Entity types panel (Figma 328:5877).
+        if (first.kind === "entity") onEntityCreated(first.id);
+        // New Properties / a new Relation come up selected; Properties are scrolled into view.
+        if (first.kind === "property" || first.kind === "relation") {
+          app.selectSuggestionKeys(refs.map(suggestionKey));
+        }
+        if (first.kind === "property") {
+          revealProperties(
+            first.entityId,
+            refs.flatMap((ref) => (ref.kind === "property" ? [ref.propertyId] : [])),
+          );
         }
       }}
     />
   );
-  return { setEditor, editKey, modal };
+  return { setEditor, editKey, modal, createRelation };
 }
 
 function EntityWorkspace({ app, anchor }: { app: OntologyApp; anchor: DetailAnchor }) {
   useUndoRedoShortcuts(app.undo, app.redo);
   const sidePanels = useSidePanels();
-  const { setEditor, editKey, modal } = useItemEditor(app);
   const { newEntityId, setNewEntityId } = useNewEntityHighlight();
+  const { setEditor, editKey, modal, createRelation } = useItemEditor(app, setNewEntityId);
   const focusEntity = useMemo(
     () =>
       anchor?.kind === "entity" ? (app.entities.find((e) => e.id === anchor.id) ?? null) : null,
@@ -152,7 +188,7 @@ function EntityWorkspace({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
           workingIds={relatedIds}
           highlightId={newEntityId}
         />
-        <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[#fafafa]">
+        <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[#f9fafb]">
           <EditingGraphView
             app={app}
             focusEntity={focusEntity}
@@ -160,9 +196,7 @@ function EntityWorkspace({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
             onCreateProperty={(entityId) =>
               setEditor({ mode: "create", kind: "property", entityId })
             }
-            onCreateRelation={(from, to) =>
-              setEditor({ mode: "create", kind: "relation", from, to })
-            }
+            onCreateRelation={createRelation}
             onSplit={setNewEntityId}
           />
         </main>
@@ -176,8 +210,8 @@ function EntityWorkspace({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
 function TableWorkspace({ app, table }: { app: OntologyApp; table: TableSchema }) {
   useUndoRedoShortcuts(app.undo, app.redo);
   const sidePanels = useSidePanels();
-  const { setEditor, editKey, modal } = useItemEditor(app);
   const { newEntityId, setNewEntityId } = useNewEntityHighlight();
+  const { setEditor, editKey, modal } = useItemEditor(app, setNewEntityId);
   // The Entity Types mapped into it, marked in the Entity types panel.
   const usingIds = useMemo(
     () => new Set(entitiesUsingTable(table.name, app.entities).map((e) => e.id)),
@@ -192,7 +226,7 @@ function TableWorkspace({ app, table }: { app: OntologyApp; table: TableSchema }
           workingIds={usingIds}
           highlightId={newEntityId}
         />
-        <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[#fafafa]">
+        <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[#f9fafb]">
           <TableGraphView
             app={app}
             table={table}
@@ -210,18 +244,22 @@ function TableWorkspace({ app, table }: { app: OntologyApp; table: TableSchema }
   );
 }
 
+// Figma Icon Button (sm, Ghost): 24px, 6px radius, #e3e5e4 on hover.
+const PANEL_ICON_BUTTON =
+  "flex size-6 shrink-0 items-center justify-center rounded-[6px] hover:bg-[#e3e5e4]";
+
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
 /** "8 props · 2 tables" — the tables are the distinct source tables its Properties map into. */
 function entityRowDetail(entity: Entity): string {
-  const tables = new Set(entity.properties.flatMap((p) => (p.mapping ? [p.mapping.table] : [])));
+  const tables = new Set(entity.properties.flatMap((p) => p.mappings.map((m) => m.table)));
   return `${plural(entity.properties.length, "prop", "props")} · ${plural(tables.size, "table", "tables")}`;
 }
 
 /** "8 columns · 2 entities" — the entities are the ones with a Property mapped into this table. */
 function tableRowDetail(table: TableSchema, entities: Entity[]): string {
   const mapped = entities.filter((entity) =>
-    entity.properties.some((p) => p.mapping?.table === table.name),
+    entity.properties.some((p) => p.mappings.some((m) => m.table === table.name)),
   ).length;
   return `${plural(table.columns.length, "column", "columns")} · ${plural(mapped, "entity", "entities")}`;
 }
@@ -269,13 +307,13 @@ function SidePanelListControls({
       ) : (
         <SortDropdown sort={sort} onChange={onSortChange} showPrefix={false} variant="figma" />
       )}
-      <div className="ml-auto flex items-center gap-1">
+      <div className="ml-auto flex items-center gap-0.5">
         {onCreate && <CreateButton label={createLabel ?? "Create"} onClick={onCreate} />}
         <button
           type="button"
           onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
           aria-label={searchOpen ? "Close search" : "Search"}
-          className="flex size-5 shrink-0 items-center justify-center rounded-[6px] hover:bg-black/[0.08]"
+          className="flex size-5 shrink-0 items-center justify-center rounded-[6px] hover:bg-[#e3e5e4]"
         >
           {searchOpen ? <X className="size-4" strokeWidth={1.5} /> : <FigmaIcon src={searchIcon} />}
         </button>
@@ -292,44 +330,58 @@ function SidePanelEmpty({ query }: { query: string }) {
   );
 }
 
-/** A side panel's collapsed state (Figma 508:35850): a floating card in its top corner — the
- * panel's name and an expand button — so the canvas gets the panel's full width. */
-function CollapsedSidePanel({
-  side,
-  label,
-  onExpand,
-}: {
-  side: "left" | "right";
-  label: string;
-  onExpand: () => void;
-}) {
-  const button = (
-    <button
-      type="button"
-      onClick={onExpand}
-      aria-label={`Expand ${label} panel`}
-      className="flex size-6 shrink-0 items-center justify-center rounded-[6px] hover:bg-black/[0.04]"
-    >
-      {/* The panel's own collapse glyph, pointing the way it opens. */}
-      <FigmaIcon
-        src={sidebarCollapseIcon}
-        size={20}
-        className={side === "left" ? "-scale-x-100" : ""}
-      />
-    </button>
-  );
+/**
+ * The pointer's drag image for a panel row (Figma 328:15086): a compact 32px card of the row's grip,
+ * status and name, instead of a snapshot of the whole row.
+ */
+function setCompactDragImage(event: React.DragEvent<HTMLElement>, name: string) {
+  const row = event.currentTarget;
+  const ghost = document.createElement("div");
+  Object.assign(ghost.style, {
+    position: "fixed",
+    top: "-1000px",
+    left: "-1000px",
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    height: "32px",
+    padding: "0 12px",
+    background: "#fff",
+    border: "1px solid #e3e5e4",
+    borderRadius: "8px",
+    boxShadow: "0 1px 3px 0 rgba(0,0,0,0.1), 0 1px 2px -1px rgba(0,0,0,0.1)",
+    font: "500 14px/20px var(--font-sans)",
+    color: "#161919",
+    whiteSpace: "nowrap",
+  });
+  const [grip, badge] = Array.from(row.children);
+  if (grip) ghost.append(grip.cloneNode(true));
+  if (badge) ghost.append(badge.cloneNode(true));
+  const label = document.createElement("span");
+  label.textContent = name || "Untitled entity";
+  ghost.append(label);
+  document.body.append(ghost);
+  event.dataTransfer.setDragImage(ghost, 20, 16);
+  window.setTimeout(() => ghost.remove(), 0);
+}
+
+/** The Entity types panel collapsed (Figma 328:30397): a floating card in the canvas's top-left
+ * corner — its name and an expand button — so the canvas gets the panel's full width. */
+function CollapsedEntityPanel({ onExpand }: { onExpand: () => void }) {
   return (
-    <div
-      className={cn(
-        "absolute top-3 z-40 flex h-12 w-60 items-center gap-2 rounded-[6px] border border-[#e3e5e4] bg-white py-[3px] shadow-[0_1px_1px_0_rgba(0,0,0,0.05)]",
-        side === "left" ? "left-3 pl-4 pr-3" : "right-3 pl-3 pr-4",
-      )}
-    >
-      {side === "right" && button}
-      <span className="min-w-0 flex-1 truncate text-[14px] font-medium leading-none text-[#161919]">
-        {label}
+    // Figma 328:30397: 120px, pl-12 pr-8, 14px Medium label + the side-panel-open glyph.
+    <div className={cn(FLOATING_CARD, "absolute left-3 top-3 z-40 w-[120px] pl-3 pr-2")}>
+      <span className="min-w-0 flex-1 truncate text-[14px] font-medium leading-5 text-[#161919]">
+        Entity types
       </span>
-      {side === "left" && button}
+      <button
+        type="button"
+        onClick={onExpand}
+        aria-label="Expand Entity types panel"
+        className="flex size-6 shrink-0 items-center justify-center rounded-[6px] hover:bg-black/[0.04]"
+      >
+        <FigmaIcon src={panelOpenIcon} />
+      </button>
     </div>
   );
 }
@@ -374,11 +426,11 @@ function Idea4EntityPanel({
   // The + in the filter row: create a new Entity Type (in `ItemEditorModal`).
   onCreate?: () => void;
 }) {
-  const [open, setOpen] = useState(true);
-  useReportSidePanel("entity", open);
+  const [open, setOpen] = useSidePanelOpen("entity");
   const highlightRef = useRef<HTMLButtonElement>(null);
   // A row a dragged Property is over (it moves the Property to that Entity Type on drop).
   const [dropId, setDropId] = useState<string | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
   useEffect(() => {
     if (highlightId) highlightRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [highlightId]);
@@ -395,23 +447,25 @@ function Idea4EntityPanel({
     [app.entities, query, sort],
   );
   if (!open) {
-    return <CollapsedSidePanel side="left" label="Entity types" onExpand={() => setOpen(true)} />;
+    return <CollapsedEntityPanel onExpand={() => setOpen(true)} />;
   }
   return (
     // Rebuilt directly off the Figma "Panel-Entity types" node (406:5388, fetched in full — not
     // just its screenshot) — see the per-element comments below for what each value is sampled
     // from.
     <aside className="flex w-60 shrink-0 flex-col overflow-hidden border-r border-[#e3e5e4] bg-white">
-      {/* Title, 48px — collapse glyph is Figma's own IconSidebarWideLeftArrow asset. */}
-      <div className="flex h-12 shrink-0 items-center justify-between border-b border-[#e3e5e4] pl-4 pr-3">
-        <span className="text-[14px] font-medium leading-none text-[#161919]">Entity types</span>
+      {/* Title, 48px (Figma 328:30992) — the collapse glyph is Side-panel--open turned 180°. */}
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-[#e3e5e4] pl-4 pr-3">
+        <span className="min-w-0 flex-1 truncate text-[14px] font-medium leading-5 text-[#161919]">
+          Entity types
+        </span>
         <button
           type="button"
           onClick={() => setOpen(false)}
           aria-label="Collapse Entity types panel"
-          className="flex size-6 shrink-0 items-center justify-center rounded-[6px] hover:bg-black/[0.04]"
+          className={PANEL_ICON_BUTTON}
         >
-          <FigmaIcon src={sidebarCollapseIcon} size={20} />
+          <FigmaIcon src={panelOpenIcon} className="rotate-180" />
         </button>
       </div>
       <SidePanelListControls
@@ -437,7 +491,10 @@ function Idea4EntityPanel({
               draggable
               onDragStart={(e) => {
                 e.dataTransfer.setData(ENTITY_PANEL_DND_TYPE, entity.id);
+                setCompactDragImage(e, entity.name);
+                setDraggingId(entity.id);
               }}
+              onDragEnd={() => setDraggingId(null)}
               onClick={() => app.openDetail("entity", entity.id)}
               onDragEnter={(e) => {
                 if (!acceptsPropertyDrop(e, entity.id)) return;
@@ -451,7 +508,7 @@ function Idea4EntityPanel({
                 if (dropId !== entity.id) setDropId(entity.id);
               }}
               onDragLeave={(e) => {
-                if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+                if (!leftDropTarget(e)) return;
                 setDropId((current) => (current === entity.id ? null : current));
               }}
               onDrop={(e) => {
@@ -461,6 +518,8 @@ function Idea4EntityPanel({
               ref={entity.id === highlightId ? highlightRef : undefined}
               className={cn(
                 sidePanelRowClass(isFocus ? "focus" : isRelated ? "related" : "idle"),
+                // The row being dragged stays grey for the whole drag (Figma 350:98084).
+                entity.id === draggingId && "bg-[#e3e5e4]",
                 entity.id === highlightId &&
                   "outline outline-2 -outline-offset-2 outline-[#161919]",
                 entity.id === dropId &&
@@ -474,12 +533,13 @@ function Idea4EntityPanel({
                 status={entityDisplayStatus(entity)}
                 size={16}
                 confidence={entity.confidence}
-                warningReason={entity.warningReason}
+                warningReason={entityWarningReason(entity)}
                 errorReason={entityErrorReason(entity)}
               />
               <SidePanelRowText name={entity.name} detail={entityRowDetail(entity)} />
-              {entityDisplayStatus(entity) === "suggested" && (
-                <EntityConfidenceChip entity={entity} />
+              {/* Figma 328:30991: every row but a confirmed one shows its score. */}
+              {entityReview(entity) === "suggested" && (
+                <EntityConfidenceChip entity={entity} tone="muted" />
               )}
             </button>
           );
@@ -504,8 +564,7 @@ function Idea4TablePanel({
   // `Idea4EntityPanel` above already got off its own "Panel-Entity types" node, just mirrored:
   // this panel sits on the workspace's right edge (`border-l`, not `border-r`), so its collapse
   // glyph is the same IconSidebarWideLeftArrow mirrored, as Figma draws it.
-  const [open, setOpen] = useState(true);
-  useReportSidePanel("table", open);
+  const [open, setOpen] = useSidePanelOpen("table");
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
   // Tables have no confidence of their own — "Confidence" sorts by the strongest mapping into
@@ -520,22 +579,23 @@ function Idea4TablePanel({
       ),
     [app.tables, app.entities, query, sort],
   );
-  if (!open) {
-    return <CollapsedSidePanel side="right" label="Data tables" onExpand={() => setOpen(true)} />;
-  }
+  // Collapsed, it lives in the canvas's zoom card (`CanvasZoomCard`) — Figma 353:132125.
+  if (!open) return null;
   return (
     <aside className="flex w-60 shrink-0 flex-col overflow-hidden border-l border-[#e3e5e4] bg-white">
-      <div className="flex h-12 shrink-0 items-center justify-between border-b border-[#e3e5e4] pl-4 pr-3">
-        <span className="text-[14px] font-medium leading-none text-[#161919]">Data tables</span>
+      {/* Figma 328:31741: mirrored — the collapse button first, then the title. */}
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-[#e3e5e4] pl-3 pr-4">
         <button
           type="button"
           onClick={() => setOpen(false)}
           aria-label="Collapse Data tables panel"
-          className="flex size-6 shrink-0 items-center justify-center rounded-[6px] hover:bg-black/[0.04]"
+          className={PANEL_ICON_BUTTON}
         >
-          {/* Figma mirrors the same IconSidebarWideLeftArrow for the right-hand panel. */}
-          <FigmaIcon src={sidebarCollapseIcon} size={20} className="-scale-x-100" />
+          <FigmaIcon src={panelOpenIcon} />
         </button>
+        <span className="min-w-0 flex-1 truncate text-[14px] font-medium leading-5 text-[#161919]">
+          Data tables
+        </span>
       </div>
       <SidePanelListControls
         sort={sort}

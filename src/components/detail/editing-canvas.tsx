@@ -7,18 +7,17 @@ import {
   useRef,
   useState,
 } from "react";
-import { ArrowLeft } from "lucide-react";
-import type { OntologyApp } from "@/lib/app-state";
-import {
-  CanvasToolStack,
-  useCanvasToolShortcuts,
-  type CanvasTool,
-} from "@/components/ontology/CanvasControls";
+import { useCanvasToolShortcuts, type CanvasTool } from "@/components/ontology/CanvasControls";
+import { FigmaIcon } from "@/components/detail/list-controls";
+import { cn } from "@/lib/utils";
+import zoomInIcon from "@/assets/icons/add-large-16.svg";
+import zoomOutIcon from "@/assets/icons/subtract-16.svg";
+import fitIcon from "@/assets/icons/center-to-fit-16.svg";
+import panelOpenRightIcon from "@/assets/icons/side-panel-open-right-16.svg";
 
 /**
  * The editing workspace's canvas plumbing, shared by its Graph layouts: pan/zoom over a
- * transformed "world" element, the zoom-based level of detail, and the top bar (back link, layout
- * switch, Select/Pan/Undo/Zoom).
+ * transformed "world" element, the zoom-based level of detail, and the top-right zoom card.
  */
 
 type CanvasView = { x: number; y: number; z: number };
@@ -177,71 +176,119 @@ export type EditingCanvas = ReturnType<typeof useEditingCanvas>;
 
 /**
  * Whether the editing workspace's side panels (Entity types, left; Data tables, right) are open.
- * A collapsed panel becomes a floating card in its top corner (Figma 508:35850), so the top bar
- * moves its corner content clear of it. The workspace provides this; each panel reports itself.
+ * The workspace owns this so the canvas can draw the collapsed Data tables card itself: collapsed,
+ * it shares one floating card with the zoom controls (Figma 328:30072's top-right corner).
  */
 export type SidePanels = {
   entityOpen: boolean;
   tableOpen: boolean;
-  report: (side: "entity" | "table", open: boolean) => void;
+  setOpen: (side: "entity" | "table", open: boolean) => void;
 };
 export const SidePanelContext = createContext<SidePanels | null>(null);
 export function useSidePanels(): SidePanels {
   const [entityOpen, setEntityOpen] = useState(true);
   const [tableOpen, setTableOpen] = useState(true);
-  const report = useCallback((side: "entity" | "table", open: boolean) => {
+  const setOpen = useCallback((side: "entity" | "table", open: boolean) => {
     if (side === "entity") setEntityOpen(open);
     else setTableOpen(open);
   }, []);
-  return useMemo(() => ({ entityOpen, tableOpen, report }), [entityOpen, tableOpen, report]);
+  return useMemo(() => ({ entityOpen, tableOpen, setOpen }), [entityOpen, tableOpen, setOpen]);
 }
-/** A panel's side reports whether it's open (see `SidePanelContext`). */
-export function useReportSidePanel(side: "entity" | "table", open: boolean) {
+/** One side panel's open state, from `SidePanelContext`. */
+export function useSidePanelOpen(side: "entity" | "table") {
   const panels = useContext(SidePanelContext);
-  const report = panels?.report;
-  useEffect(() => {
-    report?.(side, open);
-  }, [report, side, open]);
+  const open = panels ? (side === "entity" ? panels.entityOpen : panels.tableOpen) : true;
+  const setOpen = useCallback((next: boolean) => panels?.setOpen(side, next), [panels, side]);
+  return [open, setOpen] as const;
 }
-// The floating collapsed card's footprint in its corner: 12px inset + 240px card.
-const COLLAPSED_CARD_SPAN = 252;
 
-/** Figma canvas header (node 460:42151): "Back to Ontology view" on the left, and the canvas's
- * Select/Pan · Undo/Redo · Zoom pill (the same `CanvasToolStack` Overview uses) in the middle. */
-export function EditingCanvasTopBar({ app, canvas }: { app: OntologyApp; canvas: EditingCanvas }) {
-  const panels = useContext(SidePanelContext);
-  const leftInset = panels && !panels.entityOpen ? COLLAPSED_CARD_SPAN : 0;
-  const rightInset = panels && !panels.tableOpen ? COLLAPSED_CARD_SPAN : 0;
+/** Figma 328:30072's floating corner cards: white, 4px radius, a hairline + soft drop shadow. */
+export const FLOATING_CARD =
+  "flex items-center gap-1 rounded-[4px] bg-white py-1 shadow-[0_0_1px_rgba(0,0,0,0.1),0_1px_4px_rgba(0,0,0,0.1)]";
+const CARD_ICON_BUTTON =
+  "flex size-6 shrink-0 items-center justify-center rounded-[6px] hover:bg-black/[0.04]";
+
+/**
+ * The canvas's top-right card (Figma 353:132125): zoom in · level · zoom out · fit. While the Data
+ * tables panel is collapsed, the same card also carries its expand button and label.
+ */
+export function CanvasZoomCard({ canvas }: { canvas: EditingCanvas }) {
+  const [tableOpen, setTableOpen] = useSidePanelOpen("table");
   return (
-    // Figma 508:35850: the tool / zoom bar floats at the top center, 12px down; "Back" keeps the
-    // top-left, moved clear of a collapsed side panel's floating card in that corner.
+    <ZoomCard
+      className="absolute right-3 top-3 z-40"
+      zoomPercent={Math.round(canvas.view.z * 100)}
+      onZoomIn={() => canvas.zoomTo((z) => z * 1.2)}
+      onZoomOut={() => canvas.zoomTo((z) => z / 1.2)}
+      onResetZoom={() => canvas.zoomTo(() => 1)}
+      onFit={canvas.reset}
+      collapsedPanel={
+        tableOpen ? undefined : { label: "Data tables", onExpand: () => setTableOpen(true) }
+      }
+    />
+  );
+}
+
+/**
+ * The zoom card itself (Figma 353:132125 / 350:75436), shared by the Overview and the Editing
+ * workspace: + · level (click for 100%) · − · fit, and — while the side panel beside it is
+ * collapsed — that panel's expand button and name.
+ */
+export function ZoomCard({
+  className,
+  zoomPercent,
+  onZoomIn,
+  onZoomOut,
+  onResetZoom,
+  onFit,
+  collapsedPanel,
+}: {
+  className?: string;
+  zoomPercent: number;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onResetZoom: () => void;
+  onFit: () => void;
+  collapsedPanel?: { label: string; onExpand: () => void } | undefined;
+}) {
+  return (
     <div
-      className="relative z-30 flex h-[60px] shrink-0 items-start justify-between bg-[#fafafa] pt-3"
-      style={{ paddingLeft: 12 + leftInset, paddingRight: 12 + rightInset }}
+      onPointerDown={(e) => e.stopPropagation()}
+      className={cn(FLOATING_CARD, "pl-1", collapsedPanel ? "pr-3" : "pr-1", className)}
     >
+      <button type="button" aria-label="Zoom in" onClick={onZoomIn} className={CARD_ICON_BUTTON}>
+        <FigmaIcon src={zoomInIcon} />
+      </button>
       <button
         type="button"
-        onClick={app.closeDetail}
-        className="flex h-10 items-center gap-2 text-[14px] font-medium text-[#161919] hover:underline"
+        aria-label="Reset zoom to 100%"
+        onClick={onResetZoom}
+        className="flex h-6 w-9 shrink-0 items-center justify-center rounded-[6px] text-[12px] font-medium leading-4 tabular-nums text-[#71717a] hover:bg-black/[0.04]"
       >
-        <ArrowLeft className="size-4" /> Back to Ontology view
+        {zoomPercent}%
       </button>
-      <CanvasToolStack
-        orientation="horizontal"
-        compact
-        className="absolute left-1/2 top-3 -translate-x-1/2 rounded-[10px] border-[#e3e5e4] bg-white p-1 shadow-[0_1px_2px_0_rgba(0,0,0,0.05)]"
-        tool={canvas.tool}
-        onToolChange={canvas.setTool}
-        zoomPercent={Math.round(canvas.view.z * 100)}
-        onZoomIn={() => canvas.zoomTo((z) => z * 1.2)}
-        onZoomOut={() => canvas.zoomTo((z) => z / 1.2)}
-        onFitToContent={canvas.reset}
-        onSetZoomPercent={(pct) => canvas.zoomTo(() => pct / 100)}
-        onUndo={app.undo}
-        onRedo={app.redo}
-        canUndo={app.canUndo}
-        canRedo={app.canRedo}
-      />
+      <button type="button" aria-label="Zoom out" onClick={onZoomOut} className={CARD_ICON_BUTTON}>
+        <FigmaIcon src={zoomOutIcon} />
+      </button>
+      <button type="button" aria-label="Fit to screen" onClick={onFit} className={CARD_ICON_BUTTON}>
+        <FigmaIcon src={fitIcon} />
+      </button>
+      {collapsedPanel && (
+        <>
+          <span className="mx-0.5 h-4 w-px shrink-0 bg-[#e3e5e4]" />
+          <button
+            type="button"
+            aria-label={`Expand ${collapsedPanel.label} panel`}
+            onClick={collapsedPanel.onExpand}
+            className={CARD_ICON_BUTTON}
+          >
+            <FigmaIcon src={panelOpenRightIcon} />
+          </button>
+          <span className="whitespace-nowrap text-[14px] font-medium leading-5 text-[#161919]">
+            {collapsedPanel.label}
+          </span>
+        </>
+      )}
     </div>
   );
 }

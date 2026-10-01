@@ -5,19 +5,22 @@ import { isIdentifierProperty, type ColumnRef, type Entity } from "@/lib/mock-da
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  CreateEntityDialog,
+  CreatePropertiesDialog,
+  CreateRelationDialog,
+  PROPERTY_TYPES,
+} from "@/components/detail/CreateDialogs";
 import { cn } from "@/lib/utils";
 import chevronDownIcon from "@/assets/icons/chevron-down-16.svg";
-import chevronTriangleDownIcon from "@/assets/icons/chevron-triangle-down-16.svg";
 import searchIcon from "@/assets/icons/magnifying-glass-2-16.svg";
 
 /**
- * Creating and editing an Entity Type, Property, or Relation always happens in this one modal:
- * the Entity types panel's + (new Entity Type), the selected Entity Type's list controls' + (new
- * Property), and every item's … → Edit (or the detail panel's Edit). Changes are drafted in the
- * modal and applied together on Create / Save, so closing it always leaves the ontology untouched.
- *
- * Creating an Entity Type is two steps (Figma 490:55415 → 490:53169): its name and description,
- * then its first Property — the same Property form the + on a Property list opens on its own.
+ * Creating and editing an Entity Type, Property, or Relation always goes through this one modal:
+ * the Entity types panel's + (new Entity Type), a Property list's + (new Properties), a Relation
+ * drawn on the canvas, and every item's Edit. Creating uses the Figma create dialogs
+ * (`CreateDialogs.tsx`); editing uses the form below. Changes are drafted and applied together on
+ * Create / Save, so closing it always leaves the ontology untouched.
  */
 
 export type EditorRequest =
@@ -26,17 +29,6 @@ export type EditorRequest =
   // A Relation between two Entity Types (e.g. drawn on the canvas), named here before it exists.
   | { mode: "create"; kind: "relation"; from: string; to: string }
   | { mode: "edit"; ref: SuggestionRef };
-
-const PROPERTY_TYPES = [
-  "string",
-  "integer",
-  "decimal",
-  "boolean",
-  "date",
-  "timestamp",
-  "uuid",
-  "enum",
-];
 
 const INPUT =
   "w-full rounded-[6px] border border-[#e3e5e4] bg-white px-2.5 text-[14px] leading-5 text-[#161919] outline-none transition-colors placeholder:text-[#9ea3a2] hover:border-[#c9cccb] focus:border-[#00ded8] focus:ring-2 focus:ring-[#00ded8]/25";
@@ -55,8 +47,55 @@ export function ItemEditorModal({
   request: EditorRequest | null;
   onClose: () => void;
   /** Called with what was just created (e.g. to select it). */
-  onCreated?: (ref: SuggestionRef) => void;
+  onCreated?: (refs: SuggestionRef[]) => void;
 }) {
+  if (request?.mode === "create") {
+    const key = JSON.stringify(request);
+    if (request.kind === "entity") {
+      return (
+        <CreateEntityDialog
+          key={key}
+          app={app}
+          onClose={onClose}
+          onCreated={(id) => {
+            onCreated?.([{ kind: "entity", id }]);
+            onClose();
+          }}
+        />
+      );
+    }
+    if (request.kind === "property") {
+      const entity = app.entities.find((e) => e.id === request.entityId);
+      if (!entity) return null;
+      return (
+        <CreatePropertiesDialog
+          key={key}
+          app={app}
+          entity={entity}
+          onClose={onClose}
+          onCreated={(ids) => {
+            onCreated?.(
+              ids.map((propertyId) => ({ kind: "property", entityId: entity.id, propertyId })),
+            );
+            onClose();
+          }}
+        />
+      );
+    }
+    return (
+      <CreateRelationDialog
+        key={key}
+        app={app}
+        from={request.from}
+        to={request.to}
+        onClose={onClose}
+        onCreated={(id) => {
+          onCreated?.([{ kind: "relation", id }]);
+          onClose();
+        }}
+      />
+    );
+  }
   return (
     <Dialog open={!!request} onOpenChange={(open) => !open && onClose()}>
       <DialogContent
@@ -64,21 +103,16 @@ export function ItemEditorModal({
         className="max-w-[478px] gap-0 rounded-[10px] border-[#e3e5e4] bg-[#fafafa] p-0 shadow-[0_12px_16px_rgba(0,0,0,0.2)] sm:rounded-[10px]"
       >
         {request && (
-          <EditorForm
-            key={JSON.stringify(request)}
-            app={app}
-            request={request}
-            onClose={onClose}
-            onCreated={onCreated}
-          />
+          <EditorForm key={JSON.stringify(request)} app={app} request={request} onClose={onClose} />
         )}
       </DialogContent>
     </Dialog>
   );
 }
 
-function resolveTarget(app: OntologyApp, request: EditorRequest) {
-  if (request.mode === "create") return null;
+type EditRequest = Extract<EditorRequest, { mode: "edit" }>;
+
+function resolveTarget(app: OntologyApp, request: EditRequest) {
   const ref = request.ref;
   if (ref.kind === "entity") {
     const entity = app.entities.find((e) => e.id === ref.id);
@@ -106,29 +140,18 @@ function EditorForm({
   app,
   request,
   onClose,
-  onCreated,
 }: {
   app: OntologyApp;
-  request: EditorRequest;
+  request: EditRequest;
   onClose: () => void;
-  onCreated?: ((ref: SuggestionRef) => void) | undefined;
 }) {
   const target = resolveTarget(app, request);
-  const kind = request.mode === "create" ? request.kind : target?.kind;
-  const creatingEntity = request.mode === "create" && request.kind === "entity";
+  const kind = target?.kind;
 
   const entity = target?.kind === "entity" ? target.entity : undefined;
   const property = target?.kind === "property" ? target.property : undefined;
   const relation = target?.kind === "relation" ? target.relation : undefined;
-  const owner =
-    request.mode === "create" && request.kind === "property"
-      ? app.entities.find((e) => e.id === request.entityId)
-      : target?.kind === "property"
-        ? target.entity
-        : undefined;
-
-  // Creating an Entity Type: step 1 is the Entity Type itself, step 2 its first Property.
-  const [step, setStep] = useState<1 | 2>(1);
+  const owner = target?.kind === "property" ? target.entity : undefined;
 
   // Entity Type / Relation draft.
   const [name, setName] = useState(entity?.name ?? relation?.name ?? "");
@@ -137,25 +160,18 @@ function EditorForm({
   );
   const [template, setTemplate] = useState(entity?.displayNameTemplate ?? "");
   const [primaryId, setPrimaryId] = useState(entity?.primaryPropertyId ?? "");
-  const creatingRelation =
-    request.mode === "create" && request.kind === "relation" ? request : null;
-  const [from, setFrom] = useState(relation?.from ?? creatingRelation?.from ?? "");
-  const [to, setTo] = useState(relation?.to ?? creatingRelation?.to ?? "");
+  const [from, setFrom] = useState(relation?.from ?? "");
+  const [to, setTo] = useState(relation?.to ?? "");
 
-  // Property draft — the Property being edited or created, or a new Entity Type's first one
-  // (an identifier by default, since it's the Entity Type's only Property so far).
+  // Property draft.
   const [propName, setPropName] = useState(property?.name ?? "");
   const [propDescription, setPropDescription] = useState(property?.description ?? "");
   const [type, setType] = useState(property?.type ?? "string");
-  const [identifier, setIdentifier] = useState(
-    property ? isIdentifierProperty(property) : creatingEntity,
-  );
-  const initialMapping = mappingValue(property?.mapping);
-  const [mapping, setMapping] = useState(initialMapping);
+  const [identifier, setIdentifier] = useState(property ? isIdentifierProperty(property) : false);
 
   const [error, setError] = useState<string | null>(null);
 
-  if (request.mode === "edit" && !target) {
+  if (!target) {
     return (
       <div className="p-6 text-[14px] text-[#6d7472]">
         This item no longer exists.
@@ -168,53 +184,18 @@ function EditorForm({
     );
   }
 
-  const showsPropertyForm = kind === "property" || (creatingEntity && step === 2);
-  const propertyOwnerName = creatingEntity ? name.trim() : owner?.name;
-  const title =
-    request.mode === "edit"
-      ? `Edit ${kind === "entity" ? "entity type" : kind}`
-      : showsPropertyForm
-        ? `Create property of ${propertyOwnerName || "Untitled entity"}`
-        : creatingRelation
-          ? "Create relation"
-          : "Create entity type";
+  const showsPropertyForm = kind === "property";
+  const title = `Edit ${kind === "entity" ? "entity type" : kind}`;
 
   const propertyFields = () => ({
     description: propDescription,
     type,
-    ...(mapping !== initialMapping ? { mapping: parseMappingValue(mapping) } : {}),
   });
 
   const submit = () => {
-    if (creatingEntity && step === 1) {
-      if (!name.trim()) return setError("Enter a name.");
-      setError(null);
-      setStep(2);
-      return;
-    }
     if (showsPropertyForm ? !propName.trim() : !name.trim()) return setError("Enter a name.");
 
-    if (creatingEntity) {
-      const id = app.createEntity(name);
-      if (description.trim()) app.updateEntity(id, { description });
-      const propertyId = app.createProperty(id, propName);
-      app.updateProperty(id, propertyId, {
-        ...propertyFields(),
-        ...(identifier ? { isIdentifier: true } : {}),
-      });
-      onCreated?.({ kind: "entity", id });
-    } else if (request.mode === "create" && request.kind === "property") {
-      const id = app.createProperty(request.entityId, propName);
-      app.updateProperty(request.entityId, id, {
-        ...propertyFields(),
-        ...(identifier ? { isIdentifier: true } : {}),
-      });
-      onCreated?.({ kind: "property", entityId: request.entityId, propertyId: id });
-    } else if (creatingRelation) {
-      const id = app.createRelation(from, to, name);
-      if (description.trim()) app.updateRelation(id, { description });
-      onCreated?.({ kind: "relation", id });
-    } else if (entity) {
+    if (entity) {
       app.updateEntity(entity.id, {
         name,
         description,
@@ -291,9 +272,8 @@ function EditorForm({
             />
             {nameError}
           </Field>
-          <Field label="Mapping" labelFor={null}>
-            <MappingPicker app={app} value={mapping} onChange={setMapping} />
-          </Field>
+          {/* A Property can map to several datasets — they're connected on the canvas and listed
+              (and disconnected) in the detail panel, not edited here. */}
           <Field label="Description">
             <textarea
               value={propDescription}
@@ -431,38 +411,12 @@ function EditorForm({
       )}
 
       <div className="flex justify-end gap-2 border-t border-[#e3e5e4] px-5 py-3">
-        {request.mode === "edit" ? (
-          <>
-            <button type="button" onClick={onClose} className={SECONDARY_BUTTON}>
-              Cancel
-            </button>
-            <button type="submit" className={PRIMARY_BUTTON}>
-              Save
-            </button>
-          </>
-        ) : creatingEntity && step === 1 ? (
-          <button type="submit" className={PRIMARY_BUTTON}>
-            Next
-          </button>
-        ) : (
-          <>
-            {creatingEntity && (
-              <button
-                type="button"
-                onClick={() => {
-                  setError(null);
-                  setStep(1);
-                }}
-                className={SECONDARY_BUTTON}
-              >
-                Previous
-              </button>
-            )}
-            <button type="submit" className={PRIMARY_BUTTON}>
-              Create
-            </button>
-          </>
-        )}
+        <button type="button" onClick={onClose} className={SECONDARY_BUTTON}>
+          Cancel
+        </button>
+        <button type="submit" className={PRIMARY_BUTTON}>
+          Save
+        </button>
       </div>
     </form>
   );
@@ -489,69 +443,6 @@ function Field({
 }
 
 type ColumnOption = { value: string; table: string; column: string; type: string };
-
-/**
- * The Mapping field: every column of every data table, searchable by column or table name (the
- * list itself is `ColumnSearchList`, shared with the canvas's column search).
- */
-function MappingPicker({
-  app,
-  value,
-  onChange,
-}: {
-  app: OntologyApp;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const selected = useMemo(() => {
-    const ref = parseMappingValue(value);
-    return ref ? { table: ref.table, column: ref.column } : null;
-  }, [value]);
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          aria-label="Mapping"
-          aria-haspopup="listbox"
-          className={cn(
-            INPUT,
-            "flex h-9 items-center gap-2 text-left data-[state=open]:border-[#00ded8] data-[state=open]:ring-2 data-[state=open]:ring-[#00ded8]/25",
-          )}
-        >
-          {selected ? (
-            <span className="flex min-w-0 flex-1 items-baseline gap-2">
-              <span className="truncate text-[#161919]">{selected.column}</span>
-              <span className="shrink-0 truncate text-[12px] text-[#6d7472]">{selected.table}</span>
-            </span>
-          ) : (
-            <span className="flex-1 text-[#6d7472]">Select</span>
-          )}
-          <span className="size-4 shrink-0">
-            <img src={chevronTriangleDownIcon} alt="" className="block size-full" />
-          </span>
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        sideOffset={4}
-        onOpenAutoFocus={(event) => event.preventDefault()}
-        className="w-[var(--radix-popover-trigger-width)] rounded-[10px] border-[#e3e5e4] bg-white p-0 shadow-[0_8px_24px_-6px_rgba(0,0,0,0.16)]"
-      >
-        <ColumnSearchList
-          app={app}
-          value={value}
-          onPick={(next) => {
-            onChange(next);
-            setOpen(false);
-          }}
-        />
-      </PopoverContent>
-    </Popover>
-  );
-}
 
 /**
  * Every column of every data table, searchable by column or table name (words combine: "policies

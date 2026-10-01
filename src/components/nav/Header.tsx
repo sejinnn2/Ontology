@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronRight } from "lucide-react";
+import { FigmaIcon } from "@/components/detail/list-controls";
+import chevronDownSmallIcon from "@/assets/icons/chevron-down-small-16.svg";
 import { cn } from "@/lib/utils";
 import {
   buildConfirmPlan,
@@ -57,7 +59,7 @@ function CountPill({
           tabIndex={0}
           className="flex shrink-0 items-center gap-1.5 rounded-[10px] border border-transparent outline-none focus-visible:ring-2 focus-visible:ring-[#00DED8]"
         >
-          <span className="size-[18px] shrink-0 text-muted-foreground">{icon}</span>
+          <span className="size-4 shrink-0 text-muted-foreground">{icon}</span>
           <span className="whitespace-nowrap text-sm text-muted-foreground">{label}</span>
           <span className="whitespace-nowrap text-sm text-[#161919]">
             {mapped}/{total}
@@ -353,9 +355,8 @@ function IssuesControl({
  * matches the Figma reference (Overview: node 98:11645; Detail: node 95:9122) as a starting
  * point. A single row: title + ontology-level actions, the 5-pill MAPPING STATUS row ("how mapped
  * is my ontology?" — see `counts` below), then Issues/History/Search. Identical in both Overview
- * and Editing — this bar never changes shape or content when the workspace below it transforms.
- * "← Back to Ontology view" is NOT here — it lives inside the Editing workspace's own contained
- * container (see routes/index.tsx), since exiting Editing is a LOCAL action, not a global one.
+ * and Editing, except the breadcrumb: in Editing it reads "Ontology › Edit ontology", and
+ * "Ontology" is the way back to the Overview (Figma 328:30072).
  *
  * The AI Suggestion review workflow (Confidence score, "N suggestions"/Suggestions-in-range,
  * Select all in range, Generate Suggestions) is DELIBERATELY NOT here any more — it now lives in
@@ -387,6 +388,8 @@ export function Header({
   onToggleHistoryChangeSelected,
   onHistoryHoverChange,
   onRestoreSelectedHistoryChanges,
+  editing = false,
+  onExitEditing,
 }: {
   entities: Entity[];
   relations: Relation[];
@@ -420,6 +423,10 @@ export function Header({
   onToggleHistoryChangeSelected: (number: number) => void;
   onHistoryHoverChange: (number: number | null) => void;
   onRestoreSelectedHistoryChanges: () => RestoreOutcome;
+  /** In the Editing workspace the breadcrumb reads "Ontology › Edit ontology", and "Ontology"
+   * goes back to the Overview (Figma 347:71909). */
+  editing?: boolean;
+  onExitEditing?: (() => void) | undefined;
 }) {
   // Still needed for the Issues popover below (Warning/Error attention states) — the old global
   // Confirm dialog this used to also gate is gone; AI Suggestions are now Accepted/Declined
@@ -451,8 +458,8 @@ export function Header({
     let propertiesMapped = 0;
     entities.forEach((e) => {
       propertiesTotal += e.properties.length;
-      propertiesMapped += e.properties.filter(
-        (p) => p.mapping !== null && mappingStatus(p.mapping) === "mapped",
+      propertiesMapped += e.properties.filter((p) =>
+        p.mappings.some((m) => mappingStatus(m) === "mapped"),
       ).length;
     });
 
@@ -507,27 +514,54 @@ export function Header({
     // Issues popover included). z-40 gives this whole component's floating pieces an unambiguous
     // win instead of a DOM-order coin flip.
     <div className="relative z-40 flex shrink-0 flex-col bg-white">
-      {/* Row 1 — workspace chrome + Stats + Search/History, matching the Figma "Overview"/"Editing
-          mode" frames' own header: a (decorative, non-functional — there is only ever this one
-          workspace) "Product ▾" selector, the "Ontology" breadcrumb, the 5 live Stats pills
-          centered, then History/Search on the right. Identical whether the workspace below is
-          Overview or a contained Editing session — no Entity/Table name and no "Editing" label
-          here at all: the Editing workspace's own containment (the rounded, inset boundary it
-          transforms into, see routes/index.tsx) is what communicates the mode change. */}
-      <div className="flex h-14 w-full shrink-0 items-center justify-between border-b border-[rgba(28,28,24,0.08)] px-4">
+      {/* Row 1 (Figma 347:71907) — workspace selector + breadcrumb, then the 5 live Stats pills,
+          Issues, and History/Search on the right. */}
+      <div className="flex h-14 w-full shrink-0 items-center justify-between border-b border-[#e3e5e4] px-4">
         <div className="flex shrink-0 items-center gap-4">
-          <button
-            type="button"
-            tabIndex={-1}
+          {/* Figma 347:71908: a split "Product ▾ | V5 ▾" workspace selector — decorative, there is
+              only ever this one workspace and version. */}
+          <div
             aria-hidden="true"
-            className="flex h-8 shrink-0 items-center gap-0.5 rounded border border-input bg-white pl-2.5 pr-1.5 text-[14px] font-medium leading-none text-[#161919]"
+            className="flex h-8 shrink-0 items-center overflow-hidden rounded-[4px] border border-[#e3e5e4] bg-white p-px"
           >
-            Product
-            <ChevronDown className="size-4 text-muted-foreground" />
-          </button>
-          <span className="whitespace-nowrap text-[14px] font-medium leading-none text-muted-foreground">
-            Ontology
-          </span>
+            <span className="flex h-full items-center gap-0.5 rounded-l-[2px] bg-[#fafafa] pl-2.5 pr-1.5 text-[14px] font-medium leading-6 text-[#161919]">
+              Product
+              <FigmaIcon src={chevronDownSmallIcon} />
+            </span>
+            <span className="flex h-full items-center gap-0.5 border-l border-[#e3e5e4] pl-[9px] pr-1 text-[14px] font-medium leading-6 text-[#161919]">
+              V5
+              <FigmaIcon src={chevronDownSmallIcon} />
+            </span>
+          </div>
+          <nav aria-label="Breadcrumb" className="flex shrink-0 items-center">
+            {editing ? (
+              <>
+                <button
+                  type="button"
+                  onClick={onExitEditing}
+                  className="whitespace-nowrap text-[14px] leading-5 text-[#6d7472] hover:text-[#161919] hover:underline"
+                >
+                  Ontology
+                </button>
+                <span className="flex size-6 items-center justify-center text-[#6d7472]">
+                  <ChevronRight className="size-4" strokeWidth={1.5} />
+                </span>
+                <span
+                  aria-current="page"
+                  className="whitespace-nowrap text-[14px] leading-5 text-[#6d7472]"
+                >
+                  Edit ontology
+                </span>
+              </>
+            ) : (
+              <span
+                aria-current="page"
+                className="whitespace-nowrap text-[14px] leading-5 text-[#6d7472]"
+              >
+                Ontology
+              </span>
+            )}
+          </nav>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <CountPills counts={counts} keys={ALL_COUNT_KEYS} />

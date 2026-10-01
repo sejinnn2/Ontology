@@ -1,4 +1,3 @@
-import { Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -9,13 +8,11 @@ import { cn } from "@/lib/utils";
  * affordance (a grip icon that moves the item) — this is the only affordance that starts a
  * connector drag.
  *
- * Sizing/color/shadow match the Figma reference exactly (node 90-598 "Item Hover" / 90-580 "Dot
- * Hover"): a 12px circle, white fill, 1.5px #00ded8 border, sitting on the item's boundary.
+ * Sizing/color/shadow match Figma "Dot" (362:222226): an 8px circle, white with a 1px #e3e5e4
+ * border, filled #3b82f6 while active.
  */
 export function ConnectionHandle({
   active = false,
-  enlarged = false,
-  showPlus = false,
   hoverFill = true,
   className,
   style,
@@ -27,17 +24,9 @@ export function ConnectionHandle({
 }: {
   /** Filled solid blue instead of hollow — the hovered/active/dragging-from state. */
   active?: boolean;
-  /** Scales the dot up (a CSS transform, not a size-class swap, so its boundary anchor point on
-   * whichever side never needs recalculating) — Overview's Entity node handles use this for their
-   * own per-handle hover state; every other caller leaves it `false` and gets the plain small dot
-   * unchanged. */
-  enlarged?: boolean;
-  /** Renders a small "+" glyph centered in the dot, paired with `enlarged` — shown while this
-   * specific handle is hovered, or while it's the active source of a connect-drag. */
-  showPlus?: boolean;
   /** Whether a plain CSS `:hover` should fill the dot solid on its own — the single mapping-handle
    * callers rely on this (no JS-driven hover state of their own), but Overview's 4-side Entity
-   * handles drive their filled/enlarged/plus states from real hover + drag state instead, so they
+   * handles drive their filled state from real hover + drag state instead, so they
    * pass `false` here to avoid the two mechanisms fighting each other. */
   hoverFill?: boolean;
   className?: string;
@@ -64,15 +53,16 @@ export function ConnectionHandle({
       aria-label={ariaLabel}
       style={style}
       className={cn(
-        "pointer-events-auto box-border flex size-3 shrink-0 cursor-grab items-center justify-center rounded-full border-[1.5px] border-[#00ded8] shadow-[0_0_0_2px_#f6f6f6] transition-[transform,background-color] active:cursor-grabbing",
-        active ? "bg-[#00ded8]" : cn("bg-white", hoverFill && "hover:bg-[#00ded8]"),
-        enlarged && "scale-[1.6]",
+        // Figma "Dot" (362:222226): 8px, white, 1px #e3e5e4 with a 2px canvas halo; blue when active.
+        "pointer-events-auto box-border flex size-2 shrink-0 cursor-grab items-center justify-center rounded-full border shadow-[0_0_0_2px_#f9fafb] transition-[transform,background-color,border-color] active:cursor-grabbing",
+        active
+          ? "border-[#3b82f6] bg-[#3b82f6]"
+          : cn(
+              "border-[#e3e5e4] bg-white",
+              hoverFill && "hover:border-[#3b82f6] hover:bg-[#3b82f6]",
+            ),
         className,
       )}
-    >
-      {showPlus && (
-        <Plus className={cn("size-2", active ? "text-white" : "text-[#00ded8]")} strokeWidth={3} />
-      )}
-    </span>
+    ></span>
   );
 }

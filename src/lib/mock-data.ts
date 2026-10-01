@@ -14,7 +14,7 @@
  *     alongside) purely to give the Detail contextual panel's warning/error layout something real
  *     to render.
  * Source-data completeness (Table/Column "mapped" vs "unmapped") and AI review workload
- * ("Suggestions") are both DERIVED elsewhere from this field (and from `Property.mapping`) rather
+ * ("Suggestions") are both DERIVED elsewhere from this field (and from `Property.mappings`) rather
  * than stored as their own status — see `tableMappingStatus`/`tableMappingCompleteness` below and
  * `AiReviewBar`'s own doc comment, respectively. Tables and Columns never get a `ReviewStatus` of
  * their own at all — see `TableSchema`'s doc comment below.
@@ -52,7 +52,7 @@ export function mappingStatus(mapping: ColumnRef): MappingStatus {
  * error, and a warning/error can carry any confidence at all. Only set when `status` is
  * "warning"/"error" respectively; both the Confidence tooltip and the contextual panel read the
  * same field, so neither can ever show different text for the same item. */
-type ReviewFlags = { warningReason?: string; errorReason?: string };
+type ReviewFlags = { warningReason?: string | undefined; errorReason?: string | undefined };
 
 export type Property = {
   id: string;
@@ -61,8 +61,11 @@ export type Property = {
   type: string;
   confidence: number;
   status: ReviewStatus;
-  /** null = unmapped */
-  mapping: ColumnRef | null;
+  /** Every column this Property's values come from — one per dataset, possibly several datasets
+   * (e.g. Claim.status ← claims.current_status + claim_lifecycle.status_change). Empty = unmapped.
+   * The Identifier's mappings are where the Entity Type's instances come from; several of its
+   * columns in ONE dataset form a composite identifier for that dataset. */
+  mappings: ColumnRef[];
   /** Explicit "this is the Identifier" flag — set only by the canvas-first Entity creation wizard
    * (see app-state's own `createEntityWithProperties`), which lets a user name their Identifier
    * property anything ("trackingNumber", not just "id"). Never set on seed data, which instead
@@ -100,24 +103,54 @@ export type Relation = {
   confidence: number;
   status: ReviewStatus;
   cardinality?: "1:1" | "1:N" | "N:1" | "N:N";
-  sourceMapping?: RelationJoin;
-  // Every table this Relation's join keys come from — one entry per table (each side's columns
-  // come from that same table). Falls back to `sourceMapping` alone; see `relationJoins`.
-  joins?: RelationJoin[];
+  /** The Relation's mappings: datasets in which each row links one `from` instance to one `to`
+   * instance. Only the dataset is stored — its key columns are whatever both Entity Types'
+   * Identifiers are mapped to in it (`relationJoins`). */
+  datasets?: string[];
 } & ReviewFlags;
 
-/** One table's join keys for a Relation: the from side's column(s) and the to side's. */
+/** One dataset's join keys for a Relation, derived: the `from` Identifier's column(s) and the `to`
+ * Identifier's, BOTH in that one dataset — a join's columns can differ, its table can't. A side
+ * whose Identifier isn't mapped there has no columns (and the Relation is in Error). */
 export type RelationJoin = {
-  fromTable: string;
+  table: string;
   fromColumns: string[];
-  toTable: string;
   toColumns: string[];
 };
 
-/** A Relation's join keys, table by table (`joins`, else its single `sourceMapping`). */
-export function relationJoins(relation: Relation): RelationJoin[] {
-  if (relation.joins?.length) return relation.joins;
-  return relation.sourceMapping ? [relation.sourceMapping] : [];
+const identifierColumnsIn = (entity: Entity | undefined, table: string) =>
+  (entity?.properties.find(isIdentifierProperty)?.mappings ?? [])
+    .filter((m) => m.table === table)
+    .map((m) => m.column);
+
+/** A Relation's join keys, dataset by dataset, from both Entity Types' Identifier mappings. */
+export function relationJoins(relation: Relation, entities: Entity[]): RelationJoin[] {
+  const from = entities.find((e) => e.id === relation.from);
+  const to = entities.find((e) => e.id === relation.to);
+  return (relation.datasets ?? []).map((table) => ({
+    table,
+    fromColumns: identifierColumnsIn(from, table),
+    toColumns: identifierColumnsIn(to, table),
+  }));
+}
+
+/** The datasets a Relation between these two Entity Types can be mapped through: those where both
+ * Identifiers are mapped (each row there names one of each). */
+export function relationDatasetOptions(from: Entity | undefined, to: Entity | undefined): string[] {
+  const fromTables = new Set(
+    (from?.properties.find(isIdentifierProperty)?.mappings ?? []).map((m) => m.table),
+  );
+  return Array.from(
+    new Set((to?.properties.find(isIdentifierProperty)?.mappings ?? []).map((m) => m.table)),
+  ).filter((t) => fromTables.has(t));
+}
+
+/** A dataset the Relation is mapped through where a side's Identifier isn't mapped — the Relation
+ * can't link instances there. */
+function brokenRelationDataset(relation: Relation, entities: Entity[]) {
+  return relationJoins(relation, entities).find(
+    (j) => j.fromColumns.length === 0 || j.toColumns.length === 0,
+  );
 }
 
 export type TableColumn = {
@@ -128,7 +161,7 @@ export type TableColumn = {
 };
 /** Deliberately no `confidence` field, on either this or `TableColumn` above — a Table/Column is
  * raw source data, already known to exist; Confidence belongs to an AI-generated semantic
- * suggestion (an Entity/Property/Relation, or a Property<->Column Mapping — see `Property.mapping`
+ * suggestion (an Entity/Property/Relation, or a Property<->Column Mapping — see `Property.mappings`
  * and `Property.confidence`, which together already express "the AI is N% confident this Property
  * should map to this Column"), never to the source object being mapped into. If you need to know
  * how "confident" or "complete" a table/column looks in the UI, that's `tableMappingStatus` /
@@ -26695,7 +26728,12 @@ const tableIndex = new Map(tables.map((table) => [table.name, table]));
  * against the real source columns in `tables` above; where no confident match was found, mapping
  * stays null (a genuine 'no suggestion yet' state), which is why entities are a mix of confirmed
  * and still-suggested Identifiers/status. */
-export const initialEntities: Entity[] = [
+// The seed predates multi-dataset mappings: each seed Property carries at most one `mapping`,
+// turned into `mappings` by `createDemoFixture`.
+type SeedProperty = Omit<Property, "mappings"> & { mapping: ColumnRef | null };
+type SeedEntity = Omit<Entity, "properties"> & { properties: SeedProperty[] };
+
+export const initialEntities: SeedEntity[] = [
   {
     id: "e_actor",
     name: "Actor",
@@ -52458,7 +52496,15 @@ export const initialEntities: Entity[] = [
 ];
 
 /** Initial seed data only — see the note on initialEntities above. */
-export const initialRelations: Relation[] = [
+// The seed's Relations predate derived join keys: each names its key columns per table
+// (`sourceMapping` / `joins`), turned into `datasets` + Identifier mappings by `createDemoFixture`.
+type SeedRelationJoin = { table: string; fromColumns: string[]; toColumns: string[] };
+type SeedRelation = Omit<Relation, "datasets"> & {
+  sourceMapping?: SeedRelationJoin;
+  joins?: SeedRelationJoin[];
+};
+
+export const initialRelations: SeedRelation[] = [
   {
     id: "r_audit_event_is_related_to_sales_policy",
     name: "isRelatedTo",
@@ -52469,23 +52515,20 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policies",
+      table: "policies",
       fromColumns: ["policy_id"],
-      toTable: "policies",
       toColumns: ["policy_id"],
     },
-    // Also joinable through a second table — the repeated-group case of `relationJoins`.
+    // Also joinable through a second table.
     joins: [
       {
-        fromTable: "policies",
+        table: "policies",
         fromColumns: ["policy_id"],
-        toTable: "policies",
         toColumns: ["policy_id"],
       },
       {
-        fromTable: "policy_transactions",
+        table: "policy_transactions",
         fromColumns: ["transaction_id"],
-        toTable: "policy_transactions",
         toColumns: ["policy_id"],
       },
     ],
@@ -52500,9 +52543,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "billing_accounts",
+      table: "billing_accounts",
       fromColumns: ["billing_account_id"],
-      toTable: "policies",
       toColumns: ["policy_id"],
     },
   },
@@ -52516,10 +52558,9 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policy_terms",
+      table: "policy_terms",
       fromColumns: ["term_id"],
-      toTable: "billing_accounts",
-      toColumns: ["billing_account_id"],
+      toColumns: ["policy_id"],
     },
   },
   {
@@ -52532,10 +52573,9 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "claim_contacts",
+      table: "claim_contacts",
       fromColumns: ["claim_contact_id"],
-      toTable: "policies",
-      toColumns: ["policy_id"],
+      toColumns: ["created_date"],
     },
   },
   {
@@ -52548,9 +52588,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "claim_contacts",
+      table: "claim_contacts",
       fromColumns: ["claim_contact_id"],
-      toTable: "claims",
       toColumns: ["claim_id"],
     },
   },
@@ -52564,10 +52603,9 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "claim_contacts",
+      table: "claim_contacts",
       fromColumns: ["claim_contact_id"],
-      toTable: "contacts",
-      toColumns: ["contact_id"],
+      toColumns: ["first_name"],
     },
   },
   {
@@ -52580,9 +52618,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "claims",
+      table: "claims",
       fromColumns: ["claim_id"],
-      toTable: "claims",
       toColumns: ["claim_id"],
     },
   },
@@ -52596,9 +52633,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "claims",
+      table: "claims",
       fromColumns: ["claim_id"],
-      toTable: "policies",
       toColumns: ["policy_id"],
     },
   },
@@ -52612,9 +52648,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "claims",
+      table: "claims",
       fromColumns: ["claim_id"],
-      toTable: "policies",
       toColumns: ["policy_id"],
     },
   },
@@ -52628,9 +52663,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "contacts",
+      table: "contacts",
       fromColumns: ["contact_id"],
-      toTable: "contacts",
       toColumns: ["contact_id"],
     },
   },
@@ -52644,9 +52678,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "contacts",
+      table: "contacts",
       fromColumns: ["contact_id"],
-      toTable: "policies",
       toColumns: ["policy_id"],
     },
   },
@@ -52660,10 +52693,9 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "contacts",
+      table: "contacts",
       fromColumns: ["contact_id"],
-      toTable: "claims",
-      toColumns: ["claim_id"],
+      toColumns: ["policy_id"],
     },
   },
   {
@@ -52676,9 +52708,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "drivers",
+      table: "drivers",
       fromColumns: ["driver_id"],
-      toTable: "drivers",
       toColumns: ["driver_id"],
     },
   },
@@ -52692,10 +52723,9 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "drivers",
+      table: "drivers",
       fromColumns: ["driver_id"],
-      toTable: "contacts",
-      toColumns: ["contact_id"],
+      toColumns: ["policy_id"],
     },
   },
   {
@@ -52708,9 +52738,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policies",
+      table: "policies",
       fromColumns: ["policy_id"],
-      toTable: "policies",
       toColumns: ["policy_id"],
     },
   },
@@ -52724,9 +52753,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policies",
+      table: "policies",
       fromColumns: ["policy_id"],
-      toTable: "policies",
       toColumns: ["policy_id"],
     },
   },
@@ -52742,9 +52770,8 @@ export const initialRelations: Relation[] = [
     status: "suggested",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policies",
+      table: "policies",
       fromColumns: ["policy_id"],
-      toTable: "policies",
       toColumns: ["policy_id"],
     },
   },
@@ -52758,9 +52785,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policies",
+      table: "policy_terms",
       fromColumns: ["policy_id"],
-      toTable: "policy_terms",
       toColumns: ["term_id"],
     },
   },
@@ -52774,9 +52800,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policies",
+      table: "policies",
       fromColumns: ["policy_id"],
-      toTable: "policies",
       toColumns: ["policy_id"],
     },
   },
@@ -52790,9 +52815,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policies",
+      table: "vehicles",
       fromColumns: ["policy_id"],
-      toTable: "vehicles",
       toColumns: ["vehicle_id"],
     },
   },
@@ -52806,9 +52830,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policies",
+      table: "policy_transactions",
       fromColumns: ["policy_id"],
-      toTable: "policy_transactions",
       toColumns: ["transaction_id"],
     },
   },
@@ -52822,9 +52845,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policies",
+      table: "policies",
       fromColumns: ["policy_id"],
-      toTable: "policies",
       toColumns: ["policy_id"],
     },
   },
@@ -52838,9 +52860,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policies",
+      table: "policies",
       fromColumns: ["policy_id"],
-      toTable: "policies",
       toColumns: ["policy_id"],
     },
   },
@@ -52854,9 +52875,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policies",
+      table: "policies",
       fromColumns: ["policy_id"],
-      toTable: "policies",
       toColumns: ["policy_id"],
     },
   },
@@ -52870,9 +52890,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "sales_quotes",
+      table: "sales_quotes",
       fromColumns: ["quote_id"],
-      toTable: "sales_quotes",
       toColumns: ["quote_id"],
     },
   },
@@ -52886,9 +52905,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "sales_quotes",
+      table: "sales_quotes",
       fromColumns: ["quote_id"],
-      toTable: "policies",
       toColumns: ["policy_id"],
     },
   },
@@ -52902,9 +52920,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "risk_scores",
+      table: "risk_scores",
       fromColumns: ["risk_score_id"],
-      toTable: "policies",
       toColumns: ["policy_id"],
     },
   },
@@ -52918,9 +52935,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "risk_scores",
+      table: "risk_scores",
       fromColumns: ["risk_score_id"],
-      toTable: "risk_scores",
       toColumns: ["risk_score_id"],
     },
   },
@@ -52934,9 +52950,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "risk_coverages",
+      table: "risk_coverages",
       fromColumns: ["risk_coverage_id"],
-      toTable: "risk_scores",
       toColumns: ["risk_score_id"],
     },
   },
@@ -52950,9 +52965,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "drivers",
+      table: "drivers",
       fromColumns: ["driver_id"],
-      toTable: "drivers",
       toColumns: ["driver_id"],
     },
   },
@@ -52966,9 +52980,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "drivers",
+      table: "drivers",
       fromColumns: ["driver_id"],
-      toTable: "policies",
       toColumns: ["policy_id"],
     },
   },
@@ -52982,9 +52995,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policies",
+      table: "policies",
       fromColumns: ["policy_id"],
-      toTable: "policies",
       toColumns: ["policy_id"],
     },
   },
@@ -52998,9 +53010,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policies",
+      table: "sales_quotes",
       fromColumns: ["policy_id"],
-      toTable: "sales_quotes",
       toColumns: ["quote_id"],
     },
   },
@@ -53014,9 +53025,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policies",
+      table: "sales_quotes",
       fromColumns: ["policy_id"],
-      toTable: "sales_quotes",
       toColumns: ["quote_id"],
     },
   },
@@ -53030,9 +53040,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policies",
+      table: "sales_quotes",
       fromColumns: ["policy_id"],
-      toTable: "sales_quotes",
       toColumns: ["quote_id"],
     },
   },
@@ -53046,9 +53055,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policies",
+      table: "sales_quotes",
       fromColumns: ["policy_id"],
-      toTable: "sales_quotes",
       toColumns: ["quote_id"],
     },
   },
@@ -53062,9 +53070,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policies",
+      table: "policies",
       fromColumns: ["policy_id"],
-      toTable: "policies",
       toColumns: ["policy_id"],
     },
   },
@@ -53078,9 +53085,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policies",
+      table: "vehicles",
       fromColumns: ["policy_id"],
-      toTable: "vehicles",
       toColumns: ["vehicle_id"],
     },
   },
@@ -53094,9 +53100,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "sales_quotes",
+      table: "sales_quotes",
       fromColumns: ["quote_id"],
-      toTable: "policies",
       toColumns: ["policy_id"],
     },
   },
@@ -53110,10 +53115,9 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "sales_quotes",
+      table: "sales_quotes",
       fromColumns: ["quote_id"],
-      toTable: "policy_transactions",
-      toColumns: ["transaction_id"],
+      toColumns: ["policy_id"],
     },
   },
   {
@@ -53126,9 +53130,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policies",
+      table: "sales_quotes",
       fromColumns: ["policy_id"],
-      toTable: "sales_quotes",
       toColumns: ["quote_id"],
     },
   },
@@ -53142,9 +53145,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policies",
+      table: "policies",
       fromColumns: ["policy_id"],
-      toTable: "policies",
       toColumns: ["policy_id"],
     },
   },
@@ -53158,9 +53160,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policies",
+      table: "contacts",
       fromColumns: ["policy_id"],
-      toTable: "contacts",
       toColumns: ["contact_id"],
     },
   },
@@ -53174,9 +53175,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "policies",
+      table: "policies",
       fromColumns: ["policy_id"],
-      toTable: "policies",
       toColumns: ["policy_id"],
     },
   },
@@ -53190,9 +53190,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "vehicles",
+      table: "vehicles",
       fromColumns: ["vehicle_id"],
-      toTable: "policies",
       toColumns: ["policy_id"],
     },
   },
@@ -53206,9 +53205,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "vehicles",
+      table: "vehicles",
       fromColumns: ["vehicle_id"],
-      toTable: "vehicles",
       toColumns: ["vehicle_id"],
     },
   },
@@ -53222,9 +53220,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "vehicles",
+      table: "vehicles",
       fromColumns: ["vehicle_id"],
-      toTable: "vehicles",
       toColumns: ["vehicle_id"],
     },
   },
@@ -53238,9 +53235,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "vehicles",
+      table: "vehicles",
       fromColumns: ["vehicle_id"],
-      toTable: "policies",
       toColumns: ["policy_id"],
     },
   },
@@ -53254,9 +53250,8 @@ export const initialRelations: Relation[] = [
     status: "confirmed",
     cardinality: "1:N",
     sourceMapping: {
-      fromTable: "vehicles",
+      table: "vehicles",
       fromColumns: ["vehicle_id"],
-      toTable: "vehicles",
       toColumns: ["vehicle_id"],
     },
   },
@@ -53278,19 +53273,68 @@ function seedConfirmedMappingSample(entities: Entity[], tableName: string, fract
   for (const column of table.columns) {
     if (confirmedColumns.size >= target) break;
     const hasMapper = entities.some((entity) =>
-      entity.properties.some(
-        (property) =>
-          property.mapping?.table === tableName && property.mapping.column === column.name,
+      entity.properties.some((property) =>
+        property.mappings.some((m) => m.table === tableName && m.column === column.name),
       ),
     );
     if (hasMapper) confirmedColumns.add(column.name);
   }
   entities.forEach((entity) => {
     entity.properties.forEach((property) => {
-      if (property.mapping?.table === tableName && confirmedColumns.has(property.mapping.column)) {
-        property.mapping.status = "mapped";
-      }
+      property.mappings.forEach((m) => {
+        if (m.table === tableName && confirmedColumns.has(m.column)) m.status = "mapped";
+      });
     });
+  });
+}
+
+/**
+ * The seed data predates the two-axis review model and still stores "warning" / "error" as a
+ * status. Fold those into the model: the stored status is only ever "suggested" / "confirmed" (the
+ * review decision), and a Warning / Error is carried by its reason (the issue) — see
+ * `propertyIssue` / `entityIssue` / `relationIssue`.
+ */
+function normalizeReviewModel(fixture: { entities: Entity[]; relations: Relation[] }) {
+  const fold = (item: {
+    status: ReviewStatus;
+    warningReason?: string | undefined;
+    errorReason?: string | undefined;
+  }) => {
+    if (item.status === "warning") {
+      item.warningReason ??= "Needs a closer look before it's confirmed.";
+      item.status = "suggested";
+    } else if (item.status === "error") {
+      item.errorReason ??= "Must be fixed before it can be confirmed.";
+      item.status = "suggested";
+    }
+  };
+  fixture.entities.forEach((entity) => {
+    fold(entity);
+    entity.properties.forEach(fold);
+  });
+  fixture.relations.forEach(fold);
+  return fixture;
+}
+
+/**
+ * Real ontologies find an Entity Type in several datasets: wherever its own key column reappears
+ * (e.g. `claim_id` in claims, claim_payments and claim_reserves), each row there is about the same
+ * instance. The seed only knows one dataset per Identifier, so suggest the others — up to three
+ * more, as suggested mappings for a person to review.
+ */
+function seedIdentifierDatasets(entities: Entity[]) {
+  entities.forEach((entity) => {
+    const identifier = entity.properties.find(isIdentifierProperty);
+    const first = identifier?.mappings[0];
+    // Only the Entity Type's own key (Claim → claim_id), not another one's it happens to carry.
+    const ownKey = `${entity.name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase()}_id`;
+    if (!identifier || !first || first.column !== ownKey) return;
+    tables
+      .filter((t) => t.name !== first.table && t.columns.some((c) => c.name === first.column))
+      .slice(0, 3)
+      .forEach((t) => {
+        identifier.mappings.push({ table: t.name, column: first.column, status: "suggested" });
+      });
   });
 }
 
@@ -53299,14 +53343,38 @@ export function createDemoFixture(scenario: DemoScenario): {
   entities: Entity[];
   relations: Relation[];
 } {
-  const entities = initialEntities.map((entity) => ({
+  const entities: Entity[] = initialEntities.map((entity) => ({
     ...entity,
-    properties: entity.properties.map((property) => ({
+    properties: entity.properties.map(({ mapping, ...property }) => ({
       ...property,
-      mapping: property.mapping ? { ...property.mapping } : null,
+      mappings: mapping ? [{ ...mapping }] : [],
     })),
   }));
-  const relations = initialRelations.map((relation) => ({ ...relation }));
+  seedIdentifierDatasets(entities);
+  // A seed Relation's key columns become Identifier mappings in that dataset (suggested), so the
+  // Relation itself keeps just the dataset and its keys follow the Identifiers from then on.
+  const relations: Relation[] = initialRelations.map(({ sourceMapping, joins, ...relation }) => {
+    const seedJoins = joins?.length ? joins : sourceMapping ? [sourceMapping] : [];
+    seedJoins.forEach((join) => {
+      (
+        [
+          [relation.from, join.fromColumns],
+          [relation.to, join.toColumns],
+        ] as const
+      ).forEach(([entityId, columns]) => {
+        const identifier = entities
+          .find((e) => e.id === entityId)
+          ?.properties.find(isIdentifierProperty);
+        columns.forEach((column) => {
+          if (!identifier) return;
+          if (identifier.mappings.some((m) => m.table === join.table && m.column === column))
+            return;
+          identifier.mappings.push({ table: join.table, column, status: "suggested" });
+        });
+      });
+    });
+    return { ...relation, datasets: Array.from(new Set(seedJoins.map((j) => j.table))) };
+  });
 
   if (scenario === "fresh") {
     entities.forEach((entity) => {
@@ -53317,7 +53385,7 @@ export function createDemoFixture(scenario: DemoScenario): {
         property.status = "suggested";
         delete property.warningReason;
         delete property.errorReason;
-        if (property.mapping) property.mapping.status = "suggested";
+        property.mappings.forEach((m) => (m.status = "suggested"));
       });
     });
     relations.forEach((relation) => {
@@ -53336,33 +53404,31 @@ export function createDemoFixture(scenario: DemoScenario): {
     const shipment = entities.find((entity) => entity.id === "e_shipment");
     const shipmentId = shipment?.properties.find((property) => property.id === "p_ship_id");
     if (shipmentId) {
-      shipmentId.mapping = { table: "orders", column: "order_id", status: "suggested" };
+      shipmentId.mappings = [{ table: "orders", column: "order_id", status: "suggested" }];
     }
     const productDetails = entities.find((entity) => entity.id === "e_product_details");
     const productDetailsId = productDetails?.properties.find(
       (property) => property.id === "p_pd_id",
     );
     if (productDetailsId) {
-      productDetailsId.mapping = {
-        table: "product_details",
-        column: "sku",
-        status: "suggested",
-      };
+      productDetailsId.mappings = [
+        { table: "product_details", column: "sku", status: "suggested" },
+      ];
     }
-    return { entities, relations };
+    return normalizeReviewModel({ entities, relations });
   }
 
   // In Progress: mappings on already-reviewed objects are applied, while pending objects retain
   // Suggested Mappings and null remains a deliberate no-suggestion state.
   entities.forEach((entity) =>
     entity.properties.forEach((property) => {
-      if (property.mapping) {
-        property.mapping.status =
+      property.mappings.forEach((m) => {
+        m.status =
           entity.status === "confirmed" && property.status === "confirmed" ? "mapped" : "suggested";
-      }
+      });
     }),
   );
-  return { entities, relations };
+  return normalizeReviewModel({ entities, relations });
 }
 
 /** Whether a Property gets the key-icon Identifier treatment — true for an explicit
@@ -53375,6 +53441,25 @@ export function isIdentifierProperty(property: { name: string; isIdentifier?: bo
   return property.isIdentifier === true || property.name.trim().toLowerCase() === "id";
 }
 
+/** An Entity Type's Identifier — there is one per Entity Type. */
+export function identifierOf(entity: Entity): Property | undefined {
+  return entity.properties.find(isIdentifierProperty);
+}
+
+/** One dataset an Entity Type's instances come from: the Identifier's column(s) in it — two or
+ * more columns form that dataset's composite identifier. */
+export type EntityDataset = { table: string; columns: ColumnRef[] };
+
+/** The Entity Type's own mapping: its Identifier's mappings, grouped by dataset (in mapping
+ * order). An Entity Type has no mapping of its own besides this. */
+export function entityDatasets(entity: Entity): EntityDataset[] {
+  const byTable = new Map<string, ColumnRef[]>();
+  identifierOf(entity)?.mappings.forEach((m) => {
+    byTable.set(m.table, [...(byTable.get(m.table) ?? []), m]);
+  });
+  return Array.from(byTable, ([table, columns]) => ({ table, columns }));
+}
+
 export const IDENTIFIER_UNMAPPED_ERROR_REASON = "Identifier must be mapped to a source column.";
 export const MISSING_IDENTIFIER_ERROR_REASON = "Entity Type requires an Identifier.";
 /** The Entity-level aggregation of `IDENTIFIER_UNMAPPED_ERROR_REASON` — same underlying issue,
@@ -53384,22 +53469,45 @@ export const MISSING_IDENTIFIER_ERROR_REASON = "Entity Type requires an Identifi
 export const ENTITY_UNMAPPED_IDENTIFIER_REASON =
   "This Entity Type has an Identifier property that isn't mapped to a source column yet.";
 
-/** A Property's true review status for display and confirmation — the stored `status` field,
- * except for the one Error case this app ever computes automatically rather than hand-sets: an
- * Identifier property (see `isIdentifierProperty`) with no active column mapping. Low confidence
- * alone is never an Error, and every other status (including "warning") is exactly whatever is
- * stored — this never invents a status or silently clears one that isn't the Identifier case. */
+/*
+ * The review model has two independent axes per item:
+ *  - Review — "suggested" | "confirmed": has a person accepted it yet? Stored in `status`. A
+ *    suggested item shows its confidence score; a confirmed one doesn't.
+ *  - Issue — "error" | "warning" | null: Error is never acceptable (blocks confirming), Warning
+ *    is something that should be fixed. Carried by `errorReason` / `warningReason`, plus the few
+ *    Errors computed live (an Identifier without a mapping, an Entity Type without an Identifier).
+ * The status a badge shows is the issue when there is one (Error > Warning), else the review.
+ *
+ * Roll-up: an Entity Type is confirmed exactly when all its Properties are, and shows the worst
+ * issue among itself and its Properties. A Relation can only be confirmed once every Entity Type
+ * it connects is confirmed and none has an Error. Mappings are reviewed on the column side only
+ * (`mappingStatus`); they don't affect any of this.
+ */
+export type Review = "suggested" | "confirmed";
+export type Issue = "error" | "warning" | null;
+
+const reviewOf = (status: ReviewStatus): Review =>
+  status === "confirmed" ? "confirmed" : "suggested";
+
+export function propertyReview(property: Property): Review {
+  return reviewOf(property.status);
+}
+export function propertyIssue(property: Property): Issue {
+  if (isIdentifierProperty(property) && property.mappings.length === 0) return "error";
+  if (property.errorReason) return "error";
+  if (property.warningReason) return "warning";
+  return null;
+}
+/** What a Property's badge shows: its issue (Error > Warning), else its review. */
 export function propertyStatus(property: Property): ReviewStatus {
-  if (isIdentifierProperty(property) && property.mapping === null) return "error";
-  return property.status;
+  return propertyIssue(property) ?? propertyReview(property);
 }
 
 export type PropertyStatusCounts = Record<ReviewStatus, number>;
 const propertyStatusCountsCache = new WeakMap<Property[], PropertyStatusCounts>();
 
-/** One status pass per immutable Property-array snapshot, shared by every node ring, tooltip, and
- * semantic-zoom summary. Large Entity Types used to scan the same 150+ Properties four separate
- * times every time hover/selection caused the Overview to render. */
+/** One status pass per immutable Property-array snapshot, shared by every node, tooltip, and
+ * semantic-zoom summary. */
 export function propertyStatusCounts(properties: Property[]): PropertyStatusCounts {
   const cached = propertyStatusCountsCache.get(properties);
   if (cached) return cached;
@@ -53411,108 +53519,122 @@ export function propertyStatusCounts(properties: Property[]): PropertyStatusCoun
   return counts;
 }
 
-/** The explanation shown alongside `propertyStatus`'s Error — the fixed Identifier-mapping
- * sentence when that's why it's Error, otherwise whatever `errorReason` is stored on the property
- * itself (which only ever matters while `status` is independently "error" for some other reason). */
+/** Why a Property has its Error (the fixed Identifier sentence, or its own reason). */
 export function propertyErrorReason(property: Property): string | undefined {
-  if (isIdentifierProperty(property) && property.mapping === null) {
+  if (isIdentifierProperty(property) && property.mappings.length === 0) {
     return IDENTIFIER_UNMAPPED_ERROR_REASON;
   }
   return property.errorReason;
 }
 
-/** Effective issue indicator for an Entity Type. It combines only:
- *  - direct Entity issues (including the Entity-level missing-Identifier invariant), and
- *  - parent-impacting descendant issues (an Identifier Property without a mapping).
- * Ordinary Property warnings/errors are local and never participate here. Confidence is an
- * entirely separate value and is never read by this function. */
-export function entityStatus(entity: Entity): ReviewStatus {
-  if (!entity.properties.some(isIdentifierProperty)) return "error";
-  if (
-    entity.properties.some(
-      (property) => isIdentifierProperty(property) && property.mapping === null,
-    )
-  ) {
-    return "error";
-  }
-  return entity.status;
+/** An Entity Type is confirmed exactly when every one of its Properties is (one with no
+ * Properties yet keeps its own stored review). */
+export function entityReview(entity: Entity): Review {
+  if (entity.properties.length === 0) return reviewOf(entity.status);
+  return entity.properties.every((p) => propertyReview(p) === "confirmed")
+    ? "confirmed"
+    : "suggested";
 }
-
-/** The displayed Entity indicator uses the same deliberately narrow aggregation as entityStatus.
- * It does not roll up ordinary descendant issues. */
+/** The worst issue among the Entity Type itself and its Properties. */
+export function entityIssue(entity: Entity): Issue {
+  if (!entity.properties.some(isIdentifierProperty) || entity.errorReason) return "error";
+  const issues = entity.properties.map(propertyIssue);
+  if (issues.includes("error")) return "error";
+  if (entity.warningReason || issues.includes("warning")) return "warning";
+  return null;
+}
+/** What an Entity Type's badge shows: its issue (Error > Warning), else its review. */
+export function entityStatus(entity: Entity): ReviewStatus {
+  return entityIssue(entity) ?? entityReview(entity);
+}
 export function entityDisplayStatus(entity: Entity): ReviewStatus {
   return entityStatus(entity);
 }
 
-/** Explanation for the Entity's aggregated indicator. The Identifier Property retains its own
- * specific error; this text only explains why that descendant issue affects the parent Entity. */
+/** Why an Entity Type has its Error: its own, else the Properties' it rolls up. */
 export function entityErrorReason(entity: Entity): string | undefined {
-  if (!entity.properties.some(isIdentifierProperty)) {
-    return MISSING_IDENTIFIER_ERROR_REASON;
-  }
-  if (
-    entity.properties.some(
-      (property) => isIdentifierProperty(property) && property.mapping === null,
-    )
-  ) {
+  if (!entity.properties.some(isIdentifierProperty)) return MISSING_IDENTIFIER_ERROR_REASON;
+  if (entity.errorReason) return entity.errorReason;
+  if (entity.properties.some((p) => isIdentifierProperty(p) && p.mappings.length === 0)) {
     return ENTITY_UNMAPPED_IDENTIFIER_REASON;
   }
-  return entity.errorReason;
+  const count = entity.properties.filter((p) => propertyIssue(p) === "error").length;
+  return count > 0
+    ? `${count} ${count === 1 ? "property has an error" : "properties have errors"}.`
+    : undefined;
+}
+/** Why an Entity Type has its Warning: its own, else the Properties' it rolls up. */
+export function entityWarningReason(entity: Entity): string | undefined {
+  if (entity.warningReason) return entity.warningReason;
+  const count = entity.properties.filter((p) => propertyIssue(p) === "warning").length;
+  return count > 0
+    ? `${count} ${count === 1 ? "property has a warning" : "properties have warnings"}.`
+    : undefined;
 }
 
-/** Whichever connected Entity Type is CURRENTLY blocking this Relation from being confirmed —
- * `null` if neither side has an Error right now. Shared by `buildConfirmPlan` (which uses it to
- * decide whether a Relation belongs in the Errors list at all) and the Issues popover / Editing
- * Mode's own Relation Inspector (which need to show the SAME fact, just in a different place) —
- * extracted here once so neither ever drifts from the other. Purely read-derived, same as
- * `entityStatus` itself; never writes anything. */
+/** An Error is never acceptable, so it blocks confirming (confirming an Entity Type confirms its
+ * Properties too, so their Errors count — and they already roll up into `entityIssue`). */
+export function canConfirmEntity(entity: Entity): boolean {
+  return entityIssue(entity) !== "error";
+}
+export function canConfirmProperty(property: Property): boolean {
+  return propertyIssue(property) !== "error";
+}
+
+/** Whichever connected Entity Type is CURRENTLY blocking this Relation from being confirmed — a
+ * Relation needs every Entity Type it connects confirmed, with no Error. `null` when none is. */
 export function relationBlockingEntity(relation: Relation, entities: Entity[]): Entity | null {
-  const fromEntity = entities.find((e) => e.id === relation.from);
-  const toEntity = entities.find((e) => e.id === relation.to);
-  if (fromEntity && entityStatus(fromEntity) === "error") return fromEntity;
-  if (toEntity && entityStatus(toEntity) === "error") return toEntity;
+  for (const id of [relation.from, relation.to]) {
+    const entity = entities.find((e) => e.id === id);
+    if (entity && (entityIssue(entity) === "error" || entityReview(entity) !== "confirmed")) {
+      return entity;
+    }
+  }
   return null;
 }
 
-/** A Relation's true review status — "error" whenever it's blocked by a connected Entity Type's
- * own Error (see `relationBlockingEntity`), even though the Relation's own stored `status` might
- * still be "suggested"/"confirmed"/"warning"; otherwise exactly whatever `status` is stored.
- * Mirrors `entityStatus`'s own "purely inherited, recomputed live" shape. */
+export function relationReview(relation: Relation): Review {
+  return reviewOf(relation.status);
+}
+/** A Relation's own issue; an Entity Type's Error makes it an Error too (it can't be confirmed). */
+export function relationIssue(relation: Relation, entities: Entity[]): Issue {
+  if (relation.errorReason || brokenRelationDataset(relation, entities)) return "error";
+  const ends = [relation.from, relation.to].map((id) => entities.find((e) => e.id === id));
+  if (ends.some((e) => e && entityIssue(e) === "error")) return "error";
+  if (relation.warningReason) return "warning";
+  return null;
+}
+/** What a Relation's badge shows: its issue (Error > Warning), else its review. */
 export function relationStatus(relation: Relation, entities: Entity[]): ReviewStatus {
-  if (relation.status === "error") return "error";
-  return relationBlockingEntity(relation, entities) ? "error" : relation.status;
+  return relationIssue(relation, entities) ?? relationReview(relation);
+}
+export function canConfirmRelation(relation: Relation, entities: Entity[]): boolean {
+  return (
+    !relation.errorReason &&
+    !brokenRelationDataset(relation, entities) &&
+    !relationBlockingEntity(relation, entities)
+  );
 }
 
-/** The explanation shown alongside `relationStatus`'s Error — the Relation's own stored
- * `errorReason` when it's independently Error, otherwise the same "resolve the connected Entity
- * Type's Error first" sentence `buildConfirmPlan` already builds for this exact case. */
+/** Why a Relation has its Error: its own, else the connected Entity Type's. */
 export function relationErrorReason(relation: Relation, entities: Entity[]): string | undefined {
-  if (relation.status === "error") return relation.errorReason;
-  const blockingEntity = relationBlockingEntity(relation, entities);
-  if (blockingEntity) {
-    return `Resolve errors in connected Entity Types before confirming this Relation. (${blockingEntity.name || "Untitled entity"} has an unresolved error.)`;
+  if (relation.errorReason) return relation.errorReason;
+  const broken = brokenRelationDataset(relation, entities);
+  if (broken) {
+    const side = broken.fromColumns.length === 0 ? relation.from : relation.to;
+    const name = entities.find((e) => e.id === side)?.name || "An Entity Type";
+    return `${name}'s identifier isn't mapped in ${broken.table}, so this relation can't link records there.`;
   }
-  return relation.errorReason;
+  const blocked = [relation.from, relation.to]
+    .map((id) => entities.find((e) => e.id === id))
+    .find((e) => e && entityIssue(e) === "error");
+  if (blocked) {
+    return `Resolve errors in connected Entity Types before confirming this Relation. (${blocked.name || "Untitled entity"} has an unresolved error.)`;
+  }
+  return undefined;
 }
 
 export const tableByName = (name: string) => tableIndex.get(name);
-
-/** Real example values for one column, drawn straight from the table's own mock `rows` (never a
- * separately-authored sample list, so it can't drift from the data actually shown elsewhere) —
- * deduplicated, blanks dropped, in first-seen order. Empty when the table has no sample rows or
- * every value for this column happens to be blank. */
-export function columnSampleValues(table: TableSchema, columnName: string): string[] {
-  const seen = new Set<string>();
-  const values: string[] = [];
-  table.rows.forEach((row) => {
-    const v = row[columnName];
-    if (v && !seen.has(v)) {
-      seen.add(v);
-      values.push(v);
-    }
-  });
-  return values;
-}
 
 /** How many of an entity's own properties have a CONFIRMED ("mapped") source-column connection —
  * never just "has a connector at all" (see `ColumnRef`'s own doc comment: a Suggested Mapping
@@ -53522,9 +53644,8 @@ export function columnSampleValues(table: TableSchema, columnName: string): stri
  * exact same data. */
 export function entityMappingCompleteness(entity: Entity): { mapped: number; total: number } {
   return {
-    mapped: entity.properties.filter(
-      (p) => p.mapping !== null && mappingStatus(p.mapping) === "mapped",
-    ).length,
+    mapped: entity.properties.filter((p) => p.mappings.some((m) => mappingStatus(m) === "mapped"))
+      .length,
     total: entity.properties.length,
   };
 }
@@ -53560,23 +53681,24 @@ function mappingLookupFor(entities: Entity[]): MappingLookup {
   const lookup: MappingLookup = new Map();
   entities.forEach((entity) => {
     entity.properties.forEach((property) => {
-      if (!property.mapping) return;
-      let byColumn = lookup.get(property.mapping.table);
-      if (!byColumn) {
-        byColumn = new Map();
-        lookup.set(property.mapping.table, byColumn);
-      }
-      const mappedBy = byColumn.get(property.mapping.column) ?? [];
-      mappedBy.push({
-        entityId: entity.id,
-        entityName: entity.name,
-        propertyId: property.id,
-        propertyName: property.name,
-        status: mappingStatus(property.mapping),
-        confidence: property.confidence,
-        reviewStatus: property.status,
+      property.mappings.forEach((mapping) => {
+        let byColumn = lookup.get(mapping.table);
+        if (!byColumn) {
+          byColumn = new Map();
+          lookup.set(mapping.table, byColumn);
+        }
+        const mappedBy = byColumn.get(mapping.column) ?? [];
+        mappedBy.push({
+          entityId: entity.id,
+          entityName: entity.name,
+          propertyId: property.id,
+          propertyName: property.name,
+          status: mappingStatus(mapping),
+          confidence: property.confidence,
+          reviewStatus: property.status,
+        });
+        byColumn.set(mapping.column, mappedBy);
       });
-      byColumn.set(property.mapping.column, mappedBy);
     });
   });
   mappingLookupCache.set(entities, lookup);
@@ -53645,9 +53767,7 @@ export function entitiesUsingTable(tableName: string, entities: Entity[]): Entit
 /** Every distinct table this entity draws at least one property from — the mirror of
  * `entitiesUsingTable` above, from the entity's own side of the same mapping. */
 export function tablesUsedByEntity(entity: Entity): string[] {
-  return Array.from(
-    new Set(entity.properties.filter((p) => p.mapping).map((p) => p.mapping!.table)),
-  );
+  return Array.from(new Set(entity.properties.flatMap((p) => p.mappings.map((m) => m.table))));
 }
 
 // --- Confidence reasoning (per object-kind, grounded in live data) -----------------------------
@@ -53686,11 +53806,12 @@ export type ReasoningContent =
 export function entityReasoningContent(entity: Entity): ReasoningContent {
   const byTable = new Map<string, { columns: string[]; maxConfidence: number }>();
   entity.properties.forEach((p) => {
-    if (!p.mapping) return;
-    const row = byTable.get(p.mapping.table) ?? { columns: [], maxConfidence: 0 };
-    row.columns.push(p.mapping.column);
-    row.maxConfidence = Math.max(row.maxConfidence, p.confidence);
-    byTable.set(p.mapping.table, row);
+    p.mappings.forEach((m) => {
+      const row = byTable.get(m.table) ?? { columns: [], maxConfidence: 0 };
+      row.columns.push(m.column);
+      row.maxConfidence = Math.max(row.maxConfidence, p.confidence);
+      byTable.set(m.table, row);
+    });
   });
   const topDatasets = Array.from(byTable.entries())
     .map(([table, row]) => ({
@@ -53703,7 +53824,7 @@ export function entityReasoningContent(entity: Entity): ReasoningContent {
 
   const primaryTable = tableByName(entity.table);
   const strongMatches = entity.properties.filter(
-    (p) => p.mapping?.table === entity.table && p.confidence >= 0.85,
+    (p) => p.mappings.some((m) => m.table === entity.table) && p.confidence >= 0.85,
   ).length;
   const reasoning = [
     primaryTable
@@ -53732,12 +53853,10 @@ export function propertyReasoningContent(property: Property, entities: Entity[])
   if (name) {
     entities.forEach((e) => {
       e.properties.forEach((p) => {
-        if (!p.mapping || p.name.trim().toLowerCase() !== name) return;
-        matches.push({
-          table: p.mapping.table,
-          column: p.mapping.column,
-          score: Math.round(p.confidence * 100),
-        });
+        if (p.name.trim().toLowerCase() !== name) return;
+        p.mappings.forEach((m) =>
+          matches.push({ table: m.table, column: m.column, score: Math.round(p.confidence * 100) }),
+        );
       });
     });
   }
@@ -53765,8 +53884,8 @@ export function relationReasoningContent(relation: Relation, entities: Entity[])
 
   const checkForeignKey = (owner: Entity | undefined, other: Entity | undefined) => {
     if (!owner || !other) return;
-    const identifier = owner.properties.find((p) => isIdentifierProperty(p) && p.mapping);
-    const fkColumn = identifier?.mapping?.column;
+    const identifier = owner.properties.find((p) => isIdentifierProperty(p) && p.mappings[0]);
+    const fkColumn = identifier?.mappings[0]?.column;
     if (!fkColumn) return;
     const otherTable = tableByName(other.table);
     if (otherTable?.columns.some((c) => c.name === fkColumn)) {
@@ -53794,8 +53913,10 @@ export function relationReasoningContent(relation: Relation, entities: Entity[])
 export function mappingReasoningContent(
   entity: Entity,
   property: Property,
+  // Which of the Property's mappings to explain (its first, by default).
+  target: ColumnRef | undefined = property.mappings[0],
 ): ReasoningContent | null {
-  if (!property.mapping) return null;
+  if (!target) return null;
   const pct = Math.round(property.confidence * 100);
   const strength =
     property.confidence >= 0.95
@@ -53807,13 +53928,13 @@ export function mappingReasoningContent(
           : "a low-confidence match";
   const matchSummary =
     `Based on column name, appears to be ${strength} to ${entity.name} entity. ` +
-    `${entity.name} → ${property.name} is the closest match to column ${property.mapping.column} with ${pct}% confidence.`;
+    `${entity.name} → ${property.name} is the closest match to column ${target.column} with ${pct}% confidence.`;
   return {
     kind: "mapping",
     matchSummary,
     strength,
     column: {
-      name: property.mapping.column,
+      name: target.column,
       entityMatchPct: pct,
       entityType: entity.name,
       property: property.name,
@@ -53892,7 +54013,7 @@ export function isTableInScope(
 
 /** NOT a Table's own Confidence — a Table doesn't have one (see `TableSchema`'s own doc comment).
  * This is the highest Mapping Confidence among whatever Properties currently map into any of the
- * table's columns (a Mapping's confidence IS a Property's `confidence` — see `Property.mapping`),
+ * table's columns (a Mapping's confidence IS a Property's `confidence` — see `Property.mappings`),
  * used ONLY to sort the Data Tables list by "how relevant is this table to the active review right
  * now" — never displayed as a labeled value. `undefined` (sorts as "no value") when nothing maps
  * into the table yet, same as every other Confidence display in the app. */
@@ -54055,8 +54176,7 @@ export type ConfirmIssue = {
 export type ConfirmPlan = {
   errors: ConfirmIssue[];
   warnings: ConfirmIssue[];
-  /** Everything not currently blocked by an Error — safe to flip to "confirmed" in one atomic
-   * pass. Includes plain "suggested" items and "warning" items alike (a Warning never blocks). */
+  /** Suggested items that can be confirmed right now (no Error; a Warning never blocks). */
   eligible: {
     entityIds: string[];
     propertyIds: { entityId: string; propertyId: string }[];
@@ -54064,17 +54184,13 @@ export type ConfirmPlan = {
   };
 };
 
-/** Classifies every not-yet-confirmed Entity/Property/Relation as Ready, Warning, or Error ahead
- * of the global Confirm action — see the confirmation-model spec this implements. Blocking is
- * driven exclusively by `propertyStatus`/`entityStatus` being "error" — never by confidence alone
- * — so a low-confidence "suggested" item is Ready and a Warning never blocks; a Property is only
- * ever Error via the Identifier-mapping rule those two functions compute, and an Entity Type only
- * ever Error by inheriting that from one of its own Properties. A Relation is additionally blocked
- * (without ever having its own status rewritten) when either connected Entity Type currently has
- * an Error — that dependency is re-derived here from live `entities`/`relations` on every call, so
- * it always reflects whatever those two Entity Types' status is *right now*. Tables/Columns carry
- * no ReviewStatus of their own (they're tracked separately via mapping completeness) and are
- * outside this plan entirely. */
+/**
+ * Every issue in the ontology (the Header's Warnings / Errors lists — confirmed items included,
+ * since an Error is never acceptable and a Warning should still be fixed), plus what's eligible to
+ * confirm right now: suggested items with no Error (a Warning never blocks), and Relations whose
+ * Entity Types are all confirmed. An Entity Type is listed for its own issues only — the ones it
+ * rolls up from its Properties are listed on those Properties.
+ */
 export function buildConfirmPlan(entities: Entity[], relations: Relation[]): ConfirmPlan {
   const errors: ConfirmIssue[] = [];
   const warnings: ConfirmIssue[] = [];
@@ -54083,77 +54199,78 @@ export function buildConfirmPlan(entities: Entity[], relations: Relation[]): Con
   const relationIds: string[] = [];
 
   entities.forEach((e) => {
-    if (e.status === "confirmed") return;
-    if (entityStatus(e) === "error") {
+    const name = e.name || "Untitled entity";
+    const ownError =
+      !e.properties.some(isIdentifierProperty) ||
+      !!e.errorReason ||
+      e.properties.some((p) => isIdentifierProperty(p) && p.mappings.length === 0);
+    if (ownError) {
       errors.push({
         kind: "error",
         itemKind: "entity",
         id: e.id,
-        name: e.name || "Untitled entity",
+        name,
         reason: entityErrorReason(e) ?? "No error details available.",
       });
-      return;
-    }
-    if (e.status === "warning") {
+    } else if (e.warningReason) {
       warnings.push({
         kind: "warning",
         itemKind: "entity",
         id: e.id,
-        name: e.name || "Untitled entity",
-        reason: e.warningReason ?? "No warning details available.",
+        name,
+        reason: e.warningReason,
       });
     }
-    entityIds.push(e.id);
-  });
+    if (entityReview(e) === "suggested" && canConfirmEntity(e)) entityIds.push(e.id);
 
-  entities.forEach((e) => {
     e.properties.forEach((p) => {
-      if (p.status === "confirmed") return;
-      if (propertyStatus(p) === "error") {
+      const propertyName = `${name} — ${p.name || "Untitled property"}`;
+      const issue = propertyIssue(p);
+      if (issue === "error") {
         errors.push({
           kind: "error",
           itemKind: "property",
           id: p.id,
-          name: `${e.name || "Untitled entity"} — ${p.name || "Untitled property"}`,
+          name: propertyName,
           reason: propertyErrorReason(p) ?? "No error details available.",
         });
-        return;
-      }
-      if (p.status === "warning") {
+      } else if (issue === "warning") {
         warnings.push({
           kind: "warning",
           itemKind: "property",
           id: p.id,
-          name: `${e.name || "Untitled entity"} — ${p.name || "Untitled property"}`,
+          name: propertyName,
           reason: p.warningReason ?? "No warning details available.",
         });
       }
-      propertyIds.push({ entityId: e.id, propertyId: p.id });
+      if (propertyReview(p) === "suggested" && canConfirmProperty(p)) {
+        propertyIds.push({ entityId: e.id, propertyId: p.id });
+      }
     });
   });
 
   relations.forEach((r) => {
-    if (r.status === "confirmed") return;
-    if (r.status === "error" || relationBlockingEntity(r, entities)) {
+    const name = r.name || "Untitled relation";
+    const issue = relationIssue(r, entities);
+    if (issue === "error") {
       errors.push({
         kind: "error",
         itemKind: "relation",
         id: r.id,
-        name: r.name || "Untitled relation",
+        name,
         reason: relationErrorReason(r, entities) ?? "No error details available.",
       });
-      return;
-    }
-    if (r.status === "warning") {
+    } else if (issue === "warning") {
       warnings.push({
         kind: "warning",
         itemKind: "relation",
         id: r.id,
-        name: r.name || "Untitled relation",
+        name,
         reason: r.warningReason ?? "No warning details available.",
       });
     }
-    relationIds.push(r.id);
+    if (relationReview(r) === "suggested" && canConfirmRelation(r, entities))
+      relationIds.push(r.id);
   });
 
   return { errors, warnings, eligible: { entityIds, propertyIds, relationIds } };

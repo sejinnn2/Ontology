@@ -17,16 +17,23 @@ import { parseSuggestionKey, suggestionKey, type SuggestionRef } from "@/lib/app
 import {
   entityDisplayStatus,
   entityErrorReason,
+  entityReview,
+  isColumnInScope,
   isIdentifierProperty,
-  relationJoins,
+  isReviewItemInScope,
+  isTableInScope,
   mappingStatus,
+  propertyReview,
   propertyStatus,
+  relationJoins,
   relationLabel,
+  relationReview,
   relationStatus,
   tableByName,
   tableMappingCompleteness,
   tableMappingStatus,
   tablesUsedByEntity,
+  type ColumnRef,
   type Entity,
   type Property,
   type Relation,
@@ -41,28 +48,34 @@ import {
   RelationConfidenceChip,
 } from "@/components/ontology/ConfidenceChip";
 import { AiReviewBar, type SuggestionScope } from "@/components/ontology/AiReviewBar";
-import { DetailPanel, resolveDetailItem } from "@/components/detail/DetailPanel";
+import { DetailDock, DetailPanel, resolveDetailItem } from "@/components/detail/DetailPanel";
+import { CompletionNoticeSlot } from "@/components/detail/CompletionToast";
 import { SelectionActions } from "@/components/detail/SelectionActions";
 import {
-  EditingCanvasTopBar,
+  CanvasZoomCard,
   isCanvasBackground,
   useEditingCanvas,
 } from "@/components/detail/editing-canvas";
 import { cn } from "@/lib/utils";
-import { canMapPropertyToColumn, tryUpdatePropertyMapping } from "@/lib/mapping-rules";
+import { canMapPropertyToColumn, tryConnectMapping } from "@/lib/mapping-rules";
 import { ColumnSearchList, parseMappingValue } from "@/components/detail/ItemEditorModal";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import searchIcon from "@/assets/icons/magnifying-glass-2-16.svg";
 import chevronDownIcon from "@/assets/icons/chevron-down-16.svg";
 import { ENTITY_PANEL_DND_TYPE, TABLE_PANEL_DND_TYPE } from "@/components/detail/panel-dnd";
 import {
   acceptsPropertyDrop,
   dropPropertiesOn,
+  leftDropTarget,
+  REVEAL_PROPERTIES_EVENT,
   setPropertyDragSource,
   startPropertyDrag,
 } from "@/components/detail/property-move";
 import dotGridIcon from "@/assets/icons/dot-grid-2x3-16.svg";
-import keyIcon from "@/assets/icons/key-2-16.svg";
+import identifierKeyIcon from "@/assets/icons/key-2-identifier-16.svg";
+import relationPlusIcon from "@/assets/icons/relation-plus-20.svg";
+import relationPlusHoverIcon from "@/assets/icons/relation-plus-hover-20.svg";
 import {
   FigmaIcon,
   ListControls,
@@ -102,7 +115,9 @@ const CENTER_H = 56;
 const NODE_W = 280;
 const NODE_H = 56;
 const MORE_H = 28;
-const LINK_GAP = 312; // horizontal room between a related Entity Type and the middle node
+// Horizontal room between a related Entity Type and the middle node: a 180px pill with 60px
+// either side (Figma 328:30072).
+const LINK_GAP = 300;
 
 const CENTER_LEFT = -CENTER_W / 2;
 const CENTER_RIGHT = CENTER_W / 2;
@@ -117,19 +132,28 @@ const GRAPH_MID_X = (ENTITY_X + TABLE_X + NODE_W) / 2;
 // "entity mapping" — and a link between those columns runs under the Relation, parallel to it —
 // the "relation mapping". The related Entity Type below it moves down to make room; nothing else
 // moves.
-const PILL_W = 152;
+const PILL_W = 180;
 const PILL_H = 26;
+const PILL_GAP = (LINK_GAP - PILL_W) / 2;
 // Between the pills of neighbouring Entity Types, and between one Entity Type's own pills.
 const PILL_SLOT = 48;
 const PILL_SLOT_SAME = 34;
 // The placeholder Relation's slot in the pill column (see `relationPlusFor`).
 const GHOST_PILL = "ghost:relation";
-const LADDER_INSET = 12;
+const SLOT_PILL = "slot:relation";
+// Figma 328:20594 ("Select Relation"): the open Relation's two Entity Types sit 300px apart with
+// its pill (180×28) centred between them; under each, its source table cards (270×64, inset 10)
+// 20px below the node and 20px apart; the dashed drop line runs 29px in from the node's left.
+const OPEN_LINK_GAP = 300;
+const OPEN_PILL_W = 180;
+const OPEN_PILL_H = 28;
+const LADDER_INSET = 10;
 const LADDER_GAP = 20;
-const LADDER_HEAD = 31;
+const LADDER_HEAD = 34; // top border + 9px padding + the table row
 const LADDER_ROW = 24;
-const LADDER_FOOT = 7;
-const LADDER_RUNG_GAP = 12;
+const LADDER_FOOT = 6; // 5px padding + bottom border
+const LADDER_RUNG_GAP = 20;
+const LADDER_TRUNK = 29;
 const LADDER_TABLE_W = NODE_W - LADDER_INSET;
 const MAPPING_PREVIEW = 3;
 const BRANCH_STROKE = "#b5b9b8";
@@ -170,9 +194,61 @@ type PropertyMove = {
 };
 const PropertyMoveContext = createContext<PropertyMove | null>(null);
 
+/**
+ * Which items fall inside the AI Review bar's Confidence range and status filter. Out-of-scope
+ * items are dimmed (`opacity-40`), never hidden — the same rule as the Overview (see
+ * `isReviewItemInScope` / `isTableInScope` / `isColumnInScope`).
+ */
+type ReviewScope = {
+  entity: (entity: Entity) => boolean;
+  relation: (relation: Relation) => boolean;
+  property: (property: Property) => boolean;
+  table: (tableName: string) => boolean;
+  column: (tableName: string, columnName: string) => boolean;
+  // A link standing for several mappings: in scope while any of them is (a mapping's scope is its
+  // Property's, as in `isColumnInScope`).
+  mappings: (properties: Property[]) => boolean;
+};
+const ALL_IN_SCOPE: ReviewScope = {
+  entity: () => true,
+  relation: () => true,
+  property: () => true,
+  table: () => true,
+  column: () => true,
+  mappings: () => true,
+};
+const ReviewScopeContext = createContext<ReviewScope>(ALL_IN_SCOPE);
+function useReviewScope(app: OntologyApp): ReviewScope {
+  const { entities, confidenceRange: range, statusFilter } = app;
+  return useMemo(
+    () => ({
+      entity: (e) => isReviewItemInScope(entityReview(e), e.confidence, range, statusFilter),
+      relation: (r) => isReviewItemInScope(relationReview(r), r.confidence, range, statusFilter),
+      property: (p) => isReviewItemInScope(propertyReview(p), p.confidence, range, statusFilter),
+      table: (name) => isTableInScope(name, entities, range, statusFilter),
+      column: (table, column) => isColumnInScope(table, column, entities, range, statusFilter),
+      mappings: (properties) =>
+        properties.length === 0 ||
+        properties.some((p) =>
+          isReviewItemInScope(propertyReview(p), p.confidence, range, statusFilter),
+        ),
+    }),
+    [entities, range, statusFilter],
+  );
+}
+const DIMMED = "opacity-40";
+
 function usePropertyMove(app: OntologyApp): PropertyMove {
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [reveal, setReveal] = useState<PropertyMove["reveal"]>(null);
+  useEffect(() => {
+    const onReveal = (event: Event) => {
+      const { entityId, ids } = (event as CustomEvent<{ entityId: string; ids: string[] }>).detail;
+      setReveal({ entityId, ids, nonce: Date.now() });
+    };
+    window.addEventListener(REVEAL_PROPERTIES_EVENT, onReveal);
+    return () => window.removeEventListener(REVEAL_PROPERTIES_EVENT, onReveal);
+  }, []);
   return {
     dropTargetId,
     reveal,
@@ -200,7 +276,7 @@ function usePropertyMove(app: OntologyApp): PropertyMove {
         onDragEnter: accept,
         onDragOver: accept,
         onDragLeave: (event) => {
-          if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+          if (!leftDropTarget(event)) return;
           setDropTargetId((current) => (current === entityId ? null : current));
         },
         onDrop: (event) => {
@@ -223,8 +299,14 @@ function curve(from: Pt, to: Pt): string {
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
+// A Property's mappings into one dataset (an Identifier can have several there: a composite key).
+const mappingsIn = (property: Property, table: string) =>
+  property.mappings.filter((m) => m.table === table);
+const mapsInto = (property: Property, table: string) =>
+  property.mappings.some((m) => m.table === table);
+
 function entityDetail(entity: Entity) {
-  const tables = new Set(entity.properties.flatMap((p) => (p.mapping ? [p.mapping.table] : [])));
+  const tables = new Set(entity.properties.flatMap((p) => p.mappings.map((m) => m.table)));
   return `${plural(entity.properties.length, "prop", "props")} · ${plural(tables.size, "table", "tables")}`;
 }
 
@@ -267,8 +349,9 @@ export function EditingGraphView({
   onEdit?: (key: string) => void;
   // A property panel's + (the create modal is owned by the Entity mode around this view too).
   onCreateProperty?: (entityId: string) => void;
-  // A related Entity Type's + — asks for the new Relation (`from` → `to`) in the create modal.
-  onCreateRelation?: (from: string, to: string) => void;
+  // Asks for a new Relation (`from` → `to`) in the create modal; `done` hears whether one was
+  // made (Create) or not (Cancel).
+  onCreateRelation?: (from: string, to: string, done?: (created: boolean) => void) => void;
   // A Split made from the selection bar: the new Entity Type (for the workspace to point out).
   onSplit?: (newEntityId: string) => void;
 }) {
@@ -407,18 +490,29 @@ export function EditingGraphView({
     app.clearSuggestionSelection();
   }, [app]);
 
-  // Dragging from the side panels (see `panel-dnd`): an Entity Type dropped on the canvas gets an
-  // unnamed Relation to the selected one, a Data Table is added to its column — both listed first
-  // so they land in view. While dragging, a dashed slot marks where it'll go. Reset per Entity.
+  // Dragging from the side panels (see `panel-dnd`). An Entity Type: the related Entity Types'
+  // column lights up as the drop zone, and a dashed slot follows the pointer through it (the rows
+  // make room); dropping opens the create-Relation modal (it → the selected one), the slot held
+  // there meanwhile — Create puts the Entity Type exactly where it was dropped, Cancel leaves
+  // nothing. A Data Table: added to its column, listed first. Reset per Entity.
   const [dragKind, setDragKind] = useState<"entity" | "table" | null>(null);
-  const [droppedEntityIds, setDroppedEntityIds] = useState<string[]>([]);
+  // Where the dragged Entity Type would land: its index among the shown related Entity Types.
+  const [entitySlot, setEntitySlot] = useState<number | null>(null);
+  // A drop waiting on the create-Relation modal.
+  const [pendingDrop, setPendingDrop] = useState<{ entityId: string; index: number } | null>(null);
+  // The related Entity Types' order this session, once a drop has placed one (else the data's).
+  const [customOrder, setCustomOrder] = useState<string[] | null>(null);
   const [addedTableNames, setAddedTableNames] = useState<string[]>([]);
   useEffect(() => {
-    setDroppedEntityIds([]);
+    setCustomOrder(null);
+    setPendingDrop(null);
     setAddedTableNames([]);
   }, [focusEntity.id]);
   useEffect(() => {
-    const end = () => setDragKind(null);
+    const end = () => {
+      setDragKind(null);
+      setEntitySlot(null);
+    };
     window.addEventListener("dragend", end);
     window.addEventListener("drop", end);
     return () => {
@@ -435,18 +529,32 @@ export function EditingGraphView({
   const handlePanelDrop = (event: React.DragEvent) => {
     const entityId = event.dataTransfer.getData(ENTITY_PANEL_DND_TYPE);
     const tableName = event.dataTransfer.getData(TABLE_PANEL_DND_TYPE);
+    const index = entitySlot;
     setDragKind(null);
+    setEntitySlot(null);
     if (entityId) {
+      // Only the related Entity Types' column takes it.
+      if (index === null) return;
       event.preventDefault();
-      // Always a new unnamed Relation (another one for an Entity Type that's
-      // already related; a self Relation for the selected one itself).
-      app.createPlaceholderRelation(focusEntity.id, entityId);
-      setDroppedEntityIds((ids) => [entityId, ...ids.filter((id) => id !== entityId)]);
-      // Make room for it: a related Entity Type's open properties show that one alone.
-      setOpen((current) => {
-        const next = new Set(current);
-        [...next].forEach((k) => k.startsWith("props:") && k !== "props:center" && next.delete(k));
-        return next;
+      if (!onCreateRelation) {
+        app.createPlaceholderRelation(focusEntity.id, entityId);
+        return;
+      }
+      // Where it lands: before whichever shown Entity Type the slot was in front of.
+      const shownIds = leftAll.map((cp) => cp.entity.id).filter((id) => id !== entityId);
+      const allIds = counterparts.map((cp) => cp.entity.id);
+      setPendingDrop({ entityId, index });
+      onCreateRelation(entityId, focusEntity.id, (created) => {
+        setPendingDrop(null);
+        if (!created) return;
+        setCustomOrder((prev) => {
+          const order = (prev ?? allIds).filter((id) => id !== entityId);
+          const before = shownIds[index];
+          const last = shownIds[shownIds.length - 1];
+          const at = before ? order.indexOf(before) : last ? order.indexOf(last) + 1 : 0;
+          order.splice(at < 0 ? order.length : at, 0, entityId);
+          return order;
+        });
       });
     } else if (tableName) {
       event.preventDefault();
@@ -470,12 +578,13 @@ export function EditingGraphView({
       byId.set(entity.id, entry);
     });
     const list = [...byId.values()];
+    if (!customOrder) return list;
     const rank = (id: string) => {
-      const i = droppedEntityIds.indexOf(id);
-      return i === -1 ? droppedEntityIds.length : i;
+      const i = customOrder.indexOf(id);
+      return i === -1 ? customOrder.length : i;
     };
     return list.sort((a, b) => rank(a.entity.id) - rank(b.entity.id));
-  }, [app.relations, app.entities, focusEntity.id, droppedEntityIds]);
+  }, [app.relations, app.entities, focusEntity.id, customOrder]);
 
   const tables = useMemo(() => {
     const used = tablesUsedByEntity(focusEntity);
@@ -485,7 +594,7 @@ export function EditingGraphView({
       .filter((table): table is TableSchema => !!table)
       .map((table) => ({
         table,
-        mapped: focusEntity.properties.filter((p) => p.mapping?.table === table.name),
+        mapped: focusEntity.properties.filter((p) => mapsInto(p, table.name)),
       }))
       .sort((a, b) => {
         // Tables added from the panel stay on top (most recent first); the rest by mappings.
@@ -518,22 +627,23 @@ export function EditingGraphView({
       const { relation } = hit;
       const nameOf = (id: string) => app.entities.find((e) => e.id === id)?.name || "Untitled";
       const leftIsFrom = relation.from === cp.entity.id;
-      const mappings = relationJoins(relation).map((join, i) => {
+      // Each join is ONE table: both sides' columns come from it.
+      const mappings = relationJoins(relation, app.entities).map((join, i) => {
         const from = {
-          table: join.fromTable,
+          table: join.table,
           columns: join.fromColumns,
           entity: nameOf(relation.from),
         };
-        const to = { table: join.toTable, columns: join.toColumns, entity: nameOf(relation.to) };
+        const to = { table: join.table, columns: join.toColumns, entity: nameOf(relation.to) };
         const [left, right] = leftIsFrom ? [from, to] : [to, from];
-        return { key: `${join.fromTable}:${join.toTable}:${i}`, left, right };
+        return { key: `${join.table}:${i}`, left, right };
       });
       return {
         relation,
         entityId: cp.entity.id,
         pillIndex: cp.relations.indexOf(hit),
         pillCount: cp.relations.length,
-        suggested: relationStatus(relation, app.entities) === "suggested",
+        suggested: relationReview(relation) === "suggested",
         mappings,
         shown: allMappings ? mappings : mappings.slice(0, MAPPING_PREVIEW),
         hidden: allMappings ? 0 : Math.max(0, mappings.length - MAPPING_PREVIEW),
@@ -547,10 +657,12 @@ export function EditingGraphView({
   // Relation pills get their own column (Figma 508:37232): 80px past the Entity Types, stacked in
   // Entity Type order around the middle node's height — tighter than the Entity Types themselves —
   // so every entity → pill and pill → middle curve fans in without crossing another.
-  const pillX = ENTITY_X + NODE_W + 80;
+  const pillX = ENTITY_X + NODE_W + PILL_GAP;
 
-  const leftEntries = [
-    ...(dragKind === "entity" ? [{ kind: "ghost" as const, key: "ghost:left", h: NODE_H }] : []),
+  // The drop slot among the shown related Entity Types: following the pointer while dragging, then
+  // held where it was dropped while the create modal is open.
+  const slotIndex = dragKind === "entity" ? entitySlot : (pendingDrop?.index ?? null);
+  const entityEntries = [
     ...leftAll.map((cp) => {
       const branch = open.has(`tables:${cp.entity.id}`)
         ? ("tables" as const)
@@ -569,6 +681,15 @@ export function EditingGraphView({
         h: Math.max(NODE_H, cp.relations.length * 26, branchH),
       };
     }),
+  ];
+  const leftEntries = [
+    ...(slotIndex === null
+      ? entityEntries
+      : [
+          ...entityEntries.slice(0, slotIndex),
+          { kind: "ghost" as const, key: "ghost:left", h: NODE_H },
+          ...entityEntries.slice(slotIndex),
+        ]),
     ...(counterparts.length > PREVIEW && !propsEntityId
       ? [
           {
@@ -614,14 +735,28 @@ export function EditingGraphView({
         : item,
     );
   })();
+  // The related Entity Types' column as a drop zone (world coordinates), padded around its rows.
+  const dropZone = (() => {
+    const rows = leftItems.filter((i) => i.kind !== "more");
+    const top = rows.length ? Math.min(...rows.map((i) => i.y - i.h / 2)) : -NODE_H / 2;
+    const bottom = rows.length ? Math.max(...rows.map((i) => i.y + i.h / 2)) : NODE_H / 2;
+    return { x: ex - 16, y: top - 16, w: NODE_W + 32, h: bottom - top + 32 };
+  })();
   const openItem = openRelation
     ? leftItems.find((i) => i.kind === "entity" && i.cp.entity.id === openRelation.entityId)
     : undefined;
-  // The two ends of the ladder: the related Entity Type's node and the middle node.
+  // The two ends of the ladder: the related Entity Type's node (moved in to `OPEN_LINK_GAP`) and
+  // the middle node.
+  const openEntityX = CENTER_LEFT - OPEN_LINK_GAP - NODE_W;
   const ladderEnds =
     openRelation && ladder && openItem
-      ? { left: { x: ex, y: openItem.y }, right: { x: CENTER_LEFT, y: 0 } }
+      ? { left: { x: openEntityX, y: openItem.y }, right: { x: CENTER_LEFT, y: 0 } }
       : null;
+  // The open Relation's pill, centred between its two Entity Types.
+  const openPillX = openEntityX + NODE_W + (OPEN_LINK_GAP - OPEN_PILL_W) / 2;
+  // Where an Entity Type's node sits: the open Relation's moves in; the rest stay in their column.
+  const entityXOf = (entityId: string) =>
+    ladderEnds && openRelation?.entityId === entityId ? openEntityX : ex;
   // While a Relation is open, everything else — the other related Entity Types, their Relations,
   // the Data Tables — is hidden in place, and comes back when it closes.
   const isOtherEntity = (key: string) => !!ladderEnds && key !== `entity:${openRelation?.entityId}`;
@@ -633,6 +768,11 @@ export function EditingGraphView({
   const pillY = (() => {
     const ids: { id: string; entityId: string }[] = [];
     for (const item of leftItems) {
+      // The drop slot's row keeps an empty pill slot, where its new Relation will appear.
+      if (item.kind === "ghost") {
+        ids.push({ id: SLOT_PILL, entityId: SLOT_PILL });
+        continue;
+      }
       if (item.kind !== "entity") continue;
       for (const { relation } of item.cp.relations)
         ids.push({ id: relation.id, entityId: item.cp.entity.id });
@@ -707,23 +847,24 @@ export function EditingGraphView({
   const shownProps = focused ? focused.mapped : centerPropsOpen ? centerProperties : [];
   const queue = [
     ...leftAll
-      .filter(({ entity }) => entityDisplayStatus(entity) === "suggested")
+      .filter(({ entity }) => entityReview(entity) === "suggested")
       .map(({ entity }) => suggestionKey({ kind: "entity", id: entity.id })),
     ...leftAll.flatMap(({ relations }) =>
       relations
-        .filter(({ relation }) => relationStatus(relation, app.entities) === "suggested")
+        .filter(({ relation }) => relationReview(relation) === "suggested")
         .map(({ relation }) => suggestionKey({ kind: "relation", id: relation.id })),
     ),
-    ...(entityDisplayStatus(focusEntity) === "suggested"
+    ...(entityReview(focusEntity) === "suggested"
       ? [suggestionKey({ kind: "entity", id: focusEntity.id })]
       : []),
     ...shownProps
-      .filter((p) => propertyStatus(p) === "suggested")
+      .filter((p) => propertyReview(p) === "suggested")
       .map((p) => suggestionKey({ kind: "property", entityId: focusEntity.id, propertyId: p.id })),
   ];
 
   // The review bar counts what this graph is about: the selected Entity Type, the Entity Types
   // and Relations around it, its Properties, and their mappings.
+  const reviewScope = useReviewScope(app);
   const scope = useMemo<SuggestionScope>(() => {
     const entityIds = new Set([focusEntity.id, ...counterparts.map((cp) => cp.entity.id)]);
     const relationIds = new Set(
@@ -754,259 +895,643 @@ export function EditingGraphView({
   );
 
   return (
-    <PropertyMoveContext.Provider value={move}>
-      <EditingCanvasTopBar app={app} canvas={canvas} />
-      <div
-        ref={viewportRef}
-        data-canvas-viewport
-        onPointerDownCapture={(event) => {
-          multiRef.current = event.shiftKey || event.metaKey || event.ctrlKey;
-        }}
-        onPointerDown={(event) => {
-          if (event.button !== 0 && event.button !== 1) return;
-          if (canvas.tool === "pan" || event.button === 1 || isCanvasBackground(event.target)) {
-            canvas.startPan(event);
-          }
-        }}
-        onPointerMove={(event) => canvas.panning && canvas.movePan(event)}
-        onPointerUp={canvas.endPan}
-        onPointerCancel={canvas.endPan}
-        onClick={(event) => {
-          if (!canvas.consumePanClick() && isCanvasBackground(event.target)) closeDetail();
-        }}
-        onDragOver={(event) => {
-          const kind = dragKindOf(event);
-          if (!kind) return;
-          event.preventDefault();
-          event.dataTransfer.dropEffect = "copy";
-          if (dragKind !== kind) setDragKind(kind);
-        }}
-        onDragLeave={(event) => {
-          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragKind(null);
-        }}
-        onDrop={handlePanelDrop}
-        className={cn(
-          // A canvas, not a document: clicks (and shift-clicks) never select text.
-          "relative min-h-0 flex-1 cursor-default select-none overflow-hidden [&_input]:select-text [&_textarea]:select-text",
-          canvas.panning && "cursor-grabbing",
-        )}
-        style={{
-          backgroundImage: "radial-gradient(circle, #e3e5e4 1px, transparent 1px)",
-          backgroundSize: "16px 16px",
-        }}
-      >
+    <ReviewScopeContext.Provider value={reviewScope}>
+      <PropertyMoveContext.Provider value={move}>
+        <CanvasZoomCard canvas={canvas} />
         <div
-          ref={worldRef}
-          data-canvas-lod={canvas.lod}
-          className="absolute top-[40%] origin-top-left"
-          // Centered on the graph as a whole (Entity Types → Data Tables), not on the middle node,
-          // which sits left of centre now that the related Entity Types are further out.
-          style={{ left: `calc(50% - ${GRAPH_MID_X}px)`, transform: canvas.worldTransform }}
+          ref={viewportRef}
+          data-canvas-viewport
+          onPointerDownCapture={(event) => {
+            multiRef.current = event.shiftKey || event.metaKey || event.ctrlKey;
+          }}
+          onPointerDown={(event) => {
+            if (event.button !== 0 && event.button !== 1) return;
+            if (canvas.tool === "pan" || event.button === 1 || isCanvasBackground(event.target)) {
+              canvas.startPan(event);
+            }
+          }}
+          onPointerMove={(event) => canvas.panning && canvas.movePan(event)}
+          onPointerUp={canvas.endPan}
+          onPointerCancel={canvas.endPan}
+          onClick={(event) => {
+            if (!canvas.consumePanClick() && isCanvasBackground(event.target)) closeDetail();
+          }}
+          onDragOver={(event) => {
+            const kind = dragKindOf(event);
+            if (!kind) return;
+            if (dragKind !== kind) setDragKind(kind);
+            if (kind === "entity") {
+              // Only over the related Entity Types' column: the slot goes in front of the first
+              // shown Entity Type below the pointer.
+              const p = toWorld(event.clientX, event.clientY);
+              const inZone =
+                p.x >= dropZone.x - 40 &&
+                p.x <= dropZone.x + dropZone.w + 40 &&
+                p.y >= dropZone.y - 40 &&
+                p.y <= dropZone.y + dropZone.h + 40;
+              if (!inZone) {
+                if (entitySlot !== null) setEntitySlot(null);
+                return;
+              }
+              const index = leftItems.filter((i) => i.kind === "entity" && i.y < p.y).length;
+              if (entitySlot !== index) setEntitySlot(index);
+            }
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+          }}
+          onDragLeave={(event) => {
+            if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+            setDragKind(null);
+            setEntitySlot(null);
+          }}
+          onDrop={handlePanelDrop}
+          className={cn(
+            // A canvas, not a document: clicks (and shift-clicks) never select text.
+            "relative min-h-0 flex-1 cursor-default select-none overflow-hidden [&_input]:select-text [&_textarea]:select-text",
+            canvas.panning && "cursor-grabbing",
+          )}
+          style={{
+            backgroundImage: "radial-gradient(circle, #e3e5e4 1px, transparent 1px)",
+            backgroundSize: "16px 16px",
+          }}
         >
-          {/* Curves (under the nodes). */}
-          <svg
-            className="pointer-events-none absolute left-0 top-0 overflow-visible"
-            width={1}
-            height={1}
+          <div
+            ref={worldRef}
+            data-canvas-lod={canvas.lod}
+            className="absolute top-[40%] origin-top-left"
+            // Centered on the graph as a whole (Entity Types → Data Tables), not on the middle node,
+            // which sits left of centre now that the related Entity Types are further out.
+            style={{ left: `calc(50% - ${GRAPH_MID_X}px)`, transform: canvas.worldTransform }}
           >
-            <ArrowMarkers />
-            {dragKind === "entity" && leftView[0]?.kind === "ghost" && (
-              <path
-                d={curve({ x: ex + NODE_W, y: leftView[0].y }, { x: CENTER_LEFT, y: 0 })}
-                fill="none"
-                stroke="#00ded8"
-                strokeWidth={1.5}
-                strokeDasharray="4 4"
-              />
-            )}
-            {dragKind === "table" && rightView[0]?.kind === "ghost" && (
-              <path
-                d={curve({ x: CENTER_RIGHT, y: 0 }, { x: TABLE_X, y: rightView[0].y })}
-                fill="none"
-                stroke="#00ded8"
-                strokeWidth={1.5}
-                strokeDasharray="4 4"
-              />
-            )}
+            {/* Curves (under the nodes). */}
+            <svg
+              className="pointer-events-none absolute left-0 top-0 overflow-visible"
+              width={1}
+              height={1}
+            >
+              <ArrowMarkers />
+              {dragKind === "table" && rightView[0]?.kind === "ghost" && (
+                <path
+                  d={curve({ x: CENTER_RIGHT, y: 0 }, { x: TABLE_X, y: rightView[0].y })}
+                  fill="none"
+                  stroke={SETTLED}
+                  strokeWidth={1.5}
+                />
+              )}
+              {leftView.map((item) => {
+                if (item.kind !== "entity") return null;
+                const entityLeft = { x: ex, y: item.y };
+                const branchTables = stack(
+                  item.branchTables.map((name) => ({ name, h: NODE_H })),
+                  item.y,
+                );
+                return (
+                  <g
+                    key={`edge-${item.key}`}
+                    style={{
+                      opacity: isOtherEntity(item.key) ? 0 : lit(item.key) ? 1 : 0.2,
+                      transition: "opacity 300ms",
+                    }}
+                  >
+                    {ghostFor === item.cp.entity.id && pillY.has(GHOST_PILL) && (
+                      <g stroke="#d3d5d4" strokeWidth={1.5} opacity={0.7} fill="none">
+                        <path
+                          d={curve(
+                            { x: ex + NODE_W, y: item.y },
+                            { x: pillX, y: pillY.get(GHOST_PILL)! },
+                          )}
+                        />
+                        <path
+                          d={curve(
+                            { x: pillX + PILL_W, y: pillY.get(GHOST_PILL)! },
+                            { x: CENTER_LEFT, y: 0 },
+                          )}
+                        />
+                      </g>
+                    )}
+                    {relationDraw?.fromEntityId === item.cp.entity.id && drawPos && (
+                      <path
+                        d={`M ${ex + NODE_W} ${item.y} L ${drawPos.x} ${drawPos.y}`}
+                        fill="none"
+                        stroke={SETTLED}
+                        strokeWidth={2}
+                      />
+                    )}
+                    {item.cp.relations.map(({ relation }) => {
+                      const y = pillY.get(relation.id) ?? item.y;
+                      const isOpen = !!ladderEnds && relation.id === openRelationId;
+                      const relSuggested = relationReview(relation) === "suggested";
+                      return (
+                        <g
+                          key={relation.id}
+                          style={{
+                            opacity: ladderEnds && !isOpen ? 0 : 1,
+                            transition: "opacity 300ms",
+                          }}
+                        >
+                          {/* The arrow points at the Relation's `to` side: into the middle node,
+                            or — when the middle node is its subject — back at this Entity Type. */}
+                          <Curve
+                            d={curve(
+                              { x: entityXOf(item.cp.entity.id) + NODE_W, y: item.y },
+                              { x: isOpen ? openPillX : pillX, y },
+                            )}
+                            suggested={relSuggested}
+                            bold={hovered === item.key || isOpen}
+                            dimmed={!reviewScope.relation(relation)}
+                            arrow={relation.from === focusEntity.id ? "start" : undefined}
+                          />
+                          <Curve
+                            d={curve(
+                              { x: isOpen ? openPillX + OPEN_PILL_W : pillX + PILL_W, y },
+                              { x: CENTER_LEFT, y: 0 },
+                            )}
+                            suggested={relSuggested}
+                            bold={hovered === item.key || isOpen}
+                            dimmed={!reviewScope.relation(relation)}
+                            arrow={relation.from === focusEntity.id ? undefined : "end"}
+                          />
+                        </g>
+                      );
+                    })}
+                    {branchTables.map((b) => (
+                      <Curve
+                        key={b.name}
+                        d={curve({ x: bx + NODE_W, y: b.y }, { x: jx, y: item.y })}
+                        dimmed={
+                          !reviewScope.mappings(
+                            item.cp.entity.properties.filter((p) => mapsInto(p, b.name)),
+                          )
+                        }
+                        suggested={item.cp.entity.properties.some((p) =>
+                          mappingsIn(p, b.name).some((m) => mappingStatus(m) === "suggested"),
+                        )}
+                      />
+                    ))}
+                    {branchTables.length > 0 && (
+                      <Curve
+                        d={`M ${jx} ${item.y} L ${entityLeft.x} ${entityLeft.y}`}
+                        suggested={false}
+                      />
+                    )}
+                  </g>
+                );
+              })}
+              <AnimatePresence>
+                {ladderEnds && openRelation && ladder && (
+                  <LadderLinks
+                    key={`ladder-${openRelation.relation.id}`}
+                    ends={ladderEnds}
+                    rungs={ladder.rungs}
+                    empty={openRelation.mappings.length === 0}
+                    suggested={openRelation.suggested}
+                    dimmed={!reviewScope.relation(openRelation.relation)}
+                  />
+                )}
+              </AnimatePresence>
+              {rightView.map((item) => {
+                // Only a table the selected Entity Type maps (or is suggested to map) into is linked.
+                if (item.kind !== "table" || item.mapped.length === 0) return null;
+                const suggested = item.mapped.some((p) =>
+                  mappingsIn(p, item.table.name).some((m) => mappingStatus(m) === "suggested"),
+                );
+                return (
+                  <g
+                    key={`edge-${item.key}`}
+                    style={{
+                      opacity: isOtherEntity(item.key) ? 0 : lit(item.key) ? 1 : 0.2,
+                      transition: "opacity 300ms",
+                    }}
+                  >
+                    <Curve
+                      d={curve({ x: CENTER_RIGHT, y: 0 }, { x: TABLE_X, y: item.y })}
+                      suggested={suggested}
+                      dimmed={!reviewScope.mappings(item.mapped)}
+                      bold={hovered === item.key}
+                    />
+                  </g>
+                );
+              })}
+            </svg>
+
+            {/* The selected Entity Type. */}
+            <Node x={CENTER_LEFT} y={-CENTER_H / 2}>
+              <div
+                data-canvas-card
+                role="button"
+                tabIndex={0}
+                data-graph-center
+                {...move.dropProps(focusEntity.id)}
+                onClick={() => inspect({ kind: "entity", id: focusEntity.id })}
+                className={cn(
+                  "flex items-center gap-2 rounded-lg border bg-white px-3 text-left transition-opacity",
+                  CARD_SHADOW,
+                  !reviewScope.entity(focusEntity) && DIMMED,
+                  drawOverCenter
+                    ? "border-[#00ded8] bg-[#ecf3f2]"
+                    : isSelected({ kind: "entity", id: focusEntity.id })
+                      ? SELECTED_NODE
+                      : "border-[#3b82f6]",
+                  move.dropTargetId === focusEntity.id && DROP_TARGET_CLASS,
+                )}
+                style={{ width: CENTER_W, height: CENTER_H }}
+              >
+                <span className="lod-type contents">
+                  <StatusBadge
+                    status={entityDisplayStatus(focusEntity)}
+                    size={16}
+                    confidence={focusEntity.confidence}
+                    errorReason={entityErrorReason(focusEntity)}
+                  />
+                </span>
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="lod-title truncate text-[16px] font-medium leading-6 text-[#080a09]">
+                    {focusEntity.name}
+                  </span>
+                  <span className="lod-detail truncate text-[12px] leading-4 text-[#6d7472]">
+                    {entityDetail(focusEntity)}
+                  </span>
+                </span>
+                {entityReview(focusEntity) === "suggested" && (
+                  <span className="lod-confidence contents">
+                    <EntityConfidenceChip entity={focusEntity} tone="muted" />
+                  </span>
+                )}
+                <ExpandChevron
+                  open={centerPropsOpen || !!focused}
+                  label={centerPropsOpen || focused ? "Hide properties" : "Show properties"}
+                  onClick={() =>
+                    focused ? focusTable(focused.table.name) : toggle("props:center")
+                  }
+                />
+              </div>
+              {centerPropsOpen && (
+                <div className="absolute left-0 top-full mt-1.5" style={{ width: CENTER_W }}>
+                  <PropertyPanel
+                    entityId={focusEntity.id}
+                    properties={centerProperties}
+                    filter={propFilter}
+                    onFilterChange={setPropFilter}
+                    sort={propSort}
+                    onSortChange={(key) => setPropSort((prev) => nextSortState(prev, key))}
+                    search={propSearch}
+                    onSearchChange={setPropSearch}
+                    onCreate={onCreateProperty ? () => onCreateProperty(focusEntity.id) : undefined}
+                    isSelected={(p) =>
+                      isSelected({ kind: "property", entityId: focusEntity.id, propertyId: p.id })
+                    }
+                    onSelect={(p) =>
+                      inspect({ kind: "property", entityId: focusEntity.id, propertyId: p.id })
+                    }
+                  />
+                </div>
+              )}
+            </Node>
+
+            {/* Related Entity Types, each with its Relation pills on the curve. */}
             {leftView.map((item) => {
-              if (item.kind !== "entity") return null;
-              const entityLeft = { x: ex, y: item.y };
+              if (item.kind === "ghost") {
+                return (
+                  <Node key={item.key} x={ex} y={item.y - NODE_H / 2}>
+                    <DropSlot
+                      tone="relation"
+                      label={dragKind === "entity" ? "Drop to add a relation" : "New relation"}
+                    />
+                  </Node>
+                );
+              }
+              if (item.kind === "more") {
+                return (
+                  <Node key={item.key} x={ex + NODE_W / 2} y={item.y - MORE_H / 2}>
+                    <div
+                      className={cn(
+                        "transition-opacity duration-300",
+                        ladderEnds && "pointer-events-none opacity-0",
+                      )}
+                    >
+                      <MoreButton
+                        centered
+                        label={open.has("more:left") ? "Show less" : `+ ${item.hidden} more`}
+                        onClick={() => toggle("more:left")}
+                      />
+                    </div>
+                  </Node>
+                );
+              }
+              const { entity, relations } = item.cp;
+              // Its pills sit in the pill column (see `pillY`).
+              const isOpenEntity = !!ladderEnds && openRelation?.entityId === entity.id;
+
               const branchTables = stack(
                 item.branchTables.map((name) => ({ name, h: NODE_H })),
                 item.y,
               );
               return (
-                <g
-                  key={`edge-${item.key}`}
-                  style={{
-                    opacity: isOtherEntity(item.key) ? 0 : lit(item.key) ? 1 : 0.2,
-                    transition: "opacity 300ms",
-                  }}
+                <div
+                  key={item.key}
+                  {...hoverProps(item.key)}
+                  className={cn("transition-opacity duration-300", faded(item.key))}
                 >
-                  {ghostFor === item.cp.entity.id && pillY.has(GHOST_PILL) && (
-                    <g stroke="#c9cccb" strokeWidth={1.5} strokeDasharray="4 4" fill="none">
-                      <path
-                        d={curve(
-                          { x: ex + NODE_W, y: item.y },
-                          { x: pillX, y: pillY.get(GHOST_PILL)! },
+                  <Node x={entityXOf(entity.id)} y={item.y - NODE_H / 2}>
+                    <div className="group/gnode relative">
+                      {onCreateRelation && !ladderEnds && (
+                        <button
+                          type="button"
+                          aria-label={`Create a relation from ${entity.name} to ${focusEntity.name}`}
+                          onMouseEnter={() => setRelationPlusFor(entity.id)}
+                          onMouseLeave={() =>
+                            setRelationPlusFor((current) =>
+                              current === entity.id ? null : current,
+                            )
+                          }
+                          onPointerDown={(event) => {
+                            event.stopPropagation();
+                            event.preventDefault();
+                            setRelationDraw({
+                              fromEntityId: entity.id,
+                              startX: event.clientX,
+                              startY: event.clientY,
+                            });
+                            setDrawPos(toWorld(event.clientX, event.clientY));
+                          }}
+                          onDoubleClick={(event) => event.stopPropagation()}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            if (event.detail === 0) onCreateRelation(entity.id, focusEntity.id);
+                          }}
+                          className={cn(
+                            "group/relplus absolute left-full top-1/2 z-10 flex size-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full transition-opacity focus-visible:opacity-100",
+                            relationDraw?.fromEntityId === entity.id
+                              ? "opacity-100"
+                              : "opacity-0 group-hover/gnode:opacity-100",
+                          )}
+                        >
+                          {/* Figma 356:184372 / 356:184367: white at rest, blue under the pointer. */}
+                          {relationDraw?.fromEntityId === entity.id ? (
+                            <FigmaIcon src={relationPlusHoverIcon} size={20} />
+                          ) : (
+                            <>
+                              <FigmaIcon
+                                src={relationPlusIcon}
+                                size={20}
+                                className="group-hover/relplus:hidden"
+                              />
+                              <FigmaIcon
+                                src={relationPlusHoverIcon}
+                                size={20}
+                                className="hidden group-hover/relplus:block"
+                              />
+                            </>
+                          )}
+                        </button>
+                      )}
+                      {/* The Data Tables button, floating on the node's left: shown on hover — and
+                        kept while its tables are open, since their lines meet at it. (Properties
+                        open from the node's own chevron.) */}
+                      <div
+                        className={cn(
+                          "absolute right-full top-1/2 mr-2 flex -translate-y-1/2 gap-1 transition-opacity",
+                          item.branch === "tables"
+                            ? "opacity-100"
+                            : "opacity-0 group-hover/gnode:opacity-100 focus-within:opacity-100",
                         )}
-                      />
-                      <path
-                        d={curve(
-                          { x: pillX + PILL_W, y: pillY.get(GHOST_PILL)! },
-                          { x: CENTER_LEFT, y: 0 },
-                        )}
-                      />
-                    </g>
-                  )}
-                  {relationDraw?.fromEntityId === item.cp.entity.id && drawPos && (
-                    <path
-                      d={`M ${ex + NODE_W} ${item.y} L ${drawPos.x} ${drawPos.y}`}
-                      fill="none"
-                      stroke="#00ded8"
-                      strokeWidth={2}
-                    />
-                  )}
-                  {item.cp.relations.map(({ relation }) => {
-                    const y = pillY.get(relation.id) ?? item.y;
-                    const isOpen = !!ladderEnds && relation.id === openRelationId;
-                    const relSuggested = relationStatus(relation, app.entities) === "suggested";
-                    return (
-                      <g
-                        key={relation.id}
-                        style={{
-                          opacity: ladderEnds && !isOpen ? 0 : 1,
-                          transition: "opacity 300ms",
-                        }}
                       >
-                        {/* The arrow points at the Relation's `to` side: into the middle node,
-                            or — when the middle node is its subject — back at this Entity Type. */}
-                        <Curve
-                          d={curve({ x: ex + NODE_W, y: item.y }, { x: pillX, y })}
-                          suggested={relSuggested}
-                          bold={hovered === item.key || isOpen}
-                          arrow={relation.from === focusEntity.id ? "start" : undefined}
+                        <BranchButton
+                          active={item.branch === "tables"}
+                          label={`Show ${entity.name}'s data tables`}
+                          onClick={() => toggleEntityBranch(entity.id, "tables")}
+                        >
+                          <Table2 className="size-4" strokeWidth={1.5} />
+                        </BranchButton>
+                      </div>
+                      <GraphNode
+                        status={
+                          <StatusBadge
+                            status={entityDisplayStatus(entity)}
+                            size={16}
+                            confidence={entity.confidence}
+                          />
+                        }
+                        name={entity.name}
+                        detail={entityDetail(entity)}
+                        dropFor={entity.id}
+                        dimmed={!reviewScope.entity(entity)}
+                        chip={
+                          entityReview(entity) === "suggested" ? (
+                            <EntityConfidenceChip entity={entity} tone="muted" />
+                          ) : null
+                        }
+                        selected={isSelected({ kind: "entity", id: entity.id })}
+                        onClick={() => inspect({ kind: "entity", id: entity.id })}
+                        // Double-click makes it the selected Entity Type (the middle of the graph).
+                        onDoubleClick={() => app.openDetail("entity", entity.id)}
+                        trailing={
+                          <ExpandChevron
+                            open={item.branch === "props"}
+                            label={
+                              item.branch === "props"
+                                ? `Hide ${entity.name}'s properties`
+                                : `Show ${entity.name}'s properties`
+                            }
+                            onClick={() => toggleEntityBranch(entity.id, "props")}
+                          />
+                        }
+                      />
+                    </div>
+                  </Node>
+                  {ghostFor === entity.id && pillY.has(GHOST_PILL) && (
+                    <Node x={pillX} y={pillY.get(GHOST_PILL)! - PILL_H / 2}>
+                      <GhostRelationPill />
+                    </Node>
+                  )}
+                  {relations.map(({ relation }) => (
+                    <Node
+                      key={relation.id}
+                      x={ladderEnds && relation.id === openRelationId ? openPillX : pillX}
+                      y={
+                        (pillY.get(relation.id) ?? item.y) -
+                        (ladderEnds && relation.id === openRelationId ? OPEN_PILL_H : PILL_H) / 2
+                      }
+                    >
+                      <div
+                        className={cn(
+                          "transition-opacity duration-300",
+                          ladderEnds && relation.id !== openRelationId
+                            ? "pointer-events-none opacity-0"
+                            : "opacity-100",
+                        )}
+                      >
+                        <RelationPill
+                          relation={relation}
+                          status={relationStatus(relation, app.entities)}
+                          selected={isSelected({ kind: "relation", id: relation.id })}
+                          dimmed={!reviewScope.relation(relation)}
+                          open={!!ladderEnds && relation.id === openRelationId}
+                          onClick={() =>
+                            openRelationId === relation.id
+                              ? closeDetail()
+                              : inspect({ kind: "relation", id: relation.id })
+                          }
                         />
-                        <Curve
-                          d={curve({ x: pillX + PILL_W, y }, { x: CENTER_LEFT, y: 0 })}
-                          suggested={relSuggested}
-                          bold={hovered === item.key || isOpen}
-                          arrow={relation.from === focusEntity.id ? undefined : "end"}
+                      </div>
+                    </Node>
+                  ))}
+                  {branchTables.map((b) => {
+                    const table = tableByName(b.name);
+                    if (!table) return null;
+                    return (
+                      <Node key={b.name} x={bx} y={b.y - NODE_H / 2}>
+                        <GraphNode
+                          large
+                          status={tableStatus(table)}
+                          name={table.name}
+                          dimmed={!reviewScope.table(table.name)}
+                          detail={plural(table.columns.length, "column", "columns")}
+                          selected={inspectedTable === table.name && detailItem?.kind === "table"}
+                          onClick={() => inspectTable(table.name)}
                         />
-                      </g>
+                      </Node>
                     );
                   })}
-                  {branchTables.map((b) => (
-                    <Curve
-                      key={b.name}
-                      d={curve({ x: bx + NODE_W, y: b.y }, { x: jx, y: item.y })}
-                      suggested={item.cp.entity.properties.some(
-                        (p) =>
-                          p.mapping?.table === b.name && mappingStatus(p.mapping) === "suggested",
-                      )}
-                    />
-                  ))}
-                  {branchTables.length > 0 && (
-                    <Curve
-                      d={`M ${jx} ${item.y} L ${entityLeft.x} ${entityLeft.y}`}
-                      suggested={false}
-                    />
+                  {item.branch === "props" && !isOpenEntity && (
+                    <Node x={ex} y={item.y + NODE_H / 2 + 6}>
+                      <div style={{ width: NODE_W }}>
+                        <EntityPropertyPanel
+                          entity={entity}
+                          onCreate={
+                            onCreateProperty ? () => onCreateProperty(entity.id) : undefined
+                          }
+                          isSelected={(p) =>
+                            isSelected({ kind: "property", entityId: entity.id, propertyId: p.id })
+                          }
+                          onSelect={(p) =>
+                            inspect({ kind: "property", entityId: entity.id, propertyId: p.id })
+                          }
+                        />
+                      </div>
+                    </Node>
                   )}
-                </g>
+                </div>
               );
             })}
+
+            {/* The open Relation's source tables, under its two Entity Types. */}
             <AnimatePresence>
               {ladderEnds && openRelation && ladder && (
-                <LadderLinks
+                <LadderTables
                   key={`ladder-${openRelation.relation.id}`}
+                  app={app}
+                  status={relationStatus(openRelation.relation, app.entities)}
                   ends={ladderEnds}
                   rungs={ladder.rungs}
                   empty={openRelation.mappings.length === 0}
-                  suggested={openRelation.suggested}
+                  more={
+                    ladder.toggleable
+                      ? {
+                          top: ladder.moreTop,
+                          label: allMappings ? "Show fewer" : `+ ${openRelation.hidden} more`,
+                          onToggle: () => setAllMappings((all) => !all),
+                        }
+                      : null
+                  }
+                  columnType={(table, column) =>
+                    tableByName(table)?.columns.find((c) => c.name === column)?.type ?? ""
+                  }
+                  onOpenTable={inspectTable}
                 />
               )}
             </AnimatePresence>
+
+            {/* Data Tables. */}
             {rightView.map((item) => {
-              // Only a table the selected Entity Type maps (or is suggested to map) into is linked.
-              if (item.kind !== "table" || item.mapped.length === 0) return null;
-              const suggested = item.mapped.some((p) => mappingStatus(p.mapping!) === "suggested");
+              if (item.kind === "ghost") {
+                return (
+                  <Node key={item.key} x={TABLE_X} y={item.y - NODE_H / 2}>
+                    <DropSlot label="Drop to add a data table" />
+                  </Node>
+                );
+              }
+              if (item.kind === "more") {
+                return (
+                  <Node key={item.key} x={TABLE_X + NODE_W / 2} y={item.y - MORE_H / 2}>
+                    <div className={cn("transition-opacity duration-300", faded(item.key))}>
+                      <MoreButton
+                        centered
+                        label={open.has("more:right") ? "Show less" : `+ ${item.hidden} more`}
+                        onClick={() => toggle("more:right")}
+                      />
+                    </div>
+                  </Node>
+                );
+              }
+              const isFocused = focused?.table.name === item.table.name;
               return (
-                <g
-                  key={`edge-${item.key}`}
-                  style={{
-                    opacity: isOtherEntity(item.key) ? 0 : lit(item.key) ? 1 : 0.2,
-                    transition: "opacity 300ms",
-                  }}
+                <div
+                  key={item.key}
+                  {...hoverProps(item.key)}
+                  className={cn("transition-opacity duration-300", faded(item.key))}
                 >
-                  <Curve
-                    d={curve({ x: CENTER_RIGHT, y: 0 }, { x: TABLE_X, y: item.y })}
-                    suggested={suggested}
-                    bold={hovered === item.key || !!focused}
-                  />
-                </g>
+                  {item.mapped.length > 0 && (
+                    // Figma 353:161537: centred on the link while that table is open, otherwise
+                    // right-aligned 10px short of the table.
+                    <Node
+                      x={isFocused ? (CENTER_RIGHT + TABLE_X) / 2 : TABLE_X - 10}
+                      y={item.y - 9}
+                    >
+                      <MappingCountChips
+                        mappings={item.mapped.flatMap((p) => mappingsIn(p, item.table.name))}
+                        dimmed={!reviewScope.mappings(item.mapped)}
+                        align={isFocused ? "center" : "right"}
+                        label="Show each mapping"
+                        onClick={() => focusTable(item.table.name)}
+                      />
+                    </Node>
+                  )}
+                  <Node x={TABLE_X} y={item.y - NODE_H / 2}>
+                    <GraphNode
+                      status={tableStatus(item.table)}
+                      name={item.table.name}
+                      dimmed={!reviewScope.table(item.table.name)}
+                      detail={plural(item.table.columns.length, "column", "columns")}
+                      large
+                      selected={inspectedTable === item.table.name && detailItem?.kind === "table"}
+                      onClick={() => inspectTable(item.table.name)}
+                      onDoubleClick={() => focusTable(item.table.name)}
+                      trailing={
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            focusTable(item.table.name);
+                          }}
+                          aria-label={isFocused ? "Close mappings" : "Show each mapping"}
+                          title={isFocused ? "Close mappings" : "Show each mapping"}
+                          className="lod-detail flex size-6 shrink-0 items-center justify-center rounded-[6px] text-[#6d7472] hover:bg-black/[0.06] hover:text-[#161919]"
+                        >
+                          <span
+                            className={cn("size-4 transition-transform", isFocused && "rotate-180")}
+                          >
+                            <img src={chevronDownIcon} alt="" className="block size-full" />
+                          </span>
+                        </button>
+                      }
+                    />
+                  </Node>
+                </div>
               );
             })}
-          </svg>
 
-          {/* The selected Entity Type. */}
-          <Node x={CENTER_LEFT} y={-CENTER_H / 2}>
-            <div
-              data-canvas-card
-              role="button"
-              tabIndex={0}
-              data-graph-center
-              {...move.dropProps(focusEntity.id)}
-              onClick={() => inspect({ kind: "entity", id: focusEntity.id })}
-              className={cn(
-                "flex items-center gap-2 rounded-lg border bg-white px-3 text-left",
-                CARD_SHADOW,
-                drawOverCenter
-                  ? "border-[#00ded8] bg-[#ecf3f2]"
-                  : isSelected({ kind: "entity", id: focusEntity.id })
-                    ? SELECTED_NODE
-                    : "border-[#3b82f6]",
-                move.dropTargetId === focusEntity.id && DROP_TARGET_CLASS,
-              )}
-              style={{ width: CENTER_W, height: CENTER_H }}
-            >
-              <span className="lod-type contents">
-                <StatusBadge
-                  status={entityDisplayStatus(focusEntity)}
-                  size={16}
-                  confidence={focusEntity.confidence}
-                  errorReason={entityErrorReason(focusEntity)}
-                />
-              </span>
-              <span className="flex min-w-0 flex-1 flex-col">
-                <span className="lod-title truncate text-[16px] font-medium leading-6 text-[#080a09]">
-                  {focusEntity.name}
-                </span>
-                <span className="lod-detail truncate text-[12px] leading-4 text-[#6d7472]">
-                  {entityDetail(focusEntity)}
-                </span>
-              </span>
-              {entityDisplayStatus(focusEntity) === "suggested" && (
-                <span className="lod-confidence contents">
-                  <EntityConfidenceChip entity={focusEntity} tone="muted" />
-                </span>
-              )}
-              <ExpandChevron
-                open={centerPropsOpen || !!focused}
-                label={centerPropsOpen || focused ? "Hide properties" : "Show properties"}
-                onClick={() => (focused ? focusTable(focused.table.name) : toggle("props:center"))}
-              />
-            </div>
-            {centerPropsOpen && (
-              <div className="absolute left-0 top-full mt-1.5" style={{ width: CENTER_W }}>
-                <PropertyPanel
-                  entityId={focusEntity.id}
-                  properties={centerProperties}
-                  filter={propFilter}
-                  onFilterChange={setPropFilter}
-                  sort={propSort}
-                  onSortChange={(key) => setPropSort((prev) => nextSortState(prev, key))}
-                  search={propSearch}
-                  onSearchChange={setPropSearch}
+            {/* A focused Data Table: its Property → Column mappings, one straight row each,
+              between the middle node and the table. */}
+            {focused && (
+              <Node x={CENTER_LEFT} y={CENTER_H / 2 + 6}>
+                <MappingPanels
+                  key={focused.table.name}
+                  app={app}
+                  entity={focusEntity}
+                  properties={focused.mapped}
+                  table={focused.table}
+                  width={TABLE_X + NODE_W - CENTER_LEFT}
                   onCreate={onCreateProperty ? () => onCreateProperty(focusEntity.id) : undefined}
                   isSelected={(p) =>
                     isSelected({ kind: "property", entityId: focusEntity.id, propertyId: p.id })
@@ -1015,387 +1540,63 @@ export function EditingGraphView({
                     inspect({ kind: "property", entityId: focusEntity.id, propertyId: p.id })
                   }
                 />
-              </div>
+              </Node>
             )}
-          </Node>
-
-          {/* Related Entity Types, each with its Relation pills on the curve. */}
-          {leftView.map((item) => {
-            if (item.kind === "ghost") {
-              return (
-                <Node key={item.key} x={ex} y={item.y - NODE_H / 2}>
-                  <DropSlot label="Drop to add a relation" />
-                </Node>
-              );
-            }
-            if (item.kind === "more") {
-              return (
-                <Node key={item.key} x={ex + NODE_W / 2} y={item.y - MORE_H / 2}>
-                  <div
-                    className={cn(
-                      "transition-opacity duration-300",
-                      ladderEnds && "pointer-events-none opacity-0",
-                    )}
-                  >
-                    <MoreButton
-                      centered
-                      label={open.has("more:left") ? "Show less" : `+ ${item.hidden} more`}
-                      onClick={() => toggle("more:left")}
-                    />
-                  </div>
-                </Node>
-              );
-            }
-            const { entity, relations } = item.cp;
-            // Its pills sit in the pill column (see `pillY`).
-            const isOpenEntity = !!ladderEnds && openRelation?.entityId === entity.id;
-
-            const branchTables = stack(
-              item.branchTables.map((name) => ({ name, h: NODE_H })),
-              item.y,
-            );
-            return (
-              <div
-                key={item.key}
-                {...hoverProps(item.key)}
-                className={cn("transition-opacity duration-300", faded(item.key))}
-              >
-                <Node x={ex} y={item.y - NODE_H / 2}>
-                  <div className="group/gnode relative">
-                    {onCreateRelation && !ladderEnds && (
-                      <button
-                        type="button"
-                        aria-label={`Create a relation from ${entity.name} to ${focusEntity.name}`}
-                        onMouseEnter={() => setRelationPlusFor(entity.id)}
-                        onMouseLeave={() =>
-                          setRelationPlusFor((current) => (current === entity.id ? null : current))
-                        }
-                        onPointerDown={(event) => {
-                          event.stopPropagation();
-                          event.preventDefault();
-                          setRelationDraw({
-                            fromEntityId: entity.id,
-                            startX: event.clientX,
-                            startY: event.clientY,
-                          });
-                          setDrawPos(toWorld(event.clientX, event.clientY));
-                        }}
-                        onDoubleClick={(event) => event.stopPropagation()}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          if (event.detail === 0) onCreateRelation(entity.id, focusEntity.id);
-                        }}
-                        className={cn(
-                          "absolute left-full top-1/2 z-10 flex size-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-[1.5px] border-[#A855F7] bg-white text-[#A855F7] shadow-[0_1px_2px_0_rgba(0,0,0,0.08)] transition-[opacity,background-color] hover:bg-[#f4f4f4] focus-visible:opacity-100",
-                          relationDraw?.fromEntityId === entity.id
-                            ? "opacity-100"
-                            : "opacity-0 group-hover/gnode:opacity-100",
-                        )}
-                      >
-                        <Plus className="size-3" strokeWidth={2} />
-                      </button>
-                    )}
-                    {/* The Data Tables button, floating on the node's left: shown on hover — and
-                        kept while its tables are open, since their lines meet at it. (Properties
-                        open from the node's own chevron.) */}
-                    <div
-                      className={cn(
-                        "absolute right-full top-1/2 mr-2 flex -translate-y-1/2 gap-1 transition-opacity",
-                        item.branch === "tables"
-                          ? "opacity-100"
-                          : "opacity-0 group-hover/gnode:opacity-100 focus-within:opacity-100",
-                      )}
-                    >
-                      <BranchButton
-                        active={item.branch === "tables"}
-                        label={`Show ${entity.name}'s data tables`}
-                        onClick={() => toggleEntityBranch(entity.id, "tables")}
-                      >
-                        <Table2 className="size-4" strokeWidth={1.5} />
-                      </BranchButton>
-                    </div>
-                    <GraphNode
-                      status={
-                        <StatusBadge
-                          status={entityDisplayStatus(entity)}
-                          size={16}
-                          confidence={entity.confidence}
-                        />
-                      }
-                      name={entity.name}
-                      detail={entityDetail(entity)}
-                      dropFor={entity.id}
-                      chip={
-                        entityDisplayStatus(entity) === "suggested" ? (
-                          <EntityConfidenceChip entity={entity} tone="muted" />
-                        ) : null
-                      }
-                      selected={isSelected({ kind: "entity", id: entity.id })}
-                      onClick={() => inspect({ kind: "entity", id: entity.id })}
-                      // Double-click makes it the selected Entity Type (the middle of the graph).
-                      onDoubleClick={() => app.openDetail("entity", entity.id)}
-                      trailing={
-                        <ExpandChevron
-                          open={item.branch === "props"}
-                          label={
-                            item.branch === "props"
-                              ? `Hide ${entity.name}'s properties`
-                              : `Show ${entity.name}'s properties`
-                          }
-                          onClick={() => toggleEntityBranch(entity.id, "props")}
-                        />
-                      }
-                    />
-                  </div>
-                </Node>
-                {ghostFor === entity.id && pillY.has(GHOST_PILL) && (
-                  <Node x={pillX} y={pillY.get(GHOST_PILL)! - PILL_H / 2}>
-                    <GhostRelationPill />
-                  </Node>
-                )}
-                {relations.map(({ relation }) => (
-                  <Node
-                    key={relation.id}
-                    x={pillX}
-                    y={(pillY.get(relation.id) ?? item.y) - PILL_H / 2}
-                  >
-                    <div
-                      className={cn(
-                        "transition-opacity duration-300",
-                        ladderEnds && relation.id !== openRelationId
-                          ? "pointer-events-none opacity-0"
-                          : "opacity-100",
-                      )}
-                    >
-                      <RelationPill
-                        relation={relation}
-                        status={relationStatus(relation, app.entities)}
-                        selected={isSelected({ kind: "relation", id: relation.id })}
-                        onClick={() =>
-                          openRelationId === relation.id
-                            ? closeDetail()
-                            : inspect({ kind: "relation", id: relation.id })
-                        }
-                      />
-                    </div>
-                  </Node>
-                ))}
-                {branchTables.map((b) => {
-                  const table = tableByName(b.name);
-                  if (!table) return null;
-                  return (
-                    <Node key={b.name} x={bx} y={b.y - NODE_H / 2}>
-                      <GraphNode
-                        large
-                        status={tableStatus(table)}
-                        name={table.name}
-                        detail={plural(table.columns.length, "column", "columns")}
-                        selected={inspectedTable === table.name && detailItem?.kind === "table"}
-                        onClick={() => inspectTable(table.name)}
-                      />
-                    </Node>
-                  );
-                })}
-                {item.branch === "props" && !isOpenEntity && (
-                  <Node x={ex} y={item.y + NODE_H / 2 + 6}>
-                    <div style={{ width: NODE_W }}>
-                      <EntityPropertyPanel
-                        entity={entity}
-                        onCreate={onCreateProperty ? () => onCreateProperty(entity.id) : undefined}
-                        isSelected={(p) =>
-                          isSelected({ kind: "property", entityId: entity.id, propertyId: p.id })
-                        }
-                        onSelect={(p) =>
-                          inspect({ kind: "property", entityId: entity.id, propertyId: p.id })
-                        }
-                      />
-                    </div>
-                  </Node>
-                )}
-              </div>
-            );
-          })}
-
-          {/* The open Relation's source tables, under its two Entity Types. */}
-          <AnimatePresence>
-            {ladderEnds && openRelation && ladder && (
-              <LadderTables
-                key={`ladder-${openRelation.relation.id}`}
-                ends={ladderEnds}
-                rungs={ladder.rungs}
-                empty={openRelation.mappings.length === 0}
-                more={
-                  ladder.toggleable
-                    ? {
-                        top: ladder.moreTop,
-                        label: allMappings ? "Show fewer" : `+ ${openRelation.hidden} more`,
-                        onToggle: () => setAllMappings((all) => !all),
-                      }
-                    : null
-                }
-                columnType={(table, column) =>
-                  tableByName(table)?.columns.find((c) => c.name === column)?.type ?? ""
-                }
-                onOpenTable={inspectTable}
-              />
-            )}
-          </AnimatePresence>
-
-          {/* Data Tables. */}
-          {rightView.map((item) => {
-            if (item.kind === "ghost") {
-              return (
-                <Node key={item.key} x={TABLE_X} y={item.y - NODE_H / 2}>
-                  <DropSlot label="Drop to add a data table" />
-                </Node>
-              );
-            }
-            if (item.kind === "more") {
-              return (
-                <Node key={item.key} x={TABLE_X + NODE_W / 2} y={item.y - MORE_H / 2}>
-                  <div className={cn("transition-opacity duration-300", faded(item.key))}>
-                    <MoreButton
-                      centered
-                      label={open.has("more:right") ? "Show less" : `+ ${item.hidden} more`}
-                      onClick={() => toggle("more:right")}
-                    />
-                  </div>
-                </Node>
-              );
-            }
-            const suggested = item.mapped.some((p) => mappingStatus(p.mapping!) === "suggested");
-            const isFocused = focused?.table.name === item.table.name;
-            return (
-              <div
-                key={item.key}
-                {...hoverProps(item.key)}
-                className={cn("transition-opacity duration-300", faded(item.key))}
-              >
-                {item.mapped.length > 0 && (
-                  <Node x={TABLE_X - 10} y={item.y - 9}>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        focusTable(item.table.name);
-                      }}
-                      title="Show each mapping"
-                      className={cn(
-                        "flex h-[18px] min-w-[26px] -translate-x-full items-center justify-center rounded-full border px-1.5 text-[12px] font-medium leading-4 tabular-nums",
-                        suggested
-                          ? "border-[#A855F7] bg-[#faf5ff] text-[#7e22ce] hover:bg-[#f3e8ff]"
-                          : "border-[#c9cccb] bg-[#f4f4f4] text-[#080a09] hover:bg-[#e3e5e4]",
-                      )}
-                    >
-                      {item.mapped.length}
-                    </button>
-                  </Node>
-                )}
-                <Node x={TABLE_X} y={item.y - NODE_H / 2}>
-                  <GraphNode
-                    status={tableStatus(item.table)}
-                    name={item.table.name}
-                    detail={plural(item.table.columns.length, "column", "columns")}
-                    large
-                    selected={inspectedTable === item.table.name && detailItem?.kind === "table"}
-                    onClick={() => inspectTable(item.table.name)}
-                    onDoubleClick={() => focusTable(item.table.name)}
-                    trailing={
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          focusTable(item.table.name);
-                        }}
-                        aria-label={isFocused ? "Close mappings" : "Show each mapping"}
-                        title={isFocused ? "Close mappings" : "Show each mapping"}
-                        className="lod-detail flex size-6 shrink-0 items-center justify-center rounded-[6px] text-[#6d7472] hover:bg-black/[0.06] hover:text-[#161919]"
-                      >
-                        <span
-                          className={cn("size-4 transition-transform", isFocused && "rotate-180")}
-                        >
-                          <img src={chevronDownIcon} alt="" className="block size-full" />
-                        </span>
-                      </button>
-                    }
-                  />
-                </Node>
-              </div>
-            );
-          })}
-
-          {/* A focused Data Table: its Property → Column mappings, one straight row each,
-              between the middle node and the table. */}
-          {focused && (
-            <Node x={CENTER_LEFT} y={CENTER_H / 2 + 6}>
-              <MappingPanels
-                key={focused.table.name}
-                app={app}
-                entity={focusEntity}
-                properties={focused.mapped}
-                table={focused.table}
-                width={TABLE_X + NODE_W - CENTER_LEFT}
-                onCreate={onCreateProperty ? () => onCreateProperty(focusEntity.id) : undefined}
-                isSelected={(p) =>
-                  isSelected({ kind: "property", entityId: focusEntity.id, propertyId: p.id })
-                }
-                onSelect={(p) =>
-                  inspect({ kind: "property", entityId: focusEntity.id, propertyId: p.id })
-                }
-              />
-            </Node>
+          </div>
+          {canvas.tool === "pan" && (
+            <div
+              aria-hidden
+              className={cn(
+                "absolute inset-0 z-[18]",
+                canvas.panning ? "cursor-grabbing" : "cursor-grab",
+              )}
+            />
           )}
         </div>
-        {canvas.tool === "pan" && (
-          <div
-            aria-hidden
-            className={cn(
-              "absolute inset-0 z-[18]",
-              canvas.panning ? "cursor-grabbing" : "cursor-grab",
-            )}
-          />
-        )}
-      </div>
 
-      {detailItem ? (
-        <div className="absolute inset-x-3 bottom-3 z-20 mx-auto max-w-[1444px]">
-          <DetailPanel
-            key={detailItem.key}
-            app={app}
-            item={detailItem}
-            queue={queue}
-            focusEntityId={focusEntity.id}
-            onSelectKey={(key) => {
-              const ref = parseSuggestionKey(key);
-              if (ref) inspect(ref);
-            }}
-            onClose={closeDetail}
-            onDeletedFocus={app.closeDetail}
-            onEdit={onEdit}
-          />
-        </div>
-      ) : app.suggestionSelection.size >= 2 ? (
-        <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center">
-          <div className="pointer-events-auto">
-            <SelectionActions app={app} onSplit={onSplit} />
-          </div>
-        </div>
-      ) : (
-        <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center">
-          <div className="pointer-events-auto">
-            <AiReviewBar
-              entities={app.entities}
-              relations={app.relations}
-              tables={app.tables}
-              confidenceRange={app.confidenceRange}
-              onConfidenceRangeChange={app.setConfidenceRange}
-              onSelectSuggestionsInRange={app.selectSuggestionKeys}
-              scope={scope}
+        {detailItem ? (
+          <DetailDock defaultCap={detailItem.kind === "table" ? 240 : null}>
+            <CompletionNoticeSlot app={app} />
+            <DetailPanel
+              key={detailItem.key}
+              app={app}
+              item={detailItem}
+              queue={queue}
+              focusEntityId={focusEntity.id}
+              onSelectKey={(key) => {
+                const ref = parseSuggestionKey(key);
+                if (ref) inspect(ref);
+              }}
+              onClose={closeDetail}
+              onDeletedFocus={app.closeDetail}
+              onEdit={onEdit}
             />
+          </DetailDock>
+        ) : app.suggestionSelection.size >= 2 ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center">
+            <div className="pointer-events-auto relative">
+              <CompletionNoticeSlot app={app} />
+              <SelectionActions app={app} onSplit={onSplit} />
+            </div>
           </div>
-        </div>
-      )}
-    </PropertyMoveContext.Provider>
+        ) : (
+          <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center">
+            <div className="pointer-events-auto relative">
+              <CompletionNoticeSlot app={app} />
+              <AiReviewBar
+                entities={app.entities}
+                relations={app.relations}
+                tables={app.tables}
+                confidenceRange={app.confidenceRange}
+                onConfidenceRangeChange={app.setConfidenceRange}
+                onSelectSuggestionsInRange={app.selectSuggestionKeys}
+                scope={scope}
+              />
+            </div>
+          </div>
+        )}
+      </PropertyMoveContext.Provider>
+    </ReviewScopeContext.Provider>
   );
 }
 
@@ -1421,7 +1622,10 @@ function Curve({
   branch = false,
   delay = 0,
   arrow,
+  dimmed = false,
 }: {
+  // Outside the Confidence range / status filter (see `ReviewScope`).
+  dimmed?: boolean;
   d: string;
   // Where a newly shown curve grows from (and shrinks back to); otherwise it appears in place.
   from?: string | undefined;
@@ -1439,7 +1643,8 @@ function Curve({
       markerStart={arrow === "start" ? marker : undefined}
       markerEnd={arrow === "end" ? marker : undefined}
       initial={from ? { d: from } : false}
-      animate={{ d }}
+      // Opacity goes through `animate`: motion doesn't re-apply a changed `style.opacity`.
+      animate={{ d, opacity: dimmed ? 0.4 : 1 }}
       exit={from ? { d: from, transition: SPRING } : {}}
       transition={{ ...SPRING, delay }}
       fill="none"
@@ -1464,7 +1669,10 @@ function GraphNode({
   trailing,
   large = false,
   dropFor,
+  dimmed = false,
 }: {
+  // Outside the Confidence range / status filter (see `ReviewScope`).
+  dimmed?: boolean;
   // An Entity Type node's id: Properties dragged from another Entity Type can be dropped on it.
   dropFor?: string | undefined;
   // A Data Table node's name is set a step larger (16/24) than an Entity Type's (14/20).
@@ -1489,8 +1697,9 @@ function GraphNode({
       onDoubleClick={onDoubleClick}
       {...(move && dropFor ? move.dropProps(dropFor) : {})}
       className={cn(
-        "flex items-center gap-2 rounded-lg border bg-white px-3 text-left transition-shadow",
+        "flex items-center gap-2 rounded-lg border bg-white px-3 text-left transition-[box-shadow,opacity]",
         CARD_SHADOW,
+        dimmed && DIMMED,
         selected
           ? SELECTED_NODE
           : highlighted
@@ -1526,7 +1735,7 @@ type LadderEnds = { left: Pt; right: Pt };
 const ladderRowY = (end: Pt, rung: LadderRung, k: number) =>
   end.y + rung.top + LADDER_HEAD + k * LADDER_ROW + LADDER_ROW / 2;
 // The dashed "entity mapping" line runs down from each Entity Type into its table's column tree.
-const ladderTrunkX = (end: Pt) => end.x + LADDER_INSET + 14;
+const ladderTrunkX = (end: Pt) => end.x + LADDER_TRUNK;
 
 /** The open Relation's lines: each Entity Type down to its source tables (dashed), and each
  * rung's column link under the Relation — drawn after the tables drop in. */
@@ -1535,11 +1744,13 @@ function LadderLinks({
   rungs,
   empty,
   suggested,
+  dimmed,
 }: {
   ends: LadderEnds;
   rungs: LadderRung[];
   empty: boolean;
   suggested: boolean;
+  dimmed: boolean;
 }) {
   const last = rungs[rungs.length - 1];
   const trunk = (end: Pt) => {
@@ -1552,8 +1763,10 @@ function LadderLinks({
   const rightTrunk = trunk(ends.right);
   return (
     <motion.g initial={{ opacity: 1 }} exit={{ opacity: 0, transition: { duration: 0.25 } }}>
-      <Curve d={leftTrunk.d} from={leftTrunk.from} suggested={false} branch />
-      {!empty && <Curve d={rightTrunk.d} from={rightTrunk.from} suggested={false} branch />}
+      <Curve d={leftTrunk.d} from={leftTrunk.from} suggested={suggested} dimmed={dimmed} />
+      {!empty && (
+        <Curve d={rightTrunk.d} from={rightTrunk.from} suggested={suggested} dimmed={dimmed} />
+      )}
       {rungs.map((rung, i) =>
         Array.from(
           { length: Math.min(rung.left.columns.length, rung.right.columns.length) },
@@ -1566,6 +1779,7 @@ function LadderLinks({
                   d={curve(a, b)}
                   from={curve(a, a)}
                   suggested={suggested}
+                  dimmed={dimmed}
                   delay={0.18 + i * 0.06}
                 />
               </g>
@@ -1584,6 +1798,8 @@ function LadderLinks({
  * into it on close.
  */
 function LadderTables({
+  app,
+  status,
   ends,
   rungs,
   empty,
@@ -1591,6 +1807,9 @@ function LadderTables({
   columnType,
   onOpenTable,
 }: {
+  app: OntologyApp;
+  // The open Relation's review status (its dot on each column row).
+  status: ReturnType<typeof relationStatus>;
   ends: LadderEnds;
   rungs: LadderRung[];
   empty: boolean;
@@ -1615,6 +1834,8 @@ function LadderTables({
             delay={0.06 + i * 0.06 + s * 0.04}
           >
             <LadderTable
+              app={app}
+              status={status}
               side={side}
               columnType={columnType}
               onOpen={() => onOpenTable(side.table)}
@@ -1680,21 +1901,29 @@ function Drop({
   );
 }
 
-/** One source table in an open Relation's ladder: its name, then its key column(s) as a small
- * tree under it (`└ column`, with the column's type). */
+/** One source table card in an open Relation's ladder (Figma 328:20594): the table's mapping
+ * status and name, then its key column(s) — each with the Relation's status dot and its type. */
 function LadderTable({
+  app,
   side,
+  status,
   columnType,
   onOpen,
 }: {
+  app: OntologyApp;
   side: MappingSide;
+  status: ReturnType<typeof relationStatus>;
   columnType: (table: string, column: string) => string;
   onOpen: () => void;
 }) {
   return (
     <div
       data-canvas-card
-      className="rounded-[10px] border border-[#e3e5e4] bg-white pb-1.5"
+      // 64px tall with its 1px border: 9 + 24 (table) + 24 per column + 5.
+      className={cn(
+        "rounded-lg border border-[#e3e5e4] bg-white px-4 pb-[5px] pt-[9px]",
+        CARD_SHADOW,
+      )}
       style={{ width: LADDER_TABLE_W }}
     >
       <button
@@ -1703,15 +1932,26 @@ function LadderTable({
           event.stopPropagation();
           onOpen();
         }}
-        className="flex h-[30px] w-full min-w-0 items-center gap-1.5 px-2.5 text-left text-[12px] font-medium leading-4 text-[#161919] hover:underline"
+        className="flex h-6 w-full min-w-0 items-center gap-2 text-left"
       >
-        <Table2 className="size-3.5 shrink-0 text-[#6d7472]" strokeWidth={1.5} />
-        <span className="truncate">{side.table}</span>
+        <MappingStatusBadge
+          status={tableMappingStatus(side.table, app.entities)}
+          {...tableMappingCompleteness(side.table, app.entities)}
+          size={16}
+        />
+        <span className="truncate text-[16px] font-medium leading-6 text-[#080a09] hover:underline">
+          {side.table}
+        </span>
       </button>
       {side.columns.map((column) => (
-        <div key={column} className="flex h-6 min-w-0 items-center gap-1.5 pl-[13px] pr-2.5">
-          <span className="mb-2.5 h-2.5 w-2 shrink-0 rounded-bl-[3px] border-b border-l border-[#b5b9b8]" />
-          <span className="min-w-0 flex-1 truncate font-mono text-[12px] leading-4 text-[#161919]">
+        <div key={column} className="flex h-6 min-w-0 items-center gap-2">
+          <span className="flex size-4 shrink-0 items-center justify-center">
+            <span
+              className="size-1.5 rounded-full"
+              style={{ background: statusDotColor(status) }}
+            />
+          </span>
+          <span className="min-w-0 flex-1 truncate text-[14px] leading-6 text-[#080a09]">
             {column}
           </span>
           <PropertyTypeGlyph type={columnType(side.table, column)} color="#6d7472" />
@@ -1721,14 +1961,20 @@ function LadderTable({
   );
 }
 
-/** Where an item dragged in from a side panel will land (the app's teal drop-target accent). */
-function DropSlot({ label }: { label: string }) {
+/** Where an item dragged in from a side panel will land: an Entity Type's is Figma 353:154753's
+ * blue slot; a data table's keeps the app's teal drop-target accent. */
+function DropSlot({ label, tone = "table" }: { label: string; tone?: "relation" | "table" }) {
   return (
     <div
-      className="flex items-center justify-center rounded-lg border-[1.5px] border-dashed border-[#00DED8] bg-[rgba(0,222,216,0.05)] text-[13px] font-medium text-[#007287]"
+      className={cn(
+        "flex items-center justify-center rounded-lg px-3",
+        tone === "relation"
+          ? "border border-[#3b82f6] bg-[#eff6ff] text-[14px] font-medium leading-5 text-[#3b82f6] shadow-[0_0_0_3px_rgba(59,130,246,0.4)]"
+          : "border-[1.5px] border-dashed border-[#00DED8] bg-[rgba(0,222,216,0.05)] text-[13px] font-medium text-[#007287]",
+      )}
       style={{ width: NODE_W, height: NODE_H }}
     >
-      {label}
+      <span className="truncate">{label}</span>
     </div>
   );
 }
@@ -1801,11 +2047,16 @@ function RelationPill({
   relation,
   status,
   selected,
+  open = false,
   onClick,
+  dimmed = false,
 }: {
+  dimmed?: boolean;
   relation: Relation;
   status: ReturnType<typeof relationStatus>;
   selected: boolean;
+  // Opened (its mappings laid out under it): the taller 180×28 pill of Figma 328:20594.
+  open?: boolean;
   onClick: () => void;
 }) {
   return (
@@ -1814,9 +2065,14 @@ function RelationPill({
       role="button"
       tabIndex={0}
       onClick={onClick}
+      style={{
+        width: open ? OPEN_PILL_W : PILL_W,
+        height: open ? OPEN_PILL_H : PILL_H,
+      }}
       className={cn(
-        "flex h-[26px] w-[152px] items-center gap-2 rounded-full border bg-white py-1 pl-3 pr-1.5 text-[12px] leading-4 text-[#161919]",
+        "flex items-center gap-2 rounded-full border bg-white py-1 pl-3 pr-1.5 text-[12px] leading-4 text-[#161919] transition-[width,height,opacity]",
         CARD_SHADOW,
+        dimmed && DIMMED,
         selected ? SELECTED_NODE : "border-[#e3e5e4] hover:border-[#161919]",
       )}
     >
@@ -1825,7 +2081,7 @@ function RelationPill({
         style={{ background: statusDotColor(status) }}
       />
       <span className="lod-name min-w-0 flex-1 truncate">{relationLabel(relation)}</span>
-      {status === "suggested" && (
+      {relationReview(relation) === "suggested" && (
         <span className="lod-confidence contents">
           <RelationConfidenceChip relation={relation} tone="muted" />
         </span>
@@ -1835,6 +2091,22 @@ function RelationPill({
 }
 
 const PANEL_LIST_MAX = 350;
+
+function ListGroupHeading({ label, count }: { label: "Mapped" | "Unmapped"; count: number }) {
+  return (
+    <p className="shrink-0 px-1.5 py-1 text-[14px] leading-[14px] text-[#6d7472]">
+      {label} ({count})
+    </p>
+  );
+}
+
+function columnSamples(table: TableSchema, column: string): string[] {
+  return [
+    ...new Set(
+      table.rows.map((row) => row[column]).filter((value) => value != null && value !== ""),
+    ),
+  ].slice(0, 3);
+}
 
 /**
  * The selected Entity Type's properties (Figma 507:23720): a grey panel under its card with the
@@ -1867,6 +2139,7 @@ function PropertyPanel({
   isSelected: (property: Property) => boolean;
   onSelect: (property: Property) => void;
 }) {
+  const reviewScope = useContext(ReviewScopeContext);
   const move = useContext(PropertyMoveContext);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Properties just moved into this list: scroll it (and only it — not the canvas) to the first.
@@ -1888,17 +2161,19 @@ function PropertyPanel({
     return () => cancelAnimationFrame(frame);
   }, [reveal, entityId]);
   const isTarget = !!entityId && move?.dropTargetId === entityId;
+  const mappedProperties = properties.filter((property) => property.mappings.length > 0);
+  const unmappedProperties = properties.filter((property) => property.mappings.length === 0);
   return (
     <div
       data-canvas-card
       {...(move && entityId ? move.dropProps(entityId) : {})}
       className={cn(
-        "flex flex-col overflow-hidden rounded-[6px] bg-[#f4f4f4] shadow-[0_1px_2px_0_rgba(0,0,0,0.05)] transition-shadow",
+        "flex flex-col overflow-hidden rounded-[6px] bg-white shadow-[0_1px_2px_0_rgba(0,0,0,0.05)] transition-shadow",
         isTarget && "shadow-[0_0_0_1.5px_#00ded8] !bg-[#e6f9f8]",
       )}
     >
       <ListControls
-        className="bg-[#f4f4f4] px-2"
+        className="bg-white px-2"
         filter={filter}
         onFilterChange={onFilterChange}
         sort={sort}
@@ -1919,28 +2194,41 @@ function PropertyPanel({
           {properties.length === 0 && (
             <p className="py-3 text-center text-[12px] text-[#6d7472]">No properties match.</p>
           )}
-          {properties.map((property) => (
-            <PanelRow
-              key={property.id}
-              name={property.name}
-              dotColor={statusDotColor(propertyStatus(property))}
-              identifier={isIdentifierProperty(property)}
-              type={property.type}
-              chip={
-                propertyStatus(property) === "suggested" ? (
-                  <PropertyConfidenceChip property={property} tone="muted" />
-                ) : null
-              }
-              selected={isSelected(property)}
-              onClick={() => onSelect(property)}
-              moveFrom={entityId ? { entityId, propertyId: property.id } : undefined}
-            />
-          ))}
+          {(
+            [
+              ["Mapped", mappedProperties],
+              ["Unmapped", unmappedProperties],
+            ] as const
+          ).map(([label, group]) =>
+            group.length > 0 ? (
+              <Fragment key={label}>
+                <ListGroupHeading label={label} count={group.length} />
+                {group.map((property) => (
+                  <PanelRow
+                    key={property.id}
+                    name={property.name}
+                    dotColor={statusDotColor(propertyStatus(property))}
+                    dimmed={!reviewScope.property(property)}
+                    identifier={isIdentifierProperty(property)}
+                    type={property.type}
+                    chip={
+                      propertyReview(property) === "suggested" ? (
+                        <PropertyConfidenceChip property={property} tone="muted" />
+                      ) : null
+                    }
+                    selected={isSelected(property)}
+                    onClick={() => onSelect(property)}
+                    moveFrom={entityId ? { entityId, propertyId: property.id } : undefined}
+                  />
+                ))}
+              </Fragment>
+            ) : null,
+          )}
         </div>
         {properties.length * 38 > PANEL_LIST_MAX && (
           <div
             aria-hidden
-            className="pointer-events-none absolute inset-x-0 bottom-0 h-[30px] bg-gradient-to-b from-[rgba(244,244,244,0)] to-[#f4f4f4]"
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-[30px] bg-gradient-to-b from-white/0 to-white"
           />
         )}
       </div>
@@ -1957,8 +2245,8 @@ function filterProperties(
   nameOf: (property: Property) => string = (p) => p.name,
 ) {
   let list = properties;
-  if (filter === "mapped") list = list.filter((p) => !!p.mapping);
-  else if (filter === "unmapped") list = list.filter((p) => !p.mapping);
+  if (filter === "mapped") list = list.filter((p) => p.mappings.length > 0);
+  else if (filter === "unmapped") list = list.filter((p) => p.mappings.length === 0);
   else if (filter === "identifier") list = list.filter((p) => isIdentifierProperty(p));
   const query = search.trim().toLowerCase();
   if (query) list = list.filter((p) => nameOf(p).toLowerCase().includes(query));
@@ -2003,6 +2291,76 @@ function EntityPropertyPanel({
   );
 }
 
+/**
+ * The count chips on an Entity Type ↔ table link (Figma Chip_#ofMappedColumns): a gray chip for
+ * the confirmed mappings, then a purple one for the suggested ones — each only when non-zero.
+ */
+function MappingCountChips({
+  mappings,
+  align,
+  label,
+  onClick,
+  dimmed = false,
+}: {
+  dimmed?: boolean;
+  // The link's mappings (a composite identifier counts once per column).
+  mappings: ColumnRef[];
+  align: "left" | "right" | "center";
+  label: string;
+  onClick: () => void;
+}) {
+  const suggestedN = mappings.filter((m) => mappingStatus(m) === "suggested").length;
+  const mappedN = mappings.length - suggestedN;
+  const chip =
+    "flex h-[18px] min-w-[26px] items-center justify-center rounded-full border px-1.5 text-[12px] font-medium leading-4 tabular-nums";
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+      aria-label={label}
+      title={label}
+      className={cn(
+        "flex items-center gap-1 transition-opacity",
+        dimmed && DIMMED,
+        align === "right" && "-translate-x-full",
+        align === "center" && "-translate-x-1/2",
+      )}
+    >
+      {mappedN > 0 && (
+        <span
+          className={cn(chip, "border-[#c9cccb] bg-[#f4f4f4] text-[#080a09] hover:bg-[#e3e5e4]")}
+        >
+          {mappedN}
+        </span>
+      )}
+      {suggestedN > 0 && (
+        <span
+          className={cn(chip, "border-[#A855F7] bg-[#faf5ff] text-[#7e22ce] hover:bg-[#f3e8ff]")}
+        >
+          {suggestedN}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/** `name` with the first case-insensitive match of `query` set semibold. */
+function HighlightedName({ name, query }: { name: string; query?: string | undefined }) {
+  const q = query?.trim().toLowerCase();
+  const at = q ? name.toLowerCase().indexOf(q) : -1;
+  if (!q || at === -1) return <>{name}</>;
+  return (
+    <>
+      {name.slice(0, at)}
+      <span className="font-semibold">{name.slice(at, at + q.length)}</span>
+      {name.slice(at + q.length)}
+    </>
+  );
+}
+
 /** One white row in a property / column panel: grip, status dot, name, key, type, confidence. */
 function PanelRow({
   name,
@@ -2014,12 +2372,19 @@ function PanelRow({
   selected = false,
   onClick,
   moveFrom,
+  highlight,
+  sampleValues,
+  dimmed = false,
 }: {
+  dimmed?: boolean;
   name: string;
+  // A search query: the matching part of `name` is set semibold (no color change).
+  highlight?: string | undefined;
   dotColor: string;
   identifier: boolean;
   type: string | undefined;
   chip?: ReactNode;
+  sampleValues?: string[];
   // Only Property rows have the drag grip; Column rows don't move.
   grip?: boolean;
   selected?: boolean;
@@ -2029,7 +2394,7 @@ function PanelRow({
 }) {
   const move = useContext(PropertyMoveContext);
   const movable = !!(move && moveFrom);
-  return (
+  const row = (
     <div
       data-property-row
       data-property-id={moveFrom?.propertyId}
@@ -2044,10 +2409,11 @@ function PanelRow({
       onDragEnd={() => move?.endDrag()}
       style={movable ? ({ WebkitUserDrag: "element" } as React.CSSProperties) : undefined}
       className={cn(
-        "relative flex h-[34px] shrink-0 items-center gap-2 rounded-[4px] border py-1 pl-1.5 pr-2",
+        "relative flex h-[34px] shrink-0 items-center gap-2 rounded-[4px] border py-1 pl-1.5 pr-2 transition-opacity",
+        dimmed && DIMMED,
         selected ? SELECTED_NODE : "border-[#e3e5e4] bg-white",
         onClick && !selected && "hover:border-[#161919]",
-        !grip && "pl-2.5",
+        !grip && "pl-3",
       )}
     >
       {grip && (
@@ -2063,11 +2429,11 @@ function PanelRow({
       <span className="lod-type size-1.5 shrink-0 rounded-full" style={{ background: dotColor }} />
       <span className="flex min-w-0 flex-1 items-center gap-1">
         <span className="lod-name min-w-0 flex-1 truncate text-[14px] leading-6 text-[#080a09]">
-          {name}
+          <HighlightedName name={name} query={highlight} />
         </span>
         {identifier && (
           <span role="img" aria-label="Identifier" className="lod-type shrink-0">
-            <FigmaIcon src={keyIcon} />
+            <FigmaIcon src={identifierKeyIcon} />
           </span>
         )}
         {type && (
@@ -2078,6 +2444,27 @@ function PanelRow({
       </span>
       {chip && <span className="lod-confidence contents">{chip}</span>}
     </div>
+  );
+  if (!sampleValues) return row;
+  return (
+    <Tooltip delayDuration={250}>
+      <TooltipTrigger asChild>{row}</TooltipTrigger>
+      <TooltipContent>
+        <p className="font-medium">Sample data</p>
+        {sampleValues.length > 0 ? (
+          <ul className="mt-1 flex flex-col gap-1 text-[#b8bdc4]">
+            {sampleValues.map((value) => (
+              <li key={value} className="flex gap-2">
+                <span aria-hidden>•</span>
+                <span className="break-all">{value}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-1 text-[#b8bdc4]">No sample values</p>
+        )}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -2109,6 +2496,7 @@ function MappingPanels({
   isSelected: (property: Property) => boolean;
   onSelect: (property: Property) => void;
 }) {
+  const reviewScope = useContext(ReviewScopeContext);
   const [propFilter, setPropFilter] = useState<ListFilter>("all");
   const [propSearch, setPropSearch] = useState("");
   const [propSort, setPropSort] = useState<SortState>(DEFAULT_SORT);
@@ -2122,10 +2510,14 @@ function MappingPanels({
   // scrollbar's width, so they fill the panel up to it instead of running under it.
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollbar, setScrollbar] = useState(0);
+  const [listViewport, setListViewport] = useState({ top: 0, height: PANEL_LIST_MAX });
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const measure = () => setScrollbar(el.offsetWidth - el.clientWidth);
+    const measure = () => {
+      setScrollbar(el.offsetWidth - el.clientWidth);
+      setListViewport({ top: el.scrollTop, height: el.clientHeight });
+    };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(el);
@@ -2195,7 +2587,7 @@ function MappingPanels({
       setOverColumn(null);
     };
     const connectTo = (column: string) =>
-      tryUpdatePropertyMapping(app, entity.id, connect.propertyId, {
+      tryConnectMapping(app, entity.id, connect.propertyId, {
         table: table.name,
         column,
         status: "mapped",
@@ -2256,25 +2648,54 @@ function MappingPanels({
   const connectable = (column: string) =>
     !connect ||
     canMapPropertyToColumn(app, entity.id, connect.propertyId, { table: table.name, column });
-  const columnOf = (p: Property) => p.mapping!.column;
+  // One row per mapping into this table — an Identifier with a composite key there has several.
+  type Pair = { property: Property; mapping: ColumnRef };
+  const columnOf = (pair: Pair) => pair.mapping.column;
   const accepts = (filter: ListFilter, mapped: boolean, identifier: boolean) =>
     filter === "all" ||
     (filter === "mapped" && mapped) ||
     (filter === "unmapped" && !mapped) ||
     (filter === "identifier" && identifier);
-  let pairs = properties.filter(
-    (p) =>
-      accepts(propFilter, true, isIdentifierProperty(p)) &&
-      accepts(columnFilter, true, isIdentifierProperty(p)),
+  // Search keeps matching mapped pairs aligned across both panels; each side filters its
+  // Unmapped section independently. Both sections retain their Mapped/Unmapped counts.
+  const propQuery = propSearch.trim().toLowerCase();
+  const columnQueryText = columnSearch.trim().toLowerCase();
+  const searching = !!(propQuery || columnQueryText);
+  const allPairs: Pair[] = properties.flatMap((property) =>
+    mappingsIn(property, table.name).map((mapping) => ({ property, mapping })),
   );
-  pairs = filterProperties(pairs, "all", propSearch, sortSide === "property" ? propSort : null);
-  pairs = filterProperties(
-    pairs,
-    "all",
-    columnSearch,
-    sortSide === "column" ? columnSort : null,
-    columnOf,
+  const matching = allPairs.filter(
+    (pair) =>
+      accepts(propFilter, true, isIdentifierProperty(pair.property)) &&
+      accepts(columnFilter, true, isIdentifierProperty(pair.property)) &&
+      (!searching ||
+        (!!propQuery && pair.property.name.toLowerCase().includes(propQuery)) ||
+        (!!columnQueryText && columnOf(pair).toLowerCase().includes(columnQueryText))),
   );
+  // The pairs follow the side being sorted; the Identifier's rows stay pinned on top.
+  const sortedPairs =
+    sortSide === "property"
+      ? sortByState(
+          matching,
+          propSort,
+          (pair) => pair.property.name,
+          (pair) => pair.property.confidence,
+        )
+      : sortByState(matching, columnSort, columnOf, () => undefined);
+  // Keep a composite Identifier's columns together, even when sorting by Column, so its
+  // Property appears once and every Column can connect back to that one row.
+  const identifierPairs = sortedPairs.filter((pair) => isIdentifierProperty(pair.property));
+  const identifierIds = [...new Set(identifierPairs.map((pair) => pair.property.id))];
+  const pairs = [
+    ...identifierIds.flatMap((id) => identifierPairs.filter((pair) => pair.property.id === id)),
+    ...sortedPairs.filter((pair) => !isIdentifierProperty(pair.property)),
+  ];
+  const firstIdentifierRow = new Map<string, number>();
+  pairs.forEach((pair, index) => {
+    if (isIdentifierProperty(pair.property) && !firstIdentifierRow.has(pair.property.id)) {
+      firstIdentifierRow.set(pair.property.id, index);
+    }
+  });
   // The rest of each side, listed on its own under the pairs.
   const mappedIds = new Set(properties.map((p) => p.id));
   const restProperties = filterProperties(
@@ -2285,7 +2706,7 @@ function MappingPanels({
     propSearch,
     propSort,
   );
-  const mappedColumns = new Set(properties.map(columnOf));
+  const mappedColumns = new Set(allPairs.map(columnOf));
   const columnQuery = columnSearch.trim().toLowerCase();
   const restColumns = sortByState(
     table.columns.filter(
@@ -2301,10 +2722,9 @@ function MappingPanels({
   const restRows = Math.max(restProperties.length, restColumns.length);
   const columnType = (name: string) => table.columns.find((c) => c.name === name)?.type;
   const overflows = (pairs.length + restRows) * 40 > PANEL_LIST_MAX;
-  const panelBg =
-    "absolute inset-y-0 rounded-[6px] bg-[#f4f4f4] shadow-[0_1px_2px_0_rgba(0,0,0,0.05)]";
+  const panelBg = "absolute inset-y-0 rounded-[6px] bg-white shadow-[0_1px_2px_0_rgba(0,0,0,0.05)]";
   const fade =
-    "pointer-events-none absolute bottom-0 h-[30px] bg-gradient-to-b from-[rgba(244,244,244,0)] to-[#f4f4f4]";
+    "pointer-events-none absolute bottom-0 h-[30px] bg-gradient-to-b from-white/0 to-white";
   return (
     <div ref={rootRef} data-canvas-card className="relative" style={{ width }}>
       <div aria-hidden className={cn(panelBg, "left-0")} style={{ width: NODE_W }} />
@@ -2348,6 +2768,12 @@ function MappingPanels({
         ref={scrollRef}
         data-canvas-scroll
         aria-label="Mappings"
+        onScroll={(event) =>
+          setListViewport({
+            top: event.currentTarget.scrollTop,
+            height: event.currentTarget.clientHeight,
+          })
+        }
         className="relative flex flex-col gap-1.5 overflow-y-auto overscroll-contain pb-2 [scrollbar-width:thin]"
         style={{ maxHeight: PANEL_LIST_MAX }}
       >
@@ -2359,60 +2785,108 @@ function MappingPanels({
             Nothing matches.
           </p>
         )}
-        {pairs.map((property) => {
-          const suggested = mappingStatus(property.mapping!) === "suggested";
+        {pairs.length > 0 && (
+          <div className="flex shrink-0 items-center">
+            <div className="px-2" style={{ width: NODE_W }}>
+              <ListGroupHeading
+                label="Mapped"
+                count={new Set(pairs.map((pair) => pair.property.id)).size}
+              />
+            </div>
+            <div className="flex-1" />
+            <div className={columnCellPad} style={{ width: columnCellWidth }}>
+              <ListGroupHeading label="Mapped" count={pairs.length} />
+            </div>
+          </div>
+        )}
+        {pairs.map((pair, index) => {
+          const { property, mapping } = pair;
+          const suggested = mappingStatus(mapping) === "suggested";
+          const firstRow = firstIdentifierRow.get(property.id);
+          const repeatedIdentifier = firstRow !== undefined && firstRow !== index;
+          const rowOffset = repeatedIdentifier ? (index - firstRow) * 40 : 0;
+          const sourceTop = (pairs.length > 0 ? 28 : 0) + (firstRow ?? index) * 40;
+          const sourceVisible =
+            sourceTop < listViewport.top + listViewport.height && sourceTop + 34 > listViewport.top;
           return (
-            <div key={property.id} className="flex shrink-0 items-center">
+            <div key={`${property.id}:${mapping.column}`} className="flex shrink-0 items-center">
               <div className="relative z-10 px-2" style={{ width: NODE_W }}>
-                <div className="group/maprow relative">
-                  <PanelRow
-                    name={property.name}
-                    dotColor={statusDotColor(propertyStatus(property))}
-                    identifier={isIdentifierProperty(property)}
-                    type={property.type}
-                    chip={
-                      propertyStatus(property) === "suggested" ? (
-                        <PropertyConfidenceChip property={property} tone="muted" />
-                      ) : null
-                    }
-                    selected={isSelected(property)}
-                    onClick={() => onSelect(property)}
-                    moveFrom={{ entityId: entity.id, propertyId: property.id }}
-                  />
-                  {!connecting && (
-                    <ConnectPlus
-                      label="Connect to another column"
-                      color={suggested ? SUGGESTED : SETTLED}
-                      onPress={(event) =>
-                        startConnect(property.id, event.currentTarget, "press", event)
+                {!repeatedIdentifier && (
+                  <div className="group/maprow relative">
+                    <PanelRow
+                      name={property.name}
+                      highlight={propQuery}
+                      dotColor={statusDotColor(propertyStatus(property))}
+                      dimmed={!reviewScope.property(property)}
+                      identifier={isIdentifierProperty(property)}
+                      type={property.type}
+                      chip={
+                        propertyReview(property) === "suggested" ? (
+                          <PropertyConfidenceChip property={property} tone="muted" />
+                        ) : null
                       }
-                      onActivate={(target) => startConnect(property.id, target, "click")}
+                      selected={isSelected(property)}
+                      onClick={() => onSelect(property)}
+                      moveFrom={{ entityId: entity.id, propertyId: property.id }}
                     />
-                  )}
-                </div>
+                    {!connecting && (
+                      <ConnectPlus
+                        label="Connect to another column"
+                        color={suggested ? SUGGESTED : SETTLED}
+                        onPress={(event) =>
+                          startConnect(property.id, event.currentTarget, "press", event)
+                        }
+                        onActivate={(target) => startConnect(property.id, target, "click")}
+                      />
+                    )}
+                  </div>
+                )}
               </div>
-              {/* The line; hovering it shows × halfway along, which disconnects the mapping. */}
+              {/* Each composite column connects to the Identifier's single visible row. */}
               <div
                 className={cn(
                   "group/mapline relative -mx-2 flex h-5 min-w-0 flex-1 items-center transition-opacity",
-                  connecting && "pointer-events-none opacity-0",
+                  connecting || (repeatedIdentifier && !sourceVisible)
+                    ? "pointer-events-none opacity-0"
+                    : !reviewScope.property(property) && DIMMED,
                 )}
               >
-                <span
-                  aria-hidden
-                  className="h-0 w-full border-t-[1.5px]"
-                  style={{
-                    borderColor: suggested ? SUGGESTED : SETTLED,
-                    borderStyle: suggested ? "dashed" : "solid",
-                  }}
-                />
+                {repeatedIdentifier ? (
+                  <svg
+                    aria-hidden
+                    className="absolute inset-0 h-full w-full overflow-visible"
+                    viewBox="0 0 100 20"
+                    preserveAspectRatio="none"
+                  >
+                    <path
+                      d={`M 0 ${10 - rowOffset} C 35 ${10 - rowOffset} 65 10 100 10`}
+                      fill="none"
+                      stroke={suggested ? SUGGESTED : SETTLED}
+                      strokeWidth={1.5}
+                      strokeDasharray={suggested ? "4 4" : undefined}
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  </svg>
+                ) : (
+                  <span
+                    aria-hidden
+                    className="h-[1.5px] w-full"
+                    style={
+                      suggested
+                        ? {
+                            backgroundImage: `repeating-linear-gradient(to right, ${SUGGESTED} 0 4px, transparent 4px 8px)`,
+                          }
+                        : { backgroundColor: SETTLED }
+                    }
+                  />
+                )}
                 <button
                   type="button"
-                  aria-label={`Disconnect ${property.name} from ${columnOf(property)}`}
+                  aria-label={`Disconnect ${property.name} from ${mapping.column}`}
                   onPointerDown={(event) => event.stopPropagation()}
                   onClick={(event) => {
                     event.stopPropagation();
-                    app.updateMapping(entity.id, property.id, null);
+                    app.disconnectMapping(entity.id, property.id, mapping);
                   }}
                   className="absolute left-1/2 top-1/2 flex size-[18px] -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-[#c9cccb] bg-white text-[#3c4140] opacity-0 transition-[opacity,background-color,border-color,color] hover:border-[#f15b15] hover:bg-[#ffe6db] hover:text-[#9c461e] focus-visible:opacity-100 group-hover/mapline:opacity-100"
                 >
@@ -2420,26 +2894,34 @@ function MappingPanels({
                 </button>
               </div>
               <div
-                data-map-column={columnOf(property)}
+                data-map-column={mapping.column}
                 className={cn(
                   "transition-opacity",
                   columnCellPad,
-                  !connectable(columnOf(property)) && "opacity-40",
+                  !connectable(mapping.column) && "opacity-40",
                 )}
                 style={{ width: columnCellWidth }}
               >
                 <PanelRow
                   grip={false}
-                  name={columnOf(property)}
+                  name={mapping.column}
+                  sampleValues={columnSamples(table, mapping.column)}
+                  dimmed={!reviewScope.column(table.name, mapping.column)}
+                  highlight={columnQueryText}
                   dotColor={suggested ? "#7e22ce" : "#0891b2"}
                   identifier={isIdentifierProperty(property)}
-                  type={columnType(columnOf(property))}
+                  type={columnType(mapping.column)}
                   chip={
                     suggested ? (
-                      <MappingConfidenceChip entity={entity} property={property} tone="muted" />
+                      <MappingConfidenceChip
+                        entity={entity}
+                        property={property}
+                        mapping={mapping}
+                        tone="muted"
+                      />
                     ) : null
                   }
-                  selected={isSelected(property) || overColumn === columnOf(property)}
+                  selected={isSelected(property) || overColumn === mapping.column}
                   onClick={() => onSelect(property)}
                 />
               </div>
@@ -2447,23 +2929,14 @@ function MappingPanels({
           );
         })}
         {restRows > 0 && (
-          <div className="flex shrink-0 items-end pt-2">
-            {(
-              [
-                [restProperties.length, `Not mapped to ${table.name}`],
-                [restColumns.length, `Not mapped to ${entity.name}`],
-              ] as const
-            ).map(([count, label], i) => (
-              <Fragment key={label}>
-                {i === 1 && <div className="flex-1" />}
-                <p
-                  className="truncate px-3 text-[11px] font-medium leading-4 text-[#6d7472]"
-                  style={{ width: NODE_W }}
-                >
-                  {count > 0 && `${label} · ${count}`}
-                </p>
-              </Fragment>
-            ))}
+          <div className="flex shrink-0 items-center">
+            <div className="px-2" style={{ width: NODE_W }}>
+              <ListGroupHeading label="Unmapped" count={restProperties.length} />
+            </div>
+            <div className="flex-1" />
+            <div className={columnCellPad} style={{ width: columnCellWidth }}>
+              <ListGroupHeading label="Unmapped" count={restColumns.length} />
+            </div>
           </div>
         )}
         {Array.from({ length: restRows }, (_, i) => {
@@ -2476,11 +2949,13 @@ function MappingPanels({
                   <div className="group/maprow relative">
                     <PanelRow
                       name={property.name}
+                      highlight={propQuery}
                       dotColor={statusDotColor(propertyStatus(property))}
+                      dimmed={!reviewScope.property(property)}
                       identifier={isIdentifierProperty(property)}
                       type={property.type}
                       chip={
-                        propertyStatus(property) === "suggested" ? (
+                        propertyReview(property) === "suggested" ? (
                           <PropertyConfidenceChip property={property} tone="muted" />
                         ) : null
                       }
@@ -2515,6 +2990,9 @@ function MappingPanels({
                   <PanelRow
                     grip={false}
                     name={column.name}
+                    sampleValues={columnSamples(table, column.name)}
+                    highlight={columnQueryText}
+                    dimmed={!reviewScope.column(table.name, column.name)}
                     dotColor="#c9cccb"
                     identifier={false}
                     type={column.type}
@@ -2543,7 +3021,7 @@ function MappingPanels({
             <path
               d={`M ${connect.x1} ${connect.y1} L ${pointer.x} ${pointer.y}`}
               fill="none"
-              stroke="#00ded8"
+              stroke={SETTLED}
               strokeWidth={2}
             />
           )}
@@ -2551,7 +3029,7 @@ function MappingPanels({
             <path
               d={`M ${lineSearch.x1} ${lineSearch.y1} L ${lineSearch.x} ${lineSearch.y}`}
               fill="none"
-              stroke="#00ded8"
+              stroke={SETTLED}
               strokeWidth={2}
             />
           )}
@@ -2599,8 +3077,7 @@ function MappingPanels({
               preferTable={table.name}
               onPick={(value) => {
                 const mapping = parseMappingValue(value);
-                if (mapping)
-                  tryUpdatePropertyMapping(app, entity.id, lineSearch.propertyId, mapping);
+                if (mapping) tryConnectMapping(app, entity.id, lineSearch.propertyId, mapping);
                 setLineSearch(null);
               }}
             />
@@ -2639,15 +3116,16 @@ function ArrowMarkers() {
   );
 }
 
-/** The dashed placeholder where a Relation being created will appear (see `relationPlusFor`). */
+/** The placeholder where a Relation being created will appear (Figma 356:184345; see
+ * `relationPlusFor`). */
 function GhostRelationPill() {
   return (
     <div
       aria-hidden
-      className="flex h-[26px] items-center gap-2 rounded-full border border-dashed border-[#c9cccb] bg-white/70 pl-3 pr-3 text-[12px] leading-4 text-[#9ea3a2]"
+      className="flex h-[26px] items-center gap-2 rounded-full border border-[#d3d5d4] bg-[#f4f4f4] py-1 pl-3 pr-1.5 text-[12px] leading-4 text-[#6d7472] opacity-70"
       style={{ width: PILL_W }}
     >
-      <span className="size-1.5 shrink-0 rounded-full bg-[#c9cccb]" />
+      <span className="size-1.5 shrink-0 rounded-full bg-[#6d7472]" />
       <span className="truncate">New relation</span>
     </div>
   );
@@ -2729,7 +3207,7 @@ const TG_TABLE_X = 81;
 const TG_ENTITY_X = -81 - NODE_W;
 // An Entity Type's own Relations (Figma 521:24681) open one column further out on the left.
 const TG_RELATED_X = TG_ENTITY_X - LINK_GAP - NODE_W;
-const TG_PILL_X = TG_RELATED_X + NODE_W + 80;
+const TG_PILL_X = TG_RELATED_X + NODE_W + PILL_GAP;
 
 type MappedEntity = { entity: Entity; mapped: Property[] };
 
@@ -2777,7 +3255,7 @@ export function TableGraphView({
       app.entities
         .map((entity) => ({
           entity,
-          mapped: entity.properties.filter((p) => p.mapping?.table === table.name),
+          mapped: entity.properties.filter((p) => mapsInto(p, table.name)),
         }))
         .filter((m) => m.mapped.length > 0)
         .sort((a, b) => b.mapped.length - a.mapped.length),
@@ -2937,16 +3415,16 @@ export function TableGraphView({
   const detailItem = resolveDetailItem(app, inspectedTable);
   const queue = [
     ...shownEntities
-      .filter(({ entity }) => entityDisplayStatus(entity) === "suggested")
+      .filter(({ entity }) => entityReview(entity) === "suggested")
       .map(({ entity }) => suggestionKey({ kind: "entity", id: entity.id })),
     ...related.flatMap(({ relations }) =>
       relations
-        .filter(({ relation }) => relationStatus(relation, app.entities) === "suggested")
+        .filter(({ relation }) => relationReview(relation) === "suggested")
         .map(({ relation }) => suggestionKey({ kind: "relation", id: relation.id })),
     ),
     ...(focused
       ? focused.mapped
-          .filter((p) => propertyStatus(p) === "suggested")
+          .filter((p) => propertyReview(p) === "suggested")
           .map((p) =>
             suggestionKey({ kind: "property", entityId: focused.entity.id, propertyId: p.id }),
           )
@@ -2954,13 +3432,14 @@ export function TableGraphView({
   ];
   // The review bar counts what this graph is about: the Entity Types mapping into the table and
   // their mappings into it.
+  const reviewScope = useReviewScope(app);
   const scope = useMemo<SuggestionScope>(() => {
     const ids = new Set(mappedEntities.map((m) => m.entity.id));
     return {
       entity: (entity) => ids.has(entity.id),
-      property: (owner, property) => ids.has(owner.id) && property.mapping?.table === table.name,
+      property: (owner, property) => ids.has(owner.id) && mapsInto(property, table.name),
       relation: (relation) => ids.has(relation.from) || ids.has(relation.to),
-      mapping: (owner, property) => ids.has(owner.id) && property.mapping?.table === table.name,
+      mapping: (owner, property) => ids.has(owner.id) && mapsInto(property, table.name),
     };
   }, [mappedEntities, table.name]);
 
@@ -2976,8 +3455,9 @@ export function TableGraphView({
       name={entity.name}
       detail={entityDetail(entity)}
       dropFor={entity.id}
+      dimmed={!reviewScope.entity(entity)}
       chip={
-        entityDisplayStatus(entity) === "suggested" ? (
+        entityReview(entity) === "suggested" ? (
           <EntityConfidenceChip entity={entity} tone="muted" />
         ) : null
       }
@@ -2990,345 +3470,351 @@ export function TableGraphView({
   );
 
   return (
-    <PropertyMoveContext.Provider value={move}>
-      <EditingCanvasTopBar app={app} canvas={canvas} />
-      <div
-        ref={viewportRef}
-        data-canvas-viewport
-        onPointerDownCapture={(event) => {
-          multiRef.current = event.shiftKey || event.metaKey || event.ctrlKey;
-        }}
-        onPointerDown={(event) => {
-          if (event.button !== 0 && event.button !== 1) return;
-          if (canvas.tool === "pan" || event.button === 1 || isCanvasBackground(event.target)) {
-            canvas.startPan(event);
-          }
-        }}
-        onPointerMove={(event) => canvas.panning && canvas.movePan(event)}
-        onPointerUp={canvas.endPan}
-        onPointerCancel={canvas.endPan}
-        onClick={(event) => {
-          if (!canvas.consumePanClick() && isCanvasBackground(event.target)) closeDetail();
-        }}
-        className={cn(
-          // A canvas, not a document: clicks (and shift-clicks) never select text.
-          "relative min-h-0 flex-1 cursor-default select-none overflow-hidden [&_input]:select-text [&_textarea]:select-text",
-          canvas.panning && "cursor-grabbing",
-        )}
-        style={{
-          backgroundImage: "radial-gradient(circle, #e3e5e4 1px, transparent 1px)",
-          backgroundSize: "16px 16px",
-        }}
-      >
+    <ReviewScopeContext.Provider value={reviewScope}>
+      <PropertyMoveContext.Provider value={move}>
+        <CanvasZoomCard canvas={canvas} />
         <div
-          ref={worldRef}
-          data-canvas-lod={canvas.lod}
-          className="absolute left-1/2 top-[40%] origin-top-left"
-          style={{ transform: canvas.worldTransform }}
-        >
-          <svg
-            className="pointer-events-none absolute left-0 top-0 overflow-visible"
-            width={1}
-            height={1}
-          >
-            <ArrowMarkers />
-            {/* Each Entity Type → the table. */}
-            {entityItems.map((item) => {
-              if (item.kind !== "entity") return null;
-              const suggested = item.mapped.some((p) => mappingStatus(p.mapping!) === "suggested");
-              const dim = !!activeId && item.entity.id !== activeId;
-              return (
-                <g
-                  key={`edge-${item.key}`}
-                  style={{ opacity: dim ? 0.2 : 1, transition: "opacity 300ms" }}
-                >
-                  <Curve
-                    d={curve({ x: TG_ENTITY_X + NODE_W, y: item.y }, { x: TG_TABLE_X, y: 0 })}
-                    suggested={suggested}
-                    bold={item.entity.id === activeId || !!focused}
-                  />
-                </g>
-              );
-            })}
-            {/* The active Entity Type's Relations: related Entity Type → pill → it. */}
-            <AnimatePresence>
-              {activeItem &&
-                relatedItems.flatMap((item) =>
-                  item.kind !== "entity"
-                    ? []
-                    : item.cp.relations.map(({ relation }) => {
-                        const y = pillY.get(relation.id) ?? item.y;
-                        const relSuggested = relationStatus(relation, app.entities) === "suggested";
-                        const towardActive = relation.to === activeId;
-                        const origin = curve(
-                          { x: TG_ENTITY_X, y: activeY },
-                          { x: TG_ENTITY_X, y: activeY },
-                        );
-                        return (
-                          <motion.g
-                            key={relation.id}
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            exit={{ opacity: 0, transition: { duration: 0.2 } }}
-                          >
-                            <Curve
-                              d={curve(
-                                { x: TG_RELATED_X + NODE_W, y: item.y },
-                                { x: TG_PILL_X, y },
-                              )}
-                              from={origin}
-                              suggested={relSuggested}
-                              arrow={towardActive ? undefined : "start"}
-                            />
-                            <Curve
-                              d={curve(
-                                { x: TG_PILL_X + PILL_W, y },
-                                { x: TG_ENTITY_X, y: activeY },
-                              )}
-                              from={origin}
-                              suggested={relSuggested}
-                              arrow={towardActive ? "end" : undefined}
-                            />
-                          </motion.g>
-                        );
-                      }),
-                )}
-            </AnimatePresence>
-          </svg>
-
-          {/* The selected Data Table. */}
-          <Node x={TG_TABLE_X} y={-CENTER_H / 2}>
-            <div
-              data-canvas-card
-              role="button"
-              tabIndex={0}
-              onClick={() => inspectTable(table.name)}
-              className={cn(
-                "flex items-center gap-2 rounded-lg border bg-white px-3 text-left",
-                CARD_SHADOW,
-                inspectedTable === table.name && detailItem?.kind === "table"
-                  ? SELECTED_NODE
-                  : "border-[#3b82f6]",
-              )}
-              style={{ width: NODE_W, height: CENTER_H }}
-            >
-              <span className="lod-type contents">
-                <MappingStatusBadge
-                  status={tableMappingStatus(table.name, app.entities)}
-                  {...tableMappingCompleteness(table.name, app.entities)}
-                  size={16}
-                />
-              </span>
-              <span className="flex min-w-0 flex-1 flex-col">
-                <span className="lod-title truncate text-[16px] font-medium leading-6 text-[#080a09]">
-                  {table.name}
-                </span>
-                <span className="lod-detail truncate text-[12px] leading-4 text-[#6d7472]">
-                  {plural(table.columns.length, "column", "columns")} ·{" "}
-                  {plural(mappedEntities.length, "entity", "entities")}
-                </span>
-              </span>
-              <ExpandChevron
-                open={columnsOpen || !!focused}
-                label={focused ? "Close mappings" : columnsOpen ? "Hide columns" : "Show columns"}
-                onClick={() =>
-                  focused ? toggleFocus(focused.entity.id) : setColumnsOpen((o) => !o)
-                }
-              />
-            </div>
-            {columnsOpen && !focused && (
-              <div className="absolute left-0 top-full mt-1.5" style={{ width: NODE_W }}>
-                <TableColumnsPanel app={app} table={table} />
-              </div>
-            )}
-          </Node>
-
-          {/* The Entity Types mapping into it. */}
-          {entityItems.map((item) => {
-            if (item.kind === "more") {
-              return (
-                <Node key={item.key} x={TG_ENTITY_X + NODE_W / 2} y={item.y - MORE_H / 2}>
-                  <div className={cn("transition-opacity duration-300", activeId && "opacity-40")}>
-                    <MoreButton
-                      centered
-                      label={showAll ? "Show less" : `+ ${item.hidden} more`}
-                      onClick={() => setShowAll((all) => !all)}
-                    />
-                  </div>
-                </Node>
-              );
+          ref={viewportRef}
+          data-canvas-viewport
+          onPointerDownCapture={(event) => {
+            multiRef.current = event.shiftKey || event.metaKey || event.ctrlKey;
+          }}
+          onPointerDown={(event) => {
+            if (event.button !== 0 && event.button !== 1) return;
+            if (canvas.tool === "pan" || event.button === 1 || isCanvasBackground(event.target)) {
+              canvas.startPan(event);
             }
-            const { entity, mapped } = item;
-            const suggested = mapped.some((p) => mappingStatus(p.mapping!) === "suggested");
-            const dim = !!activeId && entity.id !== activeId;
-            const isFocused = focused?.entity.id === entity.id;
-            return (
-              <div
-                key={item.key}
-                className={cn("transition-opacity duration-300", dim && "opacity-40")}
-                onMouseEnter={() => !focused && hoverEntity(entity.id)}
-                onMouseLeave={() => !focused && hoverEntity(null)}
-                onClickCapture={(event) =>
-                  !focused &&
-                  !(event.shiftKey || event.metaKey || event.ctrlKey) &&
-                  setPinnedId(entity.id)
-                }
-              >
-                <Node x={TG_ENTITY_X} y={item.y - NODE_H / 2}>
-                  {entityNode(
-                    entity,
-                    <ExpandChevron
-                      open={isFocused}
-                      label={isFocused ? "Close mappings" : "Show each mapping"}
-                      onClick={() => toggleFocus(entity.id)}
-                    />,
-                  )}
-                </Node>
-                <Node x={TG_ENTITY_X + NODE_W + 10} y={item.y - 9}>
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      toggleFocus(entity.id);
-                    }}
-                    aria-label={`Show ${entity.name}'s mappings`}
-                    className={cn(
-                      "flex h-[18px] min-w-[26px] items-center justify-center rounded-full border px-1.5 text-[12px] font-medium leading-4 tabular-nums",
-                      suggested
-                        ? "border-[#A855F7] bg-[#faf5ff] text-[#7e22ce] hover:bg-[#f3e8ff]"
-                        : "border-[#c9cccb] bg-[#f4f4f4] text-[#080a09] hover:bg-[#e3e5e4]",
-                    )}
+          }}
+          onPointerMove={(event) => canvas.panning && canvas.movePan(event)}
+          onPointerUp={canvas.endPan}
+          onPointerCancel={canvas.endPan}
+          onClick={(event) => {
+            if (!canvas.consumePanClick() && isCanvasBackground(event.target)) closeDetail();
+          }}
+          className={cn(
+            // A canvas, not a document: clicks (and shift-clicks) never select text.
+            "relative min-h-0 flex-1 cursor-default select-none overflow-hidden [&_input]:select-text [&_textarea]:select-text",
+            canvas.panning && "cursor-grabbing",
+          )}
+          style={{
+            backgroundImage: "radial-gradient(circle, #e3e5e4 1px, transparent 1px)",
+            backgroundSize: "16px 16px",
+          }}
+        >
+          <div
+            ref={worldRef}
+            data-canvas-lod={canvas.lod}
+            className="absolute left-1/2 top-[40%] origin-top-left"
+            style={{ transform: canvas.worldTransform }}
+          >
+            <svg
+              className="pointer-events-none absolute left-0 top-0 overflow-visible"
+              width={1}
+              height={1}
+            >
+              <ArrowMarkers />
+              {/* Each Entity Type → the table. */}
+              {entityItems.map((item) => {
+                if (item.kind !== "entity") return null;
+                const suggested = item.mapped.some((p) =>
+                  mappingsIn(p, table.name).some((m) => mappingStatus(m) === "suggested"),
+                );
+                const dim = !!activeId && item.entity.id !== activeId;
+                return (
+                  <g
+                    key={`edge-${item.key}`}
+                    style={{ opacity: dim ? 0.2 : 1, transition: "opacity 300ms" }}
                   >
-                    {mapped.length}
-                  </button>
-                </Node>
-              </div>
-            );
-          })}
+                    <Curve
+                      d={curve({ x: TG_ENTITY_X + NODE_W, y: item.y }, { x: TG_TABLE_X, y: 0 })}
+                      suggested={suggested}
+                      dimmed={!reviewScope.mappings(item.mapped)}
+                      bold={item.entity.id === activeId}
+                    />
+                  </g>
+                );
+              })}
+              {/* The active Entity Type's Relations: related Entity Type → pill → it. */}
+              <AnimatePresence>
+                {activeItem &&
+                  relatedItems.flatMap((item) =>
+                    item.kind !== "entity"
+                      ? []
+                      : item.cp.relations.map(({ relation }) => {
+                          const y = pillY.get(relation.id) ?? item.y;
+                          const relSuggested = relationReview(relation) === "suggested";
+                          const towardActive = relation.to === activeId;
+                          const origin = curve(
+                            { x: TG_ENTITY_X, y: activeY },
+                            { x: TG_ENTITY_X, y: activeY },
+                          );
+                          return (
+                            <motion.g
+                              key={relation.id}
+                              initial={{ opacity: 0 }}
+                              animate={{ opacity: 1 }}
+                              exit={{ opacity: 0, transition: { duration: 0.2 } }}
+                            >
+                              <Curve
+                                d={curve(
+                                  { x: TG_RELATED_X + NODE_W, y: item.y },
+                                  { x: TG_PILL_X, y },
+                                )}
+                                from={origin}
+                                suggested={relSuggested}
+                                dimmed={!reviewScope.relation(relation)}
+                                arrow={towardActive ? undefined : "start"}
+                              />
+                              <Curve
+                                d={curve(
+                                  { x: TG_PILL_X + PILL_W, y },
+                                  { x: TG_ENTITY_X, y: activeY },
+                                )}
+                                from={origin}
+                                suggested={relSuggested}
+                                dimmed={!reviewScope.relation(relation)}
+                                arrow={towardActive ? "end" : undefined}
+                              />
+                            </motion.g>
+                          );
+                        }),
+                  )}
+              </AnimatePresence>
+            </svg>
 
-          {/* The active Entity Type's related Entity Types and Relation pills. */}
-          <div onMouseEnter={keepHover} onMouseLeave={() => !pinnedId && hoverEntity(null)}>
-            <AnimatePresence>
-              {activeItem &&
-                relatedItems.map((item) =>
-                  item.kind === "more" ? (
-                    <Drop
-                      key={item.key}
-                      end={{ x: TG_RELATED_X, y: activeY }}
-                      x={TG_RELATED_X + NODE_W / 2}
-                      y={item.y - MORE_H / 2}
+            {/* The selected Data Table. */}
+            <Node x={TG_TABLE_X} y={-CENTER_H / 2}>
+              <div
+                data-canvas-card
+                role="button"
+                tabIndex={0}
+                onClick={() => inspectTable(table.name)}
+                className={cn(
+                  "flex items-center gap-2 rounded-lg border bg-white px-3 text-left transition-opacity",
+                  CARD_SHADOW,
+                  !reviewScope.table(table.name) && DIMMED,
+                  inspectedTable === table.name && detailItem?.kind === "table"
+                    ? SELECTED_NODE
+                    : "border-[#3b82f6]",
+                )}
+                style={{ width: NODE_W, height: CENTER_H }}
+              >
+                <span className="lod-type contents">
+                  <MappingStatusBadge
+                    status={tableMappingStatus(table.name, app.entities)}
+                    {...tableMappingCompleteness(table.name, app.entities)}
+                    size={16}
+                  />
+                </span>
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="lod-title truncate text-[16px] font-medium leading-6 text-[#080a09]">
+                    {table.name}
+                  </span>
+                  <span className="lod-detail truncate text-[12px] leading-4 text-[#6d7472]">
+                    {plural(table.columns.length, "column", "columns")} ·{" "}
+                    {plural(mappedEntities.length, "entity", "entities")}
+                  </span>
+                </span>
+                <ExpandChevron
+                  open={columnsOpen || !!focused}
+                  label={focused ? "Close mappings" : columnsOpen ? "Hide columns" : "Show columns"}
+                  onClick={() =>
+                    focused ? toggleFocus(focused.entity.id) : setColumnsOpen((o) => !o)
+                  }
+                />
+              </div>
+              {columnsOpen && !focused && (
+                <div className="absolute left-0 top-full mt-1.5" style={{ width: NODE_W }}>
+                  <TableColumnsPanel app={app} table={table} />
+                </div>
+              )}
+            </Node>
+
+            {/* The Entity Types mapping into it. */}
+            {entityItems.map((item) => {
+              if (item.kind === "more") {
+                return (
+                  <Node key={item.key} x={TG_ENTITY_X + NODE_W / 2} y={item.y - MORE_H / 2}>
+                    <div
+                      className={cn("transition-opacity duration-300", activeId && "opacity-40")}
                     >
                       <MoreButton
                         centered
-                        label={showAllRelated ? "Show less" : `+ ${item.hidden} more`}
-                        onClick={() => setShowAllRelated((all) => !all)}
+                        label={showAll ? "Show less" : `+ ${item.hidden} more`}
+                        onClick={() => setShowAll((all) => !all)}
                       />
-                    </Drop>
-                  ) : (
-                    <Drop
-                      key={item.key}
-                      end={{ x: TG_ENTITY_X, y: activeY }}
-                      x={TG_RELATED_X}
-                      y={item.y - NODE_H / 2}
-                    >
-                      {entityNode(item.cp.entity)}
-                    </Drop>
-                  ),
-                )}
-              {activeItem &&
-                relatedItems.flatMap((item) =>
-                  item.kind !== "entity"
-                    ? []
-                    : item.cp.relations.map(({ relation }) => (
-                        <Drop
-                          key={`pill-${relation.id}`}
-                          end={{ x: TG_ENTITY_X, y: activeY }}
-                          x={TG_PILL_X}
-                          y={(pillY.get(relation.id) ?? item.y) - PILL_H / 2}
-                        >
-                          <RelationPill
-                            relation={relation}
-                            status={relationStatus(relation, app.entities)}
-                            selected={isSelected({ kind: "relation", id: relation.id })}
-                            onClick={() => inspect({ kind: "relation", id: relation.id })}
-                          />
-                        </Drop>
-                      )),
-                )}
-            </AnimatePresence>
-          </div>
+                    </div>
+                  </Node>
+                );
+              }
+              const { entity, mapped } = item;
+              const dim = !!activeId && entity.id !== activeId;
+              const isFocused = focused?.entity.id === entity.id;
+              return (
+                <div
+                  key={item.key}
+                  className={cn("transition-opacity duration-300", dim && "opacity-40")}
+                  onMouseEnter={() => !focused && hoverEntity(entity.id)}
+                  onMouseLeave={() => !focused && hoverEntity(null)}
+                  onClickCapture={(event) =>
+                    !focused &&
+                    !(event.shiftKey || event.metaKey || event.ctrlKey) &&
+                    setPinnedId(entity.id)
+                  }
+                >
+                  <Node x={TG_ENTITY_X} y={item.y - NODE_H / 2}>
+                    {entityNode(
+                      entity,
+                      <ExpandChevron
+                        open={isFocused}
+                        label={isFocused ? "Close mappings" : "Show each mapping"}
+                        onClick={() => toggleFocus(entity.id)}
+                      />,
+                    )}
+                  </Node>
+                  <Node x={TG_ENTITY_X + NODE_W + 10} y={item.y - 9}>
+                    <MappingCountChips
+                      mappings={mapped.flatMap((p) => mappingsIn(p, table.name))}
+                      dimmed={!reviewScope.mappings(mapped)}
+                      align="left"
+                      label={`Show ${entity.name}'s mappings`}
+                      onClick={() => toggleFocus(entity.id)}
+                    />
+                  </Node>
+                </div>
+              );
+            })}
 
-          {/* A focused Entity Type: its Property → Column mappings, between it and the table. */}
-          {focused && (
-            <Node x={TG_ENTITY_X} y={CENTER_H / 2 + 6}>
-              <MappingPanels
-                key={focused.entity.id}
-                app={app}
-                entity={focused.entity}
-                properties={focused.mapped}
-                table={table}
-                width={TG_TABLE_X + NODE_W - TG_ENTITY_X}
-                onCreate={onCreateProperty ? () => onCreateProperty(focused.entity.id) : undefined}
-                isSelected={(p) =>
-                  isSelected({ kind: "property", entityId: focused.entity.id, propertyId: p.id })
-                }
-                onSelect={(p) =>
-                  inspect({ kind: "property", entityId: focused.entity.id, propertyId: p.id })
-                }
-              />
-            </Node>
+            {/* The active Entity Type's related Entity Types and Relation pills. */}
+            <div onMouseEnter={keepHover} onMouseLeave={() => !pinnedId && hoverEntity(null)}>
+              <AnimatePresence>
+                {activeItem &&
+                  relatedItems.map((item) =>
+                    item.kind === "more" ? (
+                      <Drop
+                        key={item.key}
+                        end={{ x: TG_RELATED_X, y: activeY }}
+                        x={TG_RELATED_X + NODE_W / 2}
+                        y={item.y - MORE_H / 2}
+                      >
+                        <MoreButton
+                          centered
+                          label={showAllRelated ? "Show less" : `+ ${item.hidden} more`}
+                          onClick={() => setShowAllRelated((all) => !all)}
+                        />
+                      </Drop>
+                    ) : (
+                      <Drop
+                        key={item.key}
+                        end={{ x: TG_ENTITY_X, y: activeY }}
+                        x={TG_RELATED_X}
+                        y={item.y - NODE_H / 2}
+                      >
+                        {entityNode(item.cp.entity)}
+                      </Drop>
+                    ),
+                  )}
+                {activeItem &&
+                  relatedItems.flatMap((item) =>
+                    item.kind !== "entity"
+                      ? []
+                      : item.cp.relations.map(({ relation }) => (
+                          <Drop
+                            key={`pill-${relation.id}`}
+                            end={{ x: TG_ENTITY_X, y: activeY }}
+                            x={TG_PILL_X}
+                            y={(pillY.get(relation.id) ?? item.y) - PILL_H / 2}
+                          >
+                            <RelationPill
+                              relation={relation}
+                              status={relationStatus(relation, app.entities)}
+                              selected={isSelected({ kind: "relation", id: relation.id })}
+                              dimmed={!reviewScope.relation(relation)}
+                              onClick={() => inspect({ kind: "relation", id: relation.id })}
+                            />
+                          </Drop>
+                        )),
+                  )}
+              </AnimatePresence>
+            </div>
+
+            {/* A focused Entity Type: its Property → Column mappings, between it and the table. */}
+            {focused && (
+              <Node x={TG_ENTITY_X} y={CENTER_H / 2 + 6}>
+                <MappingPanels
+                  key={focused.entity.id}
+                  app={app}
+                  entity={focused.entity}
+                  properties={focused.mapped}
+                  table={table}
+                  width={TG_TABLE_X + NODE_W - TG_ENTITY_X}
+                  onCreate={
+                    onCreateProperty ? () => onCreateProperty(focused.entity.id) : undefined
+                  }
+                  isSelected={(p) =>
+                    isSelected({ kind: "property", entityId: focused.entity.id, propertyId: p.id })
+                  }
+                  onSelect={(p) =>
+                    inspect({ kind: "property", entityId: focused.entity.id, propertyId: p.id })
+                  }
+                />
+              </Node>
+            )}
+          </div>
+          {canvas.tool === "pan" && (
+            <div
+              aria-hidden
+              className={cn(
+                "absolute inset-0 z-[18]",
+                canvas.panning ? "cursor-grabbing" : "cursor-grab",
+              )}
+            />
           )}
         </div>
-        {canvas.tool === "pan" && (
-          <div
-            aria-hidden
-            className={cn(
-              "absolute inset-0 z-[18]",
-              canvas.panning ? "cursor-grabbing" : "cursor-grab",
-            )}
-          />
-        )}
-      </div>
 
-      {detailItem ? (
-        <div className="absolute inset-x-3 bottom-3 z-20 mx-auto max-w-[1444px]">
-          <DetailPanel
-            key={detailItem.key}
-            app={app}
-            item={detailItem}
-            queue={queue}
-            focusEntityId={focused?.entity.id}
-            onSelectKey={(key) => {
-              const ref = parseSuggestionKey(key);
-              if (ref) inspect(ref);
-            }}
-            onClose={closeDetail}
-            onDeletedFocus={closeDetail}
-            onEdit={onEdit}
-          />
-        </div>
-      ) : app.suggestionSelection.size >= 2 ? (
-        <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center">
-          <div className="pointer-events-auto">
-            <SelectionActions app={app} onSplit={onSplit} />
-          </div>
-        </div>
-      ) : (
-        <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center">
-          <div className="pointer-events-auto">
-            <AiReviewBar
-              entities={app.entities}
-              relations={app.relations}
-              tables={app.tables}
-              confidenceRange={app.confidenceRange}
-              onConfidenceRangeChange={app.setConfidenceRange}
-              onSelectSuggestionsInRange={app.selectSuggestionKeys}
-              scope={scope}
+        {detailItem ? (
+          <DetailDock defaultCap={detailItem.kind === "table" ? 240 : null}>
+            <CompletionNoticeSlot app={app} />
+            <DetailPanel
+              key={detailItem.key}
+              app={app}
+              item={detailItem}
+              queue={queue}
+              focusEntityId={focused?.entity.id}
+              onSelectKey={(key) => {
+                const ref = parseSuggestionKey(key);
+                if (ref) inspect(ref);
+              }}
+              onClose={closeDetail}
+              onDeletedFocus={closeDetail}
+              onEdit={onEdit}
             />
+          </DetailDock>
+        ) : app.suggestionSelection.size >= 2 ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center">
+            <div className="pointer-events-auto relative">
+              <CompletionNoticeSlot app={app} />
+              <SelectionActions app={app} onSplit={onSplit} />
+            </div>
           </div>
-        </div>
-      )}
-    </PropertyMoveContext.Provider>
+        ) : (
+          <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center">
+            <div className="pointer-events-auto relative">
+              <CompletionNoticeSlot app={app} />
+              <AiReviewBar
+                entities={app.entities}
+                relations={app.relations}
+                tables={app.tables}
+                confidenceRange={app.confidenceRange}
+                onConfidenceRangeChange={app.setConfidenceRange}
+                onSelectSuggestionsInRange={app.selectSuggestionKeys}
+                scope={scope}
+              />
+            </div>
+          </div>
+        )}
+      </PropertyMoveContext.Provider>
+    </ReviewScopeContext.Provider>
   );
 }
 
@@ -3338,6 +3824,7 @@ export function TableGraphView({
  * each; the dot says whether a column is mapped (teal), only suggested (purple), or not (grey).
  */
 function TableColumnsPanel({ app, table }: { app: OntologyApp; table: TableSchema }) {
+  const reviewScope = useContext(ReviewScopeContext);
   const [filter, setFilter] = useState<ListFilter>("all");
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
   const [search, setSearch] = useState("");
@@ -3345,9 +3832,10 @@ function TableColumnsPanel({ app, table }: { app: OntologyApp; table: TableSchem
     const map = new Map<string, "mapped" | "suggested">();
     app.entities.forEach((entity) =>
       entity.properties.forEach((p) => {
-        if (p.mapping?.table !== table.name) return;
-        const status = mappingStatus(p.mapping);
-        if (status === "mapped" || !map.has(p.mapping.column)) map.set(p.mapping.column, status);
+        mappingsIn(p, table.name).forEach((m) => {
+          const status = mappingStatus(m);
+          if (status === "mapped" || !map.has(m.column)) map.set(m.column, status);
+        });
       }),
     );
     return map;
@@ -3365,10 +3853,12 @@ function TableColumnsPanel({ app, table }: { app: OntologyApp; table: TableSchem
     (c) => c.name,
     () => undefined,
   );
+  const mappedColumns = columns.filter((column) => stateOf.has(column.name));
+  const unmappedColumns = columns.filter((column) => !stateOf.has(column.name));
   return (
     <div
       data-canvas-card
-      className="rounded-[6px] bg-[#f4f4f4] shadow-[0_1px_2px_0_rgba(0,0,0,0.05)]"
+      className="overflow-hidden rounded-[6px] bg-white shadow-[0_1px_2px_0_rgba(0,0,0,0.05)]"
     >
       <ListControls
         className="bg-transparent px-2"
@@ -3380,29 +3870,52 @@ function TableColumnsPanel({ app, table }: { app: OntologyApp; table: TableSchem
         onSearchChange={setSearch}
         searchPlaceholder="Search columns…"
       />
-      <div
-        data-canvas-scroll
-        className="flex flex-col gap-1.5 overflow-y-auto overscroll-contain px-2 pb-2"
-        style={{ maxHeight: PANEL_LIST_MAX }}
-      >
-        {columns.length === 0 && (
-          <p className="py-3 text-center text-[12px] text-[#6d7472]">No columns match.</p>
+      <div className="relative">
+        <div
+          data-canvas-scroll
+          className="flex flex-col gap-1.5 overflow-y-auto overscroll-contain px-2 pb-2"
+          style={{ maxHeight: PANEL_LIST_MAX }}
+        >
+          {columns.length === 0 && (
+            <p className="py-3 text-center text-[12px] text-[#6d7472]">No columns match.</p>
+          )}
+          {(
+            [
+              ["Mapped", mappedColumns],
+              ["Unmapped", unmappedColumns],
+            ] as const
+          ).map(([label, group]) =>
+            group.length > 0 ? (
+              <Fragment key={label}>
+                <ListGroupHeading label={label} count={group.length} />
+                {group.map((column) => {
+                  const state = stateOf.get(column.name);
+                  return (
+                    <PanelRow
+                      key={column.name}
+                      grip={false}
+                      name={column.name}
+                      sampleValues={columnSamples(table, column.name)}
+                      dimmed={!reviewScope.column(table.name, column.name)}
+                      dotColor={
+                        state === "mapped"
+                          ? "#0891b2"
+                          : state === "suggested"
+                            ? "#7e22ce"
+                            : "#c9cccb"
+                      }
+                      identifier={false}
+                      type={column.type}
+                    />
+                  );
+                })}
+              </Fragment>
+            ) : null,
+          )}
+        </div>
+        {columns.length * 40 > PANEL_LIST_MAX && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-[30px] bg-gradient-to-b from-white/0 to-white" />
         )}
-        {columns.map((column) => {
-          const state = stateOf.get(column.name);
-          return (
-            <PanelRow
-              key={column.name}
-              grip={false}
-              name={column.name}
-              dotColor={
-                state === "mapped" ? "#0891b2" : state === "suggested" ? "#7e22ce" : "#c9cccb"
-              }
-              identifier={false}
-              type={column.type}
-            />
-          );
-        })}
       </div>
     </div>
   );

@@ -1,9 +1,11 @@
-import { relationLabel, type Relation } from "@/lib/mock-data";
 import {
-  SelectionBarDeleteIcon,
-  SelectionBarDeclineIcon,
-  SelectionBarAcceptIcon,
-} from "./nav-icons";
+  canConfirmRelation,
+  relationLabel,
+  relationReview,
+  type Entity,
+  type Relation,
+} from "@/lib/mock-data";
+import { AcceptButton, DeleteButton, RejectButton, SelectionBarShell } from "./selection-bar-ui";
 
 /**
  * Overview's single-Relation contextual action bar — the exact same slot and replacement rule as
@@ -18,52 +20,33 @@ import {
  */
 export function RelationSelectionBar({
   relation,
+  entities,
   onDelete,
   onAccept,
   onDecline,
 }: {
   relation: Relation;
+  entities: Entity[];
   onDelete: () => void;
   onAccept: () => void;
   onDecline: () => void;
 }) {
-  const isPendingSuggestion = relation.status === "suggested";
+  const isPendingSuggestion = relationReview(relation) === "suggested";
 
   return (
-    <div
-      onPointerDown={(e) => e.stopPropagation()}
-      className="flex h-12 items-center gap-4 rounded-[6px] border border-border bg-white pl-4 pr-2 shadow-[0px_1px_1px_rgba(0,0,0,0.05)]"
-    >
-      <span className="max-w-40 truncate whitespace-nowrap text-sm text-foreground">
-        {relationLabel(relation)} selected
-      </span>
-      <div className="flex shrink-0 items-center gap-2">
-        <button
-          type="button"
-          onClick={onDelete}
-          className="flex h-8 min-w-[64px] shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-[4px] px-2 text-sm font-medium text-destructive transition-colors hover:bg-accent"
-        >
-          <SelectionBarDeleteIcon size={16} /> Delete
-        </button>
-        {isPendingSuggestion && (
-          <button
-            type="button"
-            onClick={onDecline}
-            className="flex h-8 min-w-[64px] shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-[4px] border border-border bg-white px-2 text-sm font-medium text-[#161919] transition-colors hover:bg-accent"
-          >
-            <SelectionBarDeclineIcon size={16} /> Reject
-          </button>
-        )}
-        {isPendingSuggestion && (
-          <button
-            type="button"
-            onClick={onAccept}
-            className="flex h-8 min-w-[64px] shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-[4px] border border-border bg-white px-2 text-sm font-medium text-[#161919] transition-colors hover:bg-accent"
-          >
-            <SelectionBarAcceptIcon size={16} /> Accept
-          </button>
-        )}
-      </div>
-    </div>
+    <SelectionBarShell label={`${relationLabel(relation)} selected`}>
+      {!isPendingSuggestion && <DeleteButton onClick={onDelete} />}
+      {isPendingSuggestion && <RejectButton onClick={onDecline} />}
+      {isPendingSuggestion && (
+        <AcceptButton
+          onClick={onAccept}
+          disabledReason={
+            canConfirmRelation(relation, entities)
+              ? undefined
+              : "Confirm both Entity Types (with no errors) before confirming this Relation."
+          }
+        />
+      )}
+    </SelectionBarShell>
   );
 }

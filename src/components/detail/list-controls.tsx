@@ -1,14 +1,5 @@
 import { useState } from "react";
-import {
-  Calendar,
-  Fingerprint,
-  Hash,
-  List,
-  Plus,
-  ToggleLeft,
-  Type as TypeIcon,
-  X,
-} from "lucide-react";
+import { Calendar, Fingerprint, Hash, List, ToggleLeft, Type as TypeIcon, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { SortDropdown, type SortKey, type SortState } from "@/components/ontology/SortDropdown";
@@ -16,6 +7,7 @@ import { cn } from "@/lib/utils";
 import filterIcon from "@/assets/icons/filter-1-16.svg";
 import hashtagIcon from "@/assets/icons/hashtag-16.svg";
 import searchIcon from "@/assets/icons/magnifying-glass-2-16.svg";
+import plusLargeIcon from "@/assets/icons/plus-large-16.svg";
 
 /**
  * The list pieces the editing workspace's Graph views share (`EditingGraph`): the Filter / Sort / + / Search bar above a Property or Column list, and the
@@ -30,7 +22,7 @@ export function FigmaIcon({
   className,
 }: {
   src: string;
-  size?: 16 | 20;
+  size?: 12 | 16 | 20;
   className?: string;
 }) {
   return (
@@ -93,7 +85,7 @@ export function FilterDropdown({
           aria-haspopup="menu"
           aria-expanded={open}
           className={cn(
-            "flex h-6 shrink-0 items-center gap-1 rounded-[4.77px] px-1.5 text-[14px] font-medium leading-6 text-[#6d7472] transition-colors hover:bg-black/[0.08]",
+            "flex h-6 shrink-0 items-center gap-1 rounded-[6px] px-1.5 text-[14px] font-medium leading-6 text-[#6d7472] transition-colors hover:bg-black/[0.08]",
             value !== "all" && "bg-black/[0.08] text-[#161919]",
           )}
         >
@@ -147,9 +139,10 @@ export function CreateButton({ label, onClick }: { label: string; onClick: () =>
       }}
       aria-label={label}
       title={label}
-      className="flex size-5 shrink-0 items-center justify-center rounded-[6px] text-[#6d7472] hover:bg-black/[0.08] hover:text-[#161919]"
+      className="flex size-5 shrink-0 items-center justify-center rounded-[6px] hover:bg-[#e3e5e4]"
     >
-      <Plus className="size-4" strokeWidth={1.5} />
+      {/* Figma IconPlusLarge (Icon Button xs, Ghost). */}
+      <FigmaIcon src={plusLargeIcon} />
     </button>
   );
 }

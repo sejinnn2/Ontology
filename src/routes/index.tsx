@@ -8,7 +8,12 @@ import type { AnchorMorphRects } from "@/lib/app-state";
 import { Header } from "@/components/nav/Header";
 import { GlobalSidebar } from "@/components/nav/GlobalSidebar";
 import { EntityMorphOverlay } from "@/components/overview/EntityMorphOverlay";
-import { entityErrorReason, entityStatus } from "@/lib/mock-data";
+import {
+  entityErrorReason,
+  entityReview,
+  entityStatus,
+  entityWarningReason,
+} from "@/lib/mock-data";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -77,13 +82,13 @@ function Index() {
           onToggleHistoryChangeSelected={app.toggleHistoryChangeSelected}
           onHistoryHoverChange={app.setHistoryInspectionHoveredNumber}
           onRestoreSelectedHistoryChanges={app.restoreSelectedHistoryChanges}
+          editing={!!app.detail}
+          onExitEditing={app.closeDetail}
         />
         <div className="relative min-h-0 flex-1">
           {app.detail ? (
             // The Editing workspace: flush, edge-to-edge — same as Overview, no inset/rounded
-            // "contained workspace" card. "← Back to Ontology view" floats over DetailView's own
-            // canvas (see DetailShell), never in the Header above, which stays GLOBAL and
-            // unchanged across the transition.
+            // "contained workspace" card. The way back is the Header's "Ontology" breadcrumb.
             <div
               className={cn(
                 "relative h-full w-full overflow-hidden bg-white transition-opacity duration-300 ease-out",
@@ -103,9 +108,10 @@ function Index() {
           labelOrigin={app.entityMorphOrigin.labelRect}
           target={morphTarget}
           status={entityStatus(morphEntity)}
+          pending={entityReview(morphEntity) === "suggested"}
           confidence={morphEntity.confidence}
           name={morphEntity.name}
-          warningReason={morphEntity.warningReason}
+          warningReason={entityWarningReason(morphEntity)}
           errorReason={entityErrorReason(morphEntity)}
           onDone={() => {
             setMorphTarget(null);

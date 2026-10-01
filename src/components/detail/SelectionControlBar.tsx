@@ -1,3 +1,4 @@
+import { propertyIssue } from "@/lib/mock-data";
 import { useCallback, useMemo, useState } from "react";
 import { Copy, SquareSplitHorizontal } from "lucide-react";
 import type { Entity, Property, Relation } from "@/lib/mock-data";
@@ -104,7 +105,7 @@ export function SelectionControlBar({
   );
 
   const selectedWarningCount = useMemo(
-    () => properties.filter(({ property }) => property.status === "warning").length,
+    () => properties.filter(({ property }) => propertyIssue(property) === "warning").length,
     [properties],
   );
   const [acceptWarningsOpen, setAcceptWarningsOpen] = useState(false);

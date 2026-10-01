@@ -69,7 +69,7 @@ export function SortDropdown({
           aria-expanded={open}
           className={cn(
             variant === "figma"
-              ? "flex h-6 items-center gap-2 rounded-[4.77px] px-1.5 text-[14px] font-medium leading-6 text-[#6d7472] transition-colors hover:bg-black/[0.08]"
+              ? "flex h-6 items-center gap-2 rounded-[6px] px-1.5 text-[14px] font-medium leading-6 text-[#6d7472] transition-colors hover:bg-black/[0.08]"
               : "flex items-center rounded-[4px] px-1.5 py-0.5 text-xs font-normal text-muted-foreground transition-colors hover:bg-accent",
             className,
           )}

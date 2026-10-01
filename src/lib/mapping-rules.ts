@@ -2,7 +2,7 @@ import type { OntologyApp } from "@/lib/app-state";
 import { tableByName, type ColumnRef } from "@/lib/mock-data";
 
 // Shared by the editing views: whether a Property may be mapped to a Column (their
-// data types must be in the same family), and mapping it only when it may.
+// data types must be in the same family), and connecting it only when it may.
 
 export function dataTypeFamily(type: string): string {
   const normalized = type.trim().toLowerCase();
@@ -31,13 +31,15 @@ export function canMapPropertyToColumn(
   return true;
 }
 
-export function tryUpdatePropertyMapping(
+/** Connects a Property to a column — only when their data types fit (see `connectMapping` for how
+ * it adds to, or replaces within that dataset, the Property's other mappings). */
+export function tryConnectMapping(
   app: OntologyApp,
   entityId: string,
   propertyId: string,
   mapping: ColumnRef,
 ): boolean {
   if (!canMapPropertyToColumn(app, entityId, propertyId, mapping)) return false;
-  app.updateMapping(entityId, propertyId, mapping);
+  app.connectMapping(entityId, propertyId, mapping);
   return true;
 }

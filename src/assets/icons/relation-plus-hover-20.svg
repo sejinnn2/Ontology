@@ -1,0 +1,11 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="Plus" clip-path="url(#clip0_0_6)">
+<circle id="Ellipse 56" cx="10" cy="10" r="9.5" fill="#3B82F6" stroke="#3B82F6"/>
+<path id="Vector" fill-rule="evenodd" clip-rule="evenodd" d="M10.5357 5.71429V9.46429H14.2857V10.5357H10.5357V14.2857H9.46429V10.5357H5.71429V9.46429H9.46429V5.71429H10.5357Z" fill="white"/>
+</g>
+<defs>
+<clipPath id="clip0_0_6">
+<rect width="20" height="20" fill="white"/>
+</clipPath>
+</defs>
+</svg>

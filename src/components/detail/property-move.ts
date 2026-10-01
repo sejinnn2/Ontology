@@ -73,3 +73,23 @@ export function dropPropertiesOn(
     return null; // malformed payload
   }
 }
+
+/** Whether a dragleave really left `event.currentTarget`. Chrome often reports no relatedTarget
+ * for drag events, so moving between a target's own rows would read as leaving it (and clear its
+ * highlight, re-rendering a long list on every row) — the pointer position is the reliable test. */
+export function leftDropTarget(event: React.DragEvent): boolean {
+  const r = event.currentTarget.getBoundingClientRect();
+  return (
+    event.clientX <= r.left ||
+    event.clientX >= r.right ||
+    event.clientY <= r.top ||
+    event.clientY >= r.bottom
+  );
+}
+
+// Properties just created: the Graph view's property list scrolls them into view (see
+// `usePropertyMove`'s reveal), the same as Properties just moved there.
+export const REVEAL_PROPERTIES_EVENT = "ontology:reveal-properties";
+export function revealProperties(entityId: string, ids: string[]) {
+  window.dispatchEvent(new CustomEvent(REVEAL_PROPERTIES_EVENT, { detail: { entityId, ids } }));
+}

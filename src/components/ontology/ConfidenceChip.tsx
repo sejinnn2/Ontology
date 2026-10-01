@@ -10,6 +10,7 @@ import {
   mappingReasoningContent,
   propertyReasoningContent,
   relationReasoningContent,
+  type ColumnRef,
   type Entity,
   type Property,
   type ReasoningContent,
@@ -263,7 +264,8 @@ function ReasoningCard({ getContent }: { getContent: () => ReasoningContent | nu
 // use (nodes, relation pills, property panels — Figma 508:43219).
 const PILL_TONE = {
   default: "bg-[#e3e5e4] text-[#252828]",
-  muted: "bg-[#f4f4f4] text-[#6d7472] leading-4",
+  // Figma Badge_Confidence: at least 32px wide, centred.
+  muted: "min-w-8 justify-center bg-[#f4f4f4] text-[#6d7472] leading-4",
 };
 export type ConfidenceTone = keyof typeof PILL_TONE;
 
@@ -332,17 +334,20 @@ function ConfidenceCardChip({
 export function MappingConfidenceChip({
   entity,
   property,
+  mapping,
   tone,
 }: {
   entity: Entity;
   property: Property;
+  // Which of the Property's mappings (its first, by default).
+  mapping?: ColumnRef | undefined;
   tone?: ConfidenceTone | undefined;
 }) {
-  if (!property.mapping) return null;
+  if (property.mappings.length === 0) return null;
   return (
     <ConfidenceCardChip
       confidence={property.confidence}
-      getContent={() => mappingReasoningContent(entity, property)}
+      getContent={() => mappingReasoningContent(entity, property, mapping)}
       size="md"
       width="w-[380px]"
       tone={tone}

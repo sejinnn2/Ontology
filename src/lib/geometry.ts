@@ -25,22 +25,6 @@ export const nodeCenter = (n: { x: number; y: number }): Pt => ({
 
 export type Side = "top" | "right" | "bottom" | "left";
 
-/** A point offset from `c` toward one of the 4 sides, using the box's own half-width for
- * left/right and half-height for top/bottom (not a single uniform radius), plus `gap` beyond
- * that edge. */
-const sideAnchor = (c: Pt, gap: number, side: Side): Pt => {
-  switch (side) {
-    case "left":
-      return { x: c.x - HALF_W - gap, y: c.y };
-    case "right":
-      return { x: c.x + HALF_W + gap, y: c.y };
-    case "top":
-      return { x: c.x, y: c.y - HALF_H - gap };
-    case "bottom":
-      return { x: c.x, y: c.y + HALF_H + gap };
-  }
-};
-
 const rectCenter = (r: Rect): Pt => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
 
 const rectSideAnchor = (r: Rect, gap: number, side: Side): Pt => {
@@ -89,16 +73,6 @@ export function edgeAnchorsForRects(
   return { p1, p2, mid: { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 }, side1, side2 };
 }
 
-/** A Property<->Column mapping connector's anchors are NOT adaptive like `edgeAnchorsForRects`
- * above — the semantic direction (a Property's own right edge is always where it "points from",
- * a Column's own left edge is always where it "points to") stays fixed regardless of where either
- * card has been dragged, so the connector never re-routes through top/bottom and never travels
- * vertically through a card's interior. Always returns `a`'s right-edge anchor and `b`'s left-edge
- * anchor, in that order. */
-export function rightToLeftAnchors(a: Rect, b: Rect, gap: number = NODE_GAP): { p1: Pt; p2: Pt } {
-  return { p1: rectSideAnchor(a, gap, "right"), p2: rectSideAnchor(b, gap, "left") };
-}
-
 /** Anchor points on each node's rectangular perimeter — on whichever side (left/right, or
  * top/bottom) faces the other node along the axis their centers differ most on — plus their
  * midpoint, used to place a relation's label. Axis-aligned anchors (rather than a direct-angle
@@ -116,16 +90,6 @@ export function edgeAnchors(
   return { p1, p2, mid };
 }
 
-/** Anchor point on a single node's perimeter, facing an arbitrary point (not necessarily another
- * node's center) — used while dragging a live connector line out from a node, before there's a
- * second node to call edgeAnchors with. Projects onto whichever side (by half-width/half-height,
- * not a uniform radius) the target actually faces, so the line still exits a wide pill from its
- * left/right edge rather than a diagonal corner. */
-export function anchorToward(a: { x: number; y: number }, target: Pt): Pt {
-  const ca = nodeCenter(a);
-  return sideAnchor(ca, NODE_GAP, sideBetween(ca, target));
-}
-
 /** Which of 4 boundary sides (top/right/bottom/left), centered on `center`, faces `toward` — the
  * coordinate-system-agnostic version: works equally for canvas world-space centers or plain
  * screen-space DOM rect centers, since it only looks at the relative sign of the delta. */
@@ -134,14 +98,6 @@ export function sideBetween(center: Pt, toward: Pt): Side {
   const dy = toward.y - center.y;
   if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? "right" : "left";
   return dy >= 0 ? "bottom" : "top";
-}
-
-/** Which of a node's 4 boundary connection handles faces a given point — used to pick which
- * handle to highlight as the active drop target while a connector drag hovers this node. Mirrors
- * edgeAnchors' own dominant-axis branch so the highlighted handle always matches where the
- * committed connector will actually anchor. */
-export function nearestSide(from: { x: number; y: number }, toward: Pt): Side {
-  return sideBetween(nodeCenter(from), toward);
 }
 
 /** Whether world-space point `p` falls inside node `n`'s rectangular bounds — the pill's actual
@@ -156,19 +112,6 @@ export function pointInRect(p: Pt, r: Rect): boolean {
   return p.x >= r.x && p.x <= r.x + r.width && p.y >= r.y && p.y <= r.y + r.height;
 }
 
-/** Anchor point on a circle's own boundary, at the continuous angle actually facing `toward` —
- * unlike `sideAnchor`/`rectSideAnchor` above, this never snaps to one of 4 cardinal sides, so a
- * ring of edges radiating from one circular node fans out at each edge's own true angle instead
- * of bunching onto a shared side. Used by Overview's graph-style connectors (see OverviewCanvas),
- * which anchor to entities' circular nodes rather than the fixed-size pill rects above. */
-export function circleAnchor(center: Pt, radius: number, toward: Pt, gap: number = 0): Pt {
-  const dx = toward.x - center.x;
-  const dy = toward.y - center.y;
-  const dist = Math.hypot(dx, dy) || 1;
-  const r = radius + gap;
-  return { x: center.x + (dx / dist) * r, y: center.y + (dy / dist) * r };
-}
-
 /** Shortest distance from point `p` to the segment `a`-`b` — used to detect when a straight
  * connector would cut through a third node's circle, so it can be bowed around it instead. */
 export function distanceToSegment(p: Pt, a: Pt, b: Pt): number {
@@ -178,58 +121,4 @@ export function distanceToSegment(p: Pt, a: Pt, b: Pt): number {
   if (lenSq === 0) return Math.hypot(p.x - a.x, p.y - a.y);
   const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq));
   return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
-}
-
-const CORNER_R = 50;
-
-/** Orthogonal connector between two points: one straight run along whichever axis they differ
- * most on, a single 90-degree bend at the shared midpoint, then a straight run into the end —
- * with quarter-round corners (quadratic Beziers centered on the actual corner) instead of sharp
- * turns. Two connectors that share the same pair of anchor axes bend at the same midpoint, so
- * parallel connections read as a clean bus rather than crossing diagonals. Falls back to a
- * straight line when there's too little room on either side for a rounded corner. */
-export function orthogonalPath(
-  p1: Pt,
-  p2: Pt,
-  r: number = CORNER_R,
-  axis: "horizontal" | "vertical" | "auto" = "auto",
-): string {
-  const dx = p2.x - p1.x;
-  const dy = p2.y - p1.y;
-  if (Math.abs(dx) < 1 || Math.abs(dy) < 1) return `M ${p1.x} ${p1.y} L ${p2.x} ${p2.y}`;
-
-  const sx = dx >= 0 ? 1 : -1;
-  const sy = dy >= 0 ? 1 : -1;
-
-  if (axis === "horizontal" || (axis === "auto" && Math.abs(dx) >= Math.abs(dy))) {
-    const midX = (p1.x + p2.x) / 2;
-    const rr = Math.max(
-      0,
-      Math.min(r, Math.abs(dy) / 2, Math.abs(midX - p1.x), Math.abs(p2.x - midX)),
-    );
-    if (rr < 1) return `M ${p1.x} ${p1.y} L ${p2.x} ${p2.y}`;
-    return [
-      `M ${p1.x} ${p1.y}`,
-      `L ${midX - sx * rr} ${p1.y}`,
-      `Q ${midX} ${p1.y} ${midX} ${p1.y + sy * rr}`,
-      `L ${midX} ${p2.y - sy * rr}`,
-      `Q ${midX} ${p2.y} ${midX + sx * rr} ${p2.y}`,
-      `L ${p2.x} ${p2.y}`,
-    ].join(" ");
-  }
-
-  const midY = (p1.y + p2.y) / 2;
-  const rr = Math.max(
-    0,
-    Math.min(r, Math.abs(dx) / 2, Math.abs(midY - p1.y), Math.abs(p2.y - midY)),
-  );
-  if (rr < 1) return `M ${p1.x} ${p1.y} L ${p2.x} ${p2.y}`;
-  return [
-    `M ${p1.x} ${p1.y}`,
-    `L ${p1.x} ${midY - sy * rr}`,
-    `Q ${p1.x} ${midY} ${p1.x + sx * rr} ${midY}`,
-    `L ${p2.x - sx * rr} ${midY}`,
-    `Q ${p2.x} ${midY} ${p2.x} ${midY + sy * rr}`,
-    `L ${p2.x} ${p2.y}`,
-  ].join(" ");
 }

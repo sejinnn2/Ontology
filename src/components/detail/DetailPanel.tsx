@@ -1,17 +1,27 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { ArrowRight, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Trash2 } from "lucide-react";
 import type { OntologyApp } from "@/lib/app-state";
-import { parseSuggestionKey } from "@/lib/app-state";
+import { parseSuggestionKey, suggestionKey } from "@/lib/app-state";
 import {
+  canConfirmEntity,
+  canConfirmProperty,
+  canConfirmRelation,
+  entityDatasets,
   entityDisplayStatus,
   entityErrorReason,
+  entityReview,
+  entityWarningReason,
+  identifierOf,
   isIdentifierProperty,
   mappingStatus,
   propertyErrorReason,
+  propertyReview,
   propertyStatus,
+  relationDatasetOptions,
   relationErrorReason,
   relationJoins,
   relationLabel,
+  relationReview,
   relationStatus,
   tableMappingCompleteness,
   tableMappingStatus,
@@ -38,6 +48,7 @@ import rejectIcon from "@/assets/icons/controller-button-x-16.svg";
 import acceptIcon from "@/assets/icons/check-circle-2-16.svg";
 import arrowLeftRightIcon from "@/assets/icons/arrow-left-right-20.svg";
 import keyIcon from "@/assets/icons/key-2-16.svg";
+import arrowRightIcon from "@/assets/icons/arrow-right-12.svg";
 
 /**
  * The editing canvas's bottom detail panel: one selected Entity Type, Property, Relation, or Data
@@ -96,14 +107,15 @@ export function resolveDetailItem(
 
 // Figma "Detail": white, 8px radius, hairline border, shadow-lg.
 const PANEL_CLASS =
-  "flex w-full flex-col overflow-hidden rounded-lg border border-[#e3e5e4] bg-white shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1),0_4px_6px_-4px_rgba(0,0,0,0.1)]";
+  "flex max-h-full min-h-0 w-full flex-col overflow-hidden rounded-lg border border-[#e3e5e4] bg-white shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1),0_4px_6px_-4px_rgba(0,0,0,0.1)]";
 // The footer's two equal buttons (Figma "Button", outline, 32px, 4px radius, Medium 14).
 const FOOTER_BUTTON =
   "flex h-8 min-w-16 flex-1 items-center justify-center rounded-[4px] border border-[#e3e5e4] bg-white px-2 text-[14px] font-medium leading-6 text-[#161919] transition-colors hover:bg-[#f4f4f4]";
 const ICON_BUTTON =
   "flex size-6 shrink-0 items-center justify-center rounded-[6px] transition-colors hover:bg-black/[0.06]";
-// Where the fields scroll when they outgrow the Figma frame's 142px.
-const BODY_CLASS = "max-h-[142px] min-h-0 overflow-y-auto px-4 py-3";
+// The panel hugs its content (Figma 356:197299); the body is what scrolls once the dock's max
+// height (see `DetailDock`) is reached.
+const BODY_CLASS = "min-h-0 overflow-y-auto overscroll-contain px-4 py-3";
 
 type DetailPanelProps = {
   app: OntologyApp;
@@ -218,9 +230,11 @@ function TableDetailPanel({
   const suggestedColumns = new Set<string>();
   app.entities.forEach((entity) => {
     entity.properties.forEach((p) => {
-      if (p.mapping?.table !== table.name) return;
-      if (mappingStatus(p.mapping) === "mapped") mappedColumns.add(p.mapping.column);
-      else suggestedColumns.add(p.mapping.column);
+      p.mappings.forEach((m) => {
+        if (m.table !== table.name) return;
+        if (mappingStatus(m) === "mapped") mappedColumns.add(m.column);
+        else suggestedColumns.add(m.column);
+      });
     });
   });
   mappedColumns.forEach((column) => suggestedColumns.delete(column));
@@ -307,6 +321,7 @@ function TableDetailPanel({
               ))}
             </div>
           </Field>
+          <TableRelations app={app} table={table.name} />
         </div>
       ) : (
         <div role="tabpanel" className={cn(BODY_CLASS, "flex flex-col")}>
@@ -366,7 +381,26 @@ function ReviewDetailPanel({
       : item.kind === "property"
         ? propertyStatus(item.property)
         : relationStatus(item.relation, app.entities);
-  const suggested = status === "suggested";
+  // Still a suggestion — it shows its confidence and Reject / Accept, whatever issue it has.
+  const suggested =
+    (item.kind === "entity"
+      ? entityReview(item.entity)
+      : item.kind === "property"
+        ? propertyReview(item.property)
+        : relationReview(item.relation)) === "suggested";
+  // An Error is never acceptable; a Relation also waits for its Entity Types to be confirmed.
+  const blockedReason =
+    item.kind === "entity"
+      ? canConfirmEntity(item.entity)
+        ? undefined
+        : "Fix the errors before confirming."
+      : item.kind === "property"
+        ? canConfirmProperty(item.property)
+          ? undefined
+          : "Fix the error before confirming."
+        : canConfirmRelation(item.relation, app.entities)
+          ? undefined
+          : "Confirm both Entity Types (with no errors) before confirming this Relation.";
   const index = queue.indexOf(item.key);
 
   const step = (direction: 1 | -1) => {
@@ -426,13 +460,19 @@ function ReviewDetailPanel({
         ? `Property of ${item.entity.name || "Untitled entity"}`
         : "Relation";
   const issue =
-    status === "error" || status === "warning"
+    status === "error"
       ? item.kind === "entity"
-        ? (entityErrorReason(item.entity) ?? item.entity.warningReason)
+        ? entityErrorReason(item.entity)
         : item.kind === "property"
-          ? (propertyErrorReason(item.property) ?? item.property.warningReason)
-          : (relationErrorReason(item.relation, app.entities) ?? item.relation.warningReason)
-      : undefined;
+          ? propertyErrorReason(item.property)
+          : relationErrorReason(item.relation, app.entities)
+      : status === "warning"
+        ? item.kind === "entity"
+          ? entityWarningReason(item.entity)
+          : item.kind === "property"
+            ? item.property.warningReason
+            : item.relation.warningReason
+        : undefined;
 
   return (
     <section
@@ -470,8 +510,10 @@ function ReviewDetailPanel({
           <span className="truncate">{issue}</span>
         </p>
       )}
-      {item.kind === "entity" && <EntityFields entity={item.entity} />}
-      {item.kind === "property" && <PropertyFields app={app} property={item.property} />}
+      {item.kind === "entity" && <EntityFields app={app} entity={item.entity} />}
+      {item.kind === "property" && (
+        <PropertyFields app={app} entity={item.entity} property={item.property} />
+      )}
       {item.kind === "relation" && <RelationFields app={app} item={item} />}
       {/* A suggestion is decided here (Reject removes it); anything else can be deleted in the
           same spot. */}
@@ -491,11 +533,13 @@ function ReviewDetailPanel({
             </button>
             <button
               type="button"
+              disabled={!!blockedReason}
+              title={blockedReason}
               onClick={() => {
                 app.acceptSuggestions([item.key]);
                 advance();
               }}
-              className={FOOTER_BUTTON}
+              className={cn(FOOTER_BUTTON, "disabled:cursor-not-allowed disabled:opacity-40")}
             >
               <FigmaIcon src={acceptIcon} />
               <span className="px-1">Accept</span>
@@ -545,10 +589,11 @@ function primaryPropertyOf(entity: Entity): Property | undefined {
   );
 }
 
-function EntityFields({ entity }: { entity: Entity }) {
+function EntityFields({ app, entity }: { app: OntologyApp; entity: Entity }) {
   const primary = primaryPropertyOf(entity);
   const template = entity.displayNameTemplate ?? (primary ? `{${primary.name}}` : "");
-  const identifiers = entity.properties.filter((p) => isIdentifierProperty(p));
+  const identifier = identifierOf(entity);
+  const datasets = entityDatasets(entity);
   return (
     <div className={cn(BODY_CLASS, "grid grid-cols-3 gap-4")}>
       <div className="col-span-3">
@@ -556,30 +601,28 @@ function EntityFields({ entity }: { entity: Entity }) {
           <Value value={entity.description} placeholder="No description" />
         </Field>
       </div>
-      <Field label="Identifiers">
-        {identifiers.length === 0 ? (
-          <p className="text-[14px] leading-6 text-[#9c461e]">No identifier yet</p>
-        ) : (
-          identifiers.map((p) => (
-            <div key={p.id} className="flex min-w-0 items-center gap-2">
-              <span
-                className="size-1.5 shrink-0 rounded-full"
-                style={{ background: statusDotColor(propertyStatus(p)) }}
-              />
-              <span className="flex min-w-0 flex-1 items-center gap-1">
-                <span className="min-w-0 flex-1 truncate text-[14px] leading-6 text-[#080a09]">
-                  {p.name}
-                </span>
-                <span role="img" aria-label="Identifier" className="shrink-0">
-                  <FigmaIcon src={keyIcon} />
-                </span>
-                <PropertyTypeGlyph type={p.type} color="#6d7472" />
+      <Field label="Identifier">
+        {identifier ? (
+          <div className="flex min-w-0 items-center gap-2">
+            <span
+              className="size-1.5 shrink-0 rounded-full"
+              style={{ background: statusDotColor(propertyStatus(identifier)) }}
+            />
+            <span className="flex min-w-0 flex-1 items-center gap-1">
+              <span className="min-w-0 flex-1 truncate text-[14px] leading-6 text-[#080a09]">
+                {identifier.name}
               </span>
-              {propertyStatus(p) === "suggested" && (
-                <PropertyConfidenceChip property={p} tone="muted" />
-              )}
-            </div>
-          ))
+              <span role="img" aria-label="Identifier" className="shrink-0">
+                <FigmaIcon src={keyIcon} />
+              </span>
+              <PropertyTypeGlyph type={identifier.type} color="#6d7472" />
+            </span>
+            {propertyReview(identifier) === "suggested" && (
+              <PropertyConfidenceChip property={identifier} tone="muted" />
+            )}
+          </div>
+        ) : (
+          <p className="text-[14px] leading-6 text-[#9c461e]">No identifier yet</p>
         )}
       </Field>
       <Field label="Display name template">
@@ -588,6 +631,122 @@ function EntityFields({ entity }: { entity: Entity }) {
       <Field label="Primary property">
         <Value value={primary?.name} />
       </Field>
+      {/* The Entity Type's own mapping: the datasets its instances come from — wherever its
+          Identifier is mapped. Several columns in one dataset are a composite identifier. */}
+      <div className="col-span-3">
+        <Field label={`Datasets · ${datasets.length}`}>
+          {datasets.length === 0 ? (
+            <p className="text-[12px] leading-5 text-[#9c461e]">
+              Map the identifier to a column to bring in this entity type's records.
+            </p>
+          ) : (
+            <MappingRows>
+              {datasets.map((dataset) => (
+                <MappingRow
+                  key={dataset.table}
+                  app={app}
+                  table={dataset.table}
+                  columns={dataset.columns.map((m) => m.column)}
+                  composite={dataset.columns.length > 1}
+                  status={
+                    dataset.columns.every((m) => mappingStatus(m) === "mapped")
+                      ? "mapped"
+                      : "suggested"
+                  }
+                />
+              ))}
+            </MappingRows>
+          )}
+        </Field>
+      </div>
+    </div>
+  );
+}
+
+/** A bordered list of mapping rows (the same frame as a Relation's mapping list). */
+function MappingRows({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex flex-col divide-y divide-[#e3e5e4] rounded-[6px] border border-[#e3e5e4]">
+      {children}
+    </div>
+  );
+}
+
+/** One mapping: the dataset (with its mapping-status icon) and column(s), the mapping's own status,
+ * and — for a Property's mapping — Accept / Reject while suggested, Disconnect once mapped. */
+function MappingRow({
+  app,
+  table,
+  columns,
+  status,
+  composite = false,
+  onAccept,
+  onReject,
+  onDisconnect,
+}: {
+  app: OntologyApp;
+  table: string;
+  columns: string[];
+  status: "suggested" | "mapped";
+  composite?: boolean;
+  onAccept?: () => void;
+  onReject?: () => void;
+  onDisconnect?: () => void;
+}) {
+  return (
+    <div className="group/maprow flex h-10 min-w-0 items-center gap-3 px-3">
+      <div className="min-w-0 flex-1">
+        <MappingValue app={app} table={table} column={columns.join(", ")} />
+      </div>
+      {composite && (
+        <span className="shrink-0 rounded-full bg-[#f4f4f4] px-1.5 py-px text-[12px] leading-4 text-[#6d7472]">
+          Composite
+        </span>
+      )}
+      <span className="flex shrink-0 items-center gap-1.5 text-[12px] leading-4 text-[#6d7472]">
+        <span
+          className="size-1.5 rounded-full"
+          style={{ background: statusDotColor(status === "mapped" ? "confirmed" : "suggested") }}
+        />
+        {status === "mapped" ? "Mapped" : "Suggested"}
+      </span>
+      {(onAccept || onReject || onDisconnect) && (
+        <span className="flex shrink-0 items-center gap-0.5">
+          {status === "suggested" && onReject && (
+            <button
+              type="button"
+              aria-label="Reject mapping"
+              title="Reject"
+              onClick={onReject}
+              className={ICON_BUTTON}
+            >
+              <FigmaIcon src={rejectIcon} />
+            </button>
+          )}
+          {status === "suggested" && onAccept && (
+            <button
+              type="button"
+              aria-label="Accept mapping"
+              title="Accept"
+              onClick={onAccept}
+              className={ICON_BUTTON}
+            >
+              <FigmaIcon src={acceptIcon} />
+            </button>
+          )}
+          {status === "mapped" && onDisconnect && (
+            <button
+              type="button"
+              aria-label="Disconnect mapping"
+              title="Disconnect"
+              onClick={onDisconnect}
+              className={ICON_BUTTON}
+            >
+              <FigmaIcon src={crossIcon} size={20} />
+            </button>
+          )}
+        </span>
+      )}
     </div>
   );
 }
@@ -618,9 +777,24 @@ function MappingValue({
   );
 }
 
-function PropertyFields({ app, property }: { app: OntologyApp; property: Property }) {
-  const mapping = property.mapping;
+function PropertyFields({
+  app,
+  entity,
+  property,
+}: {
+  app: OntologyApp;
+  entity: Entity;
+  property: Property;
+}) {
   const identifier = isIdentifierProperty(property);
+  const mappingKey = (m: { table: string; column: string }) =>
+    suggestionKey({
+      kind: "mapping",
+      entityId: entity.id,
+      propertyId: property.id,
+      table: m.table,
+      column: m.column,
+    });
   return (
     <div className={cn(BODY_CLASS, "grid grid-cols-3 gap-4")}>
       <div className="col-span-3">
@@ -645,21 +819,35 @@ function PropertyFields({ app, property }: { app: OntologyApp; property: Propert
           <Checkbox checked={identifier} disabled aria-label="Identifier" />
         </span>
       </Field>
-      <Field label="Mapping">
-        <div className="flex min-w-0 items-center rounded-[6px] border border-[#e3e5e4] bg-[#fafafa] px-3 py-2">
-          {mapping ? (
-            <MappingValue app={app} table={mapping.table} column={mapping.column} />
+      {/* Every dataset this Property's values come from — one row per mapping. */}
+      <div className="col-span-3">
+        <Field label={`Mappings · ${property.mappings.length}`}>
+          {property.mappings.length === 0 ? (
+            <p className="text-[12px] leading-5 text-[#6d7472]">Not mapped yet</p>
           ) : (
-            <span className="truncate text-[12px] leading-4 text-[#6d7472]">Not mapped yet</span>
+            <MappingRows>
+              {property.mappings.map((m) => (
+                <MappingRow
+                  key={`${m.table}.${m.column}`}
+                  app={app}
+                  table={m.table}
+                  columns={[m.column]}
+                  status={mappingStatus(m)}
+                  onAccept={() => app.acceptSuggestions([mappingKey(m)])}
+                  onReject={() => app.declineSuggestions([mappingKey(m)])}
+                  onDisconnect={() => app.disconnectMapping(entity.id, property.id, m)}
+                />
+              ))}
+            </MappingRows>
           )}
-        </div>
-      </Field>
+        </Field>
+      </div>
     </div>
   );
 }
 
 // A Relation: what it means, which Entity Types it runs between (Subject → Object), and — table
-// by table — the columns its join keys come from.
+// by table — the columns its join keys come from (both sides' columns in that one table).
 function RelationFields({
   app,
   item,
@@ -670,15 +858,19 @@ function RelationFields({
   const { relation, from, to } = item;
   const fromName = from?.name ?? relation.from;
   const toName = to?.name ?? relation.to;
-  const joins = relationJoins(relation);
+  const joins = relationJoins(relation, app.entities);
+  // More datasets it could be mapped through: where both Identifiers are mapped.
+  const more = relationDatasetOptions(from, to).filter((t) => !relation.datasets?.includes(t));
   return (
+    // Figma 356:198234: the mapping list isn't clipped — the panel grows with it, up to the dock's
+    // max height.
     <div className={cn(BODY_CLASS, "flex flex-col gap-4")}>
       <Field label="Description">
         <Value value={relation.description} placeholder="No description" />
       </Field>
       <div className="flex items-center gap-4">
         <div className="min-w-0 flex-1">
-          <Field label="From (Subject)">
+          <Field label="Subject">
             <Value value={fromName} placeholder="No subject" />
           </Field>
         </div>
@@ -686,7 +878,7 @@ function RelationFields({
           <FigmaIcon src={arrowLeftRightIcon} size={20} />
         </span>
         <div className="min-w-0 flex-1">
-          <Field label="To (Object)">
+          <Field label="Object">
             <Value value={toName} placeholder="No object" />
           </Field>
         </div>
@@ -695,35 +887,56 @@ function RelationFields({
         {joins.length === 0 ? (
           <p className="text-[14px] leading-6 text-[#9ea3a2]">No mapping yet</p>
         ) : (
-          <div className="flex flex-col">
+          <div className="flex flex-col pt-1">
             {joins.map((join, i) => (
               <div
-                key={`${join.fromTable}-${join.toTable}-${i}`}
+                key={`${join.table}-${i}`}
                 className={cn(
-                  "grid grid-cols-3 items-center gap-x-4 border-[#e3e5e4] bg-[#fafafa] px-3 py-2",
+                  "group/relmap relative grid grid-cols-3 items-center gap-x-4 border-[#e3e5e4] bg-[#fafafa] px-3 py-2 pr-9",
                   i === 0 ? "border" : "border-x border-b",
                   i === 0 && "rounded-t-[6px]",
                   i === joins.length - 1 && "rounded-b-[6px]",
                 )}
               >
-                <MappingValue
-                  app={app}
-                  table={
-                    join.fromTable === join.toTable
-                      ? join.fromTable
-                      : `${join.fromTable} · ${join.toTable}`
-                  }
-                />
+                {/* One table per mapping: both sides' columns come from it. */}
+                <MappingValue app={app} table={join.table} />
                 <div className="col-span-2 flex min-w-0 items-center justify-end gap-2 overflow-hidden text-[14px] leading-6 text-[#080a09]">
                   <JoinEnd entity={fromName} columns={join.fromColumns} />
-                  <ArrowRight className="size-3 shrink-0 text-[#6d7472]" strokeWidth={1.5} />
+                  <FigmaIcon src={arrowRightIcon} size={12} />
                   <span className="shrink-0 font-medium">
                     {relation.name || "Unnamed relation"}
                   </span>
-                  <ArrowRight className="size-3 shrink-0 text-[#6d7472]" strokeWidth={1.5} />
+                  <FigmaIcon src={arrowRightIcon} size={12} />
                   <JoinEnd entity={toName} columns={join.toColumns} />
                 </div>
+                <button
+                  type="button"
+                  aria-label={`Disconnect the ${join.table} mapping`}
+                  title="Disconnect"
+                  onClick={() => app.disconnectRelationDataset(relation.id, join.table)}
+                  className={cn(
+                    ICON_BUTTON,
+                    "absolute right-2 top-1/2 -translate-y-1/2 opacity-0 transition-opacity focus-visible:opacity-100 group-hover/relmap:opacity-100",
+                  )}
+                >
+                  <FigmaIcon src={crossIcon} size={20} />
+                </button>
               </div>
+            ))}
+          </div>
+        )}
+        {more.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 pt-2">
+            <span className="text-[12px] leading-4 text-[#6d7472]">Also mappable through</span>
+            {more.map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => app.connectRelationDataset(relation.id, t)}
+                className="rounded-full border border-[#e3e5e4] bg-white px-2 py-0.5 text-[12px] leading-4 text-[#161919] hover:bg-[#f4f4f4]"
+              >
+                + {t}
+              </button>
             ))}
           </div>
         )}
@@ -733,9 +946,204 @@ function RelationFields({
 }
 
 function JoinEnd({ entity, columns }: { entity: string; columns: string[] }) {
+  // No columns: that side's Identifier isn't mapped in this dataset (the Relation's Error).
   return (
-    <span className="min-w-0 truncate">
+    <span className={cn("min-w-0 truncate", columns.length === 0 && "text-[#dc2626]")}>
       <span className="font-medium">{entity}</span>[{columns.join(", ") || "—"}]
     </span>
+  );
+}
+
+/**
+ * A dataset's Relations — the dataset-first way to map them (like the "Map relations" step):
+ * every Relation between two Entity Types whose Identifiers are both mapped here can link records
+ * through it, keyed by those Identifier columns. Mapped ones can be disconnected; the rest mapped.
+ */
+function TableRelations({ app, table }: { app: OntologyApp; table: string }) {
+  const relations = app.relations.filter((r) => {
+    const from = app.entities.find((e) => e.id === r.from);
+    const to = app.entities.find((e) => e.id === r.to);
+    return r.datasets?.includes(table) || relationDatasetOptions(from, to).includes(table);
+  });
+  const here = app.entities.filter((e) => identifierOf(e)?.mappings.some((m) => m.table === table));
+  return (
+    <Field label={`Relations in this dataset · ${relations.length}`}>
+      {relations.length === 0 ? (
+        <p className="text-[12px] leading-5 text-[#6d7472]">
+          {here.length < 2
+            ? "Map the identifiers of two entity types here to relate their records through it."
+            : "No relation between the entity types here yet."}
+        </p>
+      ) : (
+        <MappingRows>
+          {relations.map((r) => {
+            const join = relationJoins({ ...r, datasets: [table] }, app.entities)[0]!;
+            const mapped = !!r.datasets?.includes(table);
+            const name = (id: string) =>
+              app.entities.find((e) => e.id === id)?.name || "Untitled entity";
+            return (
+              <div key={r.id} className="flex h-10 min-w-0 items-center gap-3 px-3">
+                <div className="flex min-w-0 flex-1 items-center gap-2 text-[12px] leading-4 text-[#080a09]">
+                  <JoinEnd entity={name(r.from)} columns={join.fromColumns} />
+                  <FigmaIcon src={arrowRightIcon} size={12} />
+                  <span className="shrink-0 font-medium">{relationLabel(r)}</span>
+                  <FigmaIcon src={arrowRightIcon} size={12} />
+                  <JoinEnd entity={name(r.to)} columns={join.toColumns} />
+                </div>
+                {mapped ? (
+                  <>
+                    <span className="flex shrink-0 items-center gap-1.5 text-[12px] leading-4 text-[#6d7472]">
+                      <span
+                        className="size-1.5 rounded-full"
+                        style={{ background: statusDotColor("confirmed") }}
+                      />
+                      Mapped
+                    </span>
+                    <button
+                      type="button"
+                      aria-label={`Disconnect ${relationLabel(r)} from ${table}`}
+                      title="Disconnect"
+                      onClick={() => app.disconnectRelationDataset(r.id, table)}
+                      className={ICON_BUTTON}
+                    >
+                      <FigmaIcon src={crossIcon} size={20} />
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => app.connectRelationDataset(r.id, table)}
+                    className="flex h-7 shrink-0 items-center rounded-[4px] border border-[#e3e5e4] bg-white px-2.5 text-[12px] font-medium leading-4 text-[#161919] hover:bg-[#f4f4f4]"
+                  >
+                    Map
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </MappingRows>
+      )}
+    </Field>
+  );
+}
+
+// The dock's resize limits: the panel can't be dragged shorter than its header + footer + a row,
+// and never taller than the canvas minus the zoom card's corner (12 + 32 + 12) and the 12px gap.
+const DOCK_MIN = 144;
+const DOCK_TOP_CLEARANCE = 68;
+const DOCK_KEY_STEP = 16;
+// The user's max height, kept across items (and across closing / reopening the panel).
+let rememberedDockCap: number | null = null;
+
+/**
+ * Where the detail panel sits on the canvas: bottom-centred, 12px in (Figma 356:197299's
+ * center/bottom constraints, 880–1444 wide). Its height hugs the panel's content; dragging the top
+ * edge sets a max height instead (so a shorter item still hugs), double-click resets it. A Data
+ * table starts capped at Figma's 240px, since its Sample data would otherwise fill the canvas.
+ */
+export function DetailDock({
+  children,
+  defaultCap = null,
+}: {
+  children: ReactNode;
+  defaultCap?: number | null;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [cap, setCapState] = useState<number | null>(rememberedDockCap);
+  const [dragging, setDragging] = useState(false);
+  const drag = useRef<{ startY: number; startH: number } | null>(null);
+  const setCap = (next: number | null) => {
+    rememberedDockCap = next;
+    setCapState(next);
+  };
+  const effectiveCap = cap ?? defaultCap;
+  // The tallest the panel can be: its content's own height (a hug can't be stretched), within
+  // the canvas.
+  const limits = () => {
+    const dock = ref.current;
+    const canvas = dock?.parentElement?.clientHeight ?? window.innerHeight;
+    const max = canvas - DOCK_TOP_CLEARANCE;
+    const panel = dock?.querySelector<HTMLElement>("[data-detail-panel]");
+    let natural = panel?.offsetHeight ?? max;
+    panel?.querySelectorAll<HTMLElement>(".overflow-y-auto").forEach((el) => {
+      natural += el.scrollHeight - el.clientHeight;
+    });
+    return { min: DOCK_MIN, max: Math.max(DOCK_MIN, Math.min(max, natural)) };
+  };
+  const clampToLimits = (height: number) => {
+    const { min, max } = limits();
+    return Math.round(Math.min(max, Math.max(min, height)));
+  };
+  return (
+    <div
+      ref={ref}
+      className="group/detaildock absolute inset-x-3 bottom-3 z-20 mx-auto flex max-w-[1444px] flex-col"
+      style={{
+        maxHeight:
+          effectiveCap != null
+            ? `min(${effectiveCap}px, calc(100% - ${DOCK_TOP_CLEARANCE}px))`
+            : `calc(100% - ${DOCK_TOP_CLEARANCE}px)`,
+      }}
+    >
+      <div
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize details panel"
+        aria-valuemin={DOCK_MIN}
+        aria-valuenow={Math.round(ref.current?.offsetHeight ?? 0)}
+        tabIndex={0}
+        onPointerDown={(event) => {
+          event.stopPropagation();
+          if (event.button !== 0 || !ref.current) return;
+          event.currentTarget.setPointerCapture(event.pointerId);
+          drag.current = { startY: event.clientY, startH: ref.current.offsetHeight };
+          setDragging(true);
+        }}
+        onPointerMove={(event) => {
+          const start = drag.current;
+          if (!start) return;
+          setCap(clampToLimits(start.startH + start.startY - event.clientY));
+        }}
+        onPointerUp={() => {
+          drag.current = null;
+          setDragging(false);
+        }}
+        onPointerCancel={() => {
+          drag.current = null;
+          setDragging(false);
+        }}
+        onDoubleClick={() => setCap(null)}
+        onKeyDown={(event) => {
+          const height = ref.current?.offsetHeight ?? 0;
+          const next =
+            event.key === "ArrowUp"
+              ? height + DOCK_KEY_STEP
+              : event.key === "ArrowDown"
+                ? height - DOCK_KEY_STEP
+                : event.key === "Home"
+                  ? DOCK_MIN
+                  : event.key === "End"
+                    ? Infinity
+                    : null;
+          if (event.key === "Enter") setCap(null);
+          else if (next == null) return;
+          else setCap(clampToLimits(next));
+          // Keep ↑/↓ from also stepping through suggestions (DetailPanel's window listener).
+          event.preventDefault();
+          event.stopPropagation();
+        }}
+        className="group/grip absolute inset-x-0 top-0 z-10 flex h-2 cursor-ns-resize justify-center outline-none"
+      >
+        <span
+          className={cn(
+            "mt-1 h-1 w-8 rounded-full transition-opacity group-focus-visible/grip:ring-2 group-focus-visible/grip:ring-[#00DED8]",
+            dragging
+              ? "bg-[#9ea3a2] opacity-100"
+              : "bg-[#e3e5e4] opacity-0 group-hover/detaildock:opacity-100 group-hover/grip:bg-[#9ea3a2] group-focus-visible/grip:opacity-100",
+          )}
+        />
+      </div>
+      {children}
+    </div>
   );
 }

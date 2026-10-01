@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import {
   buildConfirmPlan,
-  entityStatus,
+  entityReview,
   mappingStatus,
-  propertyStatus,
+  propertyReview,
+  relationReview,
   type Entity,
   type Property,
   type Relation,
@@ -110,17 +111,22 @@ function ConfidenceSlider({
     );
   };
 
+  // Figma 353:132518: "Confidence score", then the track (100×8, #f4f4f4, a #161919 range with
+  // 20px white thumbs ringed 2px #161919) with each thumb's score in a muted pill beside it.
   return (
     <div className="flex shrink-0 items-center gap-3">
-      <span className="whitespace-nowrap text-sm leading-6 text-foreground">Confidence score</span>
+      <span className="whitespace-nowrap text-[14px] leading-6 text-[#080a09]">
+        Confidence score
+      </span>
+      <ScoreBadge value={range.min} />
       <div
         ref={trackRef}
         onPointerDown={onTrackPointerDown}
-        className="relative flex h-4 w-[112px] shrink-0 cursor-pointer items-center"
+        className="relative flex h-5 w-[100px] shrink-0 cursor-pointer items-center"
       >
-        <div className="pointer-events-none h-1.5 w-full overflow-hidden rounded-full bg-secondary">
+        <div className="pointer-events-none h-2 w-full rounded-full bg-[#f4f4f4]">
           <div
-            className="h-1.5 bg-foreground"
+            className="h-2 rounded-full bg-[#161919]"
             style={{ marginLeft: `${range.min}%`, width: `${range.max - range.min}%` }}
           />
         </div>
@@ -151,14 +157,21 @@ function ConfidenceSlider({
               );
             }}
             style={{ left: `${thumb === "min" ? range.min : range.max}%` }}
-            className="absolute size-4 -translate-x-1/2 cursor-grab rounded-full border border-border bg-white shadow-[0_1px_3px_0_rgba(0,0,0,0.1),0_1px_2px_0_rgba(0,0,0,0.1)] outline-none focus-visible:ring-2 focus-visible:ring-[#00DED8] active:cursor-grabbing"
+            className="absolute size-5 -translate-x-1/2 cursor-grab rounded-full border-2 border-[#161919] bg-white outline-none focus-visible:ring-2 focus-visible:ring-[#00DED8] active:cursor-grabbing"
           />
         ))}
       </div>
-      <span className="w-8 shrink-0 whitespace-nowrap text-sm tabular-nums text-muted-foreground">
-        {range.max}%
-      </span>
+      <ScoreBadge value={range.max} />
     </div>
+  );
+}
+
+/** A thumb's score (Figma Badge_Confidence): a muted 12px pill, at least 32px wide. */
+function ScoreBadge({ value }: { value: number }) {
+  return (
+    <span className="flex min-w-8 shrink-0 items-center justify-center rounded-full bg-[#f4f4f4] px-1.5 py-px text-[12px] leading-4 tabular-nums text-[#6d7472]">
+      {value}%
+    </span>
   );
 }
 
@@ -183,15 +196,15 @@ const BREAKDOWN_META: Record<BreakdownKey, { icon: React.ReactNode; label: strin
 function breakdownTooltipText(key: BreakdownKey, inRange: number, total: number): string {
   switch (key) {
     case "entities":
-      return `${inRange} of ${total} Entity suggestions are within the current confidence range.`;
+      return `${inRange} of ${total} Entity suggestions`;
     case "properties":
-      return `${inRange} of ${total} Property suggestions are within the current confidence range.`;
+      return `${inRange} of ${total} Property suggestions`;
     case "relations":
-      return `${inRange} of ${total} Relation suggestions are within the current confidence range.`;
+      return `${inRange} of ${total} Relation suggestions`;
     case "tables":
-      return `${inRange} of ${total} Tables have a column mapping suggestion within the current confidence range.`;
+      return `${inRange} of ${total} Tables have a column mapping suggestion`;
     case "columns":
-      return `${inRange} of ${total} Columns have a mapping suggestion within the current confidence range.`;
+      return `${inRange} of ${total} Columns have a mapping suggestion`;
   }
 }
 const BREAKDOWN_ORDER: BreakdownKey[] = [
@@ -237,8 +250,6 @@ export function AiReviewBar({
   confidenceRange,
   onConfidenceRangeChange,
   onSelectSuggestionsInRange,
-  propertySuggestionsHighlightActive = false,
-  onTogglePropertySuggestionsHighlight,
   scope,
 }: {
   entities: Entity[];
@@ -247,8 +258,6 @@ export function AiReviewBar({
   confidenceRange: ConfidenceRange;
   onConfidenceRangeChange: (range: ConfidenceRange) => void;
   onSelectSuggestionsInRange: (keys: string[]) => void;
-  propertySuggestionsHighlightActive?: boolean;
-  onTogglePropertySuggestionsHighlight?: () => void;
   scope?: SuggestionScope | undefined;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -310,16 +319,19 @@ export function AiReviewBar({
   });
   entities.forEach((entity) => {
     entity.properties.forEach((property) => {
-      if (
-        property.mapping &&
-        mappingStatus(property.mapping) === "suggested" &&
-        inScope.mapping(entity, property) &&
-        inConfidenceRange(property.confidence)
-      ) {
+      if (!inScope.mapping(entity, property) || !inConfidenceRange(property.confidence)) return;
+      property.mappings.forEach((m) => {
+        if (mappingStatus(m) !== "suggested") return;
         eligibleKeys.push(
-          suggestionKey({ kind: "mapping", entityId: entity.id, propertyId: property.id }),
+          suggestionKey({
+            kind: "mapping",
+            entityId: entity.id,
+            propertyId: property.id,
+            table: m.table,
+            column: m.column,
+          }),
         );
-      }
+      });
     });
   });
   // Feeds only the "N more in range excluded" tooltip below — items blocked by an Error are never
@@ -352,7 +364,7 @@ export function AiReviewBar({
   let entitiesTotal = 0;
   let entitiesInRange = 0;
   entities.forEach((e) => {
-    if (entityStatus(e) !== "suggested" || !inScope.entity(e)) return;
+    if (entityReview(e) !== "suggested" || !inScope.entity(e)) return;
     entitiesTotal += 1;
     if (inConfidenceRange(e.confidence)) entitiesInRange += 1;
   });
@@ -360,7 +372,7 @@ export function AiReviewBar({
   let propertiesInRange = 0;
   entities.forEach((e) => {
     e.properties.forEach((p) => {
-      if (propertyStatus(p) !== "suggested" || !inScope.property(e, p)) return;
+      if (propertyReview(p) !== "suggested" || !inScope.property(e, p)) return;
       propertiesTotal += 1;
       if (inConfidenceRange(p.confidence)) propertiesInRange += 1;
     });
@@ -368,7 +380,7 @@ export function AiReviewBar({
   let relationsTotal = 0;
   let relationsInRange = 0;
   relations.forEach((r) => {
-    if (r.status !== "suggested" || !inScope.relation(r)) return;
+    if (relationReview(r) !== "suggested" || !inScope.relation(r)) return;
     relationsTotal += 1;
     if (inConfidenceRange(r.confidence)) relationsInRange += 1;
   });
@@ -379,18 +391,21 @@ export function AiReviewBar({
   const columnGroups = new Map<string, { any: boolean; inRange: boolean }>();
   entities.forEach((e) => {
     e.properties.forEach((p) => {
-      if (!p.mapping || mappingStatus(p.mapping) !== "suggested" || !inScope.mapping(e, p)) return;
+      if (!inScope.mapping(e, p)) return;
       const inRange = inConfidenceRange(p.confidence);
-      const tableKey = p.mapping.table;
-      const columnKey = `${p.mapping.table}.${p.mapping.column}`;
-      const tEntry = tableGroups.get(tableKey) ?? { any: false, inRange: false };
-      tEntry.any = true;
-      tEntry.inRange = tEntry.inRange || inRange;
-      tableGroups.set(tableKey, tEntry);
-      const cEntry = columnGroups.get(columnKey) ?? { any: false, inRange: false };
-      cEntry.any = true;
-      cEntry.inRange = cEntry.inRange || inRange;
-      columnGroups.set(columnKey, cEntry);
+      p.mappings.forEach((m) => {
+        if (mappingStatus(m) !== "suggested") return;
+        const tableKey = m.table;
+        const columnKey = `${m.table}.${m.column}`;
+        const tEntry = tableGroups.get(tableKey) ?? { any: false, inRange: false };
+        tEntry.any = true;
+        tEntry.inRange = tEntry.inRange || inRange;
+        tableGroups.set(tableKey, tEntry);
+        const cEntry = columnGroups.get(columnKey) ?? { any: false, inRange: false };
+        cEntry.any = true;
+        cEntry.inRange = cEntry.inRange || inRange;
+        columnGroups.set(columnKey, cEntry);
+      });
     });
   });
   let tablesTotal = 0;
@@ -429,39 +444,24 @@ export function AiReviewBar({
   return (
     <div ref={containerRef} className="relative flex flex-col items-center">
       {expanded && (
-        <div className="absolute bottom-full flex h-8 animate-[aiReviewReveal_180ms_ease-out] items-center gap-4 whitespace-nowrap rounded-t-[6px] border border-b-0 border-border bg-[#ede9fe] px-2 py-[5px] shadow-[0px_1px_1px_rgba(17,22,31,0.06),0px_2px_2px_rgba(17,22,31,0.08)]">
+        // Figma 362:232525: a purple-100 tab on top of the bar — purple labels, black counts.
+        <div className="absolute bottom-full flex animate-[aiReviewReveal_180ms_ease-out] items-center gap-4 whitespace-nowrap rounded-t-[4px] border border-b-0 border-[#e3e5e4] bg-[#f3e8ff] px-2 py-[5px]">
           {BREAKDOWN_ORDER.map((key) => {
             const meta = BREAKDOWN_META[key];
             const { inRange, total } = breakdown[key];
             return (
               <Tooltip key={key}>
                 <TooltipTrigger asChild>
-                  <button
-                    type="button"
+                  <span
                     tabIndex={0}
-                    onClick={
-                      key === "properties" ? onTogglePropertySuggestionsHighlight : undefined
-                    }
-                    className={cn(
-                      "flex shrink-0 items-center gap-1.5 rounded-full outline-none",
-                      key === "properties" &&
-                        onTogglePropertySuggestionsHighlight &&
-                        "cursor-pointer px-1 py-0.5 hover:bg-violet-200/60",
-                      key === "properties" &&
-                        propertySuggestionsHighlightActive &&
-                        "bg-violet-200/80 ring-1 ring-violet-400",
-                    )}
+                    className="flex shrink-0 items-center gap-1.5 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-[#00DED8]"
                   >
-                    <span className="flex items-center gap-1.5">
-                      <span className="size-[18px] shrink-0 text-[#4c1d95]">{meta.icon}</span>
-                      <span className="whitespace-nowrap text-sm leading-none text-[#4c1d95]">
-                        {meta.label}
-                      </span>
-                    </span>
-                    <span className="w-fit max-w-[56px] whitespace-nowrap text-sm leading-none tabular-nums text-foreground">
+                    <span className="size-4 shrink-0 text-[#7e22ce]">{meta.icon}</span>
+                    <span className="text-sm leading-5 text-[#7e22ce]">{meta.label}</span>
+                    <span className="text-sm leading-5 tabular-nums text-[#080a09]">
                       {inRange}/{total}
                     </span>
-                  </button>
+                  </span>
                 </TooltipTrigger>
                 <TooltipContent side="top">
                   <p>{breakdownTooltipText(key, inRange, total)}</p>
@@ -473,7 +473,7 @@ export function AiReviewBar({
       )}
       <div
         onPointerDown={(e) => e.stopPropagation()}
-        className="flex h-12 shrink-0 items-center gap-4 rounded-[6px] border border-border bg-white pl-4 pr-2 shadow-[0px_1px_1px_rgba(0,0,0,0.05)]"
+        className="flex h-12 shrink-0 items-center gap-4 rounded-[4px] bg-white py-1 pl-4 pr-2 shadow-[0_0_1px_rgba(0,0,0,0.1),0_1px_4px_rgba(0,0,0,0.1)]"
       >
         <ConfidenceSlider range={confidenceRange} onChange={onConfidenceRangeChange} />
         <div className="flex shrink-0 items-center gap-2">
@@ -481,8 +481,9 @@ export function AiReviewBar({
             type="button"
             onClick={() => setExpanded((v) => !v)}
             className={cn(
-              "flex h-8 min-w-[64px] shrink-0 items-center justify-center whitespace-nowrap rounded-[4px] border border-border px-2 text-sm font-medium text-[#161919] transition-colors",
-              expanded ? "bg-secondary" : "bg-white hover:bg-accent",
+              // Ghost button (Figma 353:132525): no border or fill until hovered / open.
+              "flex h-8 min-w-[64px] shrink-0 items-center justify-center whitespace-nowrap rounded-[4px] px-3 text-sm font-medium text-[#161919] transition-colors",
+              expanded ? "bg-[#e3e5e4]" : "hover:bg-[#f4f4f4]",
             )}
           >
             {totalSuggestionsInRange} suggestion{totalSuggestionsInRange === 1 ? "" : "s"}
@@ -491,7 +492,8 @@ export function AiReviewBar({
             type="button"
             onClick={() => onSelectSuggestionsInRange(eligibleKeys)}
             disabled={eligibleKeys.length === 0}
-            className="flex h-8 min-w-[64px] shrink-0 items-center justify-center whitespace-nowrap rounded-[4px] border border-border bg-secondary px-2 text-sm font-medium text-[#161919] transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-secondary"
+            // Outline button, no icon (Figma 353:132529's style).
+            className="flex h-8 min-w-[64px] shrink-0 items-center justify-center whitespace-nowrap rounded-[4px] border border-[#e3e5e4] bg-white px-3 text-sm font-medium text-[#161919] transition-colors hover:bg-[#f4f4f4] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-white"
           >
             Select all in range
           </button>
@@ -501,7 +503,7 @@ export function AiReviewBar({
               ontology or mappings change is the intended eventual behavior once one exists. */}
           <button
             type="button"
-            className="flex h-8 min-w-[64px] shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-[4px] bg-[#161919] px-2 text-sm font-medium text-[#fafafa] transition-opacity hover:opacity-90"
+            className="flex h-8 min-w-[64px] shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-[4px] bg-[#161919] pl-2 pr-3 text-sm font-medium text-[#fafafa] transition-opacity hover:opacity-90"
           >
             <SparkleIcon color="#A78BFA" size={16} />
             Generate Suggestions

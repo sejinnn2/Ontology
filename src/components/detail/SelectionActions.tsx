@@ -2,9 +2,20 @@ import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { Copy, SquareSplitHorizontal } from "lucide-react";
 import type { OntologyApp } from "@/lib/app-state";
 import { parseSuggestionKey, suggestionKey, type SuggestionRef } from "@/lib/app-state";
-import { relationStatus, type Entity, type Property, type Relation } from "@/lib/mock-data";
+import {
+  canConfirmEntity,
+  canConfirmProperty,
+  canConfirmRelation,
+  entityReview,
+  propertyReview,
+  relationReview,
+  type Entity,
+  type Property,
+  type Relation,
+} from "@/lib/mock-data";
 import { SelectionControlBar } from "@/components/detail/SelectionControlBar";
 import { cn } from "@/lib/utils";
+import { showCompletionNotice } from "@/components/detail/CompletionToast";
 
 /**
  * The multi-select action bar for the Graph views: shown once 2+ items are selected (shift/⌘/
@@ -101,6 +112,11 @@ export function SelectionActions({
     );
     closeNaming();
     if (!newId) return;
+    showCompletionNotice({
+      title: "Merge complete",
+      description: `‘${name.trim()}’ created from ${entities.length} entities`,
+      entityId: newId,
+    });
     app.openDetail("entity", newId);
     // The merged Entity Type opens selected, its details in the panel.
     app.selectSuggestionKeys([suggestionKey({ kind: "entity", id: newId })]);
@@ -111,7 +127,13 @@ export function SelectionActions({
     const newId = app.splitEntity(splitOwner.id, ids, name.trim());
     app.clearSuggestionSelection();
     closeNaming();
-    if (newId) onSplit?.(newId);
+    if (!newId) return;
+    onSplit?.(newId);
+    showCompletionNotice({
+      title: "Split complete",
+      description: `‘${name.trim()}’ created with ${ids.length} ${ids.length === 1 ? "property" : "properties"}`,
+      entityId: newId,
+    });
   }, [app, splitOwner, properties, name, onSplit]);
 
   const keyOf = {
@@ -120,39 +142,37 @@ export function SelectionActions({
       suggestionKey({ kind: "property", entityId: entity.id, propertyId: property.id }),
     relation: (r: Relation) => suggestionKey({ kind: "relation", id: r.id }),
   };
+  // Confirmed items are deleted; suggestions are rejected or accepted (an Error blocks accepting;
+  // a Relation waits for its Entity Types — `app.acceptSuggestions` re-checks all of it).
+  const entityConfirmed = (e: Entity) => entityReview(e) === "confirmed";
+  const propertyConfirmed = ({ property }: { property: Property }) =>
+    propertyReview(property) === "confirmed";
+  const relationConfirmed = (r: Relation) => relationReview(r) === "confirmed";
   const deletable = [
-    ...entities.filter((e) => e.status === "confirmed").map(keyOf.entity),
-    ...properties.filter(({ property }) => property.status === "confirmed").map(keyOf.property),
-    ...relations.filter((r) => r.status === "confirmed").map(keyOf.relation),
+    ...entities.filter(entityConfirmed).map(keyOf.entity),
+    ...properties.filter(propertyConfirmed).map(keyOf.property),
+    ...relations.filter(relationConfirmed).map(keyOf.relation),
   ];
   const rejectable = [
-    ...entities.filter((e) => e.status !== "confirmed").map(keyOf.entity),
-    ...properties.filter(({ property }) => property.status !== "confirmed").map(keyOf.property),
-    ...relations.filter((r) => r.status !== "confirmed").map(keyOf.relation),
+    ...entities.filter((e) => !entityConfirmed(e)).map(keyOf.entity),
+    ...properties.filter((item) => !propertyConfirmed(item)).map(keyOf.property),
+    ...relations.filter((r) => !relationConfirmed(r)).map(keyOf.relation),
   ];
   const acceptable = [
-    ...entities.filter((e) => e.status !== "confirmed" && e.status !== "error").map(keyOf.entity),
+    ...entities.filter((e) => !entityConfirmed(e) && canConfirmEntity(e)).map(keyOf.entity),
     ...properties
-      .filter(
-        ({ entity, property }) =>
-          property.status !== "confirmed" &&
-          property.status !== "error" &&
-          (entity.status === "confirmed" || entities.some((e) => e.id === entity.id)),
-      )
+      .filter((item) => !propertyConfirmed(item) && canConfirmProperty(item.property))
       .map(keyOf.property),
     ...relations
-      .filter((r) => {
-        const status = relationStatus(r, app.entities);
-        return status !== "confirmed" && status !== "error";
-      })
+      .filter((r) => !relationConfirmed(r) && canConfirmRelation(r, app.entities))
       .map(keyOf.relation),
   ];
   const handleDelete = () => {
-    const entityIds = entities.filter((e) => e.status === "confirmed").map((e) => e.id);
+    const entityIds = entities.filter(entityConfirmed).map((e) => e.id);
     const propertyItems = properties
-      .filter(({ property }) => property.status === "confirmed")
+      .filter(propertyConfirmed)
       .map(({ entity, property }) => ({ entityId: entity.id, propertyId: property.id }));
-    const relationIds = relations.filter((r) => r.status === "confirmed").map((r) => r.id);
+    const relationIds = relations.filter(relationConfirmed).map((r) => r.id);
     if (entityIds.length > 0) app.deleteEntities(entityIds);
     if (propertyItems.length > 0) app.deleteProperties(propertyItems);
     if (relationIds.length > 0) app.deleteRelations(relationIds);

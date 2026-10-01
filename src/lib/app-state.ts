@@ -1,8 +1,16 @@
+import {
+  canConfirmEntity,
+  canConfirmProperty,
+  entityIssue,
+  entityReview,
+  propertyReview,
+  relationReview,
+} from "@/lib/mock-data";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createDemoFixture,
+  isIdentifierProperty,
   mappingStatus,
-  propertyStatus,
   relationLabel,
   tableByName,
   tables,
@@ -22,6 +30,29 @@ let relationUidCounter = 0;
 const relationUid = () => `rel_${Date.now().toString(36)}${(relationUidCounter++).toString(36)}`;
 let propUidCounter = 0;
 const propUid = () => `prop_${Date.now().toString(36)}${(propUidCounter++).toString(36)}`;
+
+/** A Property typed into a create dialog, before it exists. */
+export type NewPropertyDraft = {
+  name: string;
+  type: string;
+  description?: string;
+  mappings?: ColumnRef[];
+  isIdentifier?: boolean;
+};
+// A user-created Property is asserted, not proposed: "confirmed" at full confidence.
+function newPropertyFromDraft(draft: NewPropertyDraft): Property {
+  return {
+    id: propUid(),
+    name: draft.name.trim(),
+    description: draft.description?.trim() ?? "",
+    type: draft.type,
+    confidence: 1,
+    status: "confirmed",
+    mappings: draft.mappings ?? [],
+    ...(draft.isIdentifier ? { isIdentifier: true as const } : {}),
+  };
+}
+
 let historyLogUidCounter = 0;
 const historyLogUid = () =>
   `hist_${Date.now().toString(36)}${(historyLogUidCounter++).toString(36)}`;
@@ -99,13 +130,34 @@ export type ConfidenceRange = { min: number; max: number };
 export type SuggestionRef =
   | { kind: "entity"; id: string }
   | { kind: "property"; entityId: string; propertyId: string }
-  | { kind: "mapping"; entityId: string; propertyId: string }
+  // A Property↔Column mapping: one of the Property's mappings (`table`/`column`), or — with
+  // neither — every one of its suggested mappings.
+  | { kind: "mapping"; entityId: string; propertyId: string; table?: string; column?: string }
   | { kind: "relation"; id: string };
 
 const SUGGESTION_KEY_SEP = "|";
 
+const sameColumn = (a: ColumnRef, b: { table: string; column: string }) =>
+  a.table === b.table && a.column === b.column;
+/** The suggested mappings a mapping key points at: the one it names, or all of them. */
+function targetedMappings(property: Property, ref: { table?: string; column?: string }) {
+  return property.mappings.filter(
+    (m) =>
+      mappingStatus(m) === "suggested" &&
+      (!ref.table || sameColumn(m, { table: ref.table, column: ref.column ?? "" })),
+  );
+}
+
 export function suggestionKey(ref: SuggestionRef): string {
-  return ref.kind === "property" || ref.kind === "mapping"
+  if (ref.kind === "mapping") {
+    return [
+      ref.kind,
+      ref.entityId,
+      ref.propertyId,
+      ...(ref.table ? [ref.table, ref.column] : []),
+    ].join(SUGGESTION_KEY_SEP);
+  }
+  return ref.kind === "property"
     ? `${ref.kind}${SUGGESTION_KEY_SEP}${ref.entityId}${SUGGESTION_KEY_SEP}${ref.propertyId}`
     : `${ref.kind}${SUGGESTION_KEY_SEP}${ref.id}`;
 }
@@ -118,7 +170,15 @@ export function parseSuggestionKey(key: string): SuggestionRef | null {
     return { kind: "property", entityId: parts[1], propertyId: parts[2] };
   }
   if (parts[0] === "mapping" && parts[1] && parts[2]) {
-    return { kind: "mapping", entityId: parts[1], propertyId: parts[2] };
+    return parts[3] && parts[4]
+      ? {
+          kind: "mapping",
+          entityId: parts[1],
+          propertyId: parts[2],
+          table: parts[3],
+          column: parts[4],
+        }
+      : { kind: "mapping", entityId: parts[1], propertyId: parts[2] };
   }
   return null;
 }
@@ -205,12 +265,17 @@ export type RestoreOp =
       kind: "propertyPatch";
       entityId: string;
       propertyId: string;
-      before: Partial<Pick<Property, "name" | "description" | "status" | "mapping">>;
+      before: Partial<Pick<Property, "name" | "description" | "status" | "mappings">>;
     }
   | {
       kind: "relationPatch";
       id: string;
-      before: Partial<Pick<Relation, "name" | "description" | "status" | "from" | "to">>;
+      before: Partial<
+        Pick<
+          Relation,
+          "name" | "description" | "status" | "from" | "to" | "errorReason" | "datasets"
+        >
+      >;
     }
   /** Reverses a Create by moving the created object back to Trash — "restoring" the change means
    * restoring the ontology to how it was BEFORE this create, i.e. as if it never happened. */
@@ -386,7 +451,7 @@ const IN_PROGRESS_HISTORY_LOG: HistoryLogEntry[] = [
           entityId: "e_customer",
           propertyId: "p_cust_id",
           before: {
-            mapping: { table: "customers", column: "customer_id", status: "suggested" },
+            mappings: [{ table: "customers", column: "customer_id", status: "suggested" }],
           },
         },
       },
@@ -403,7 +468,7 @@ const IN_PROGRESS_HISTORY_LOG: HistoryLogEntry[] = [
       entityId: "e_product_details",
       propertyId: "p_pd_id",
       before: {
-        mapping: { table: "product_details", column: "sku", status: "suggested" },
+        mappings: [{ table: "product_details", column: "sku", status: "suggested" }],
       },
     },
   },
@@ -856,7 +921,7 @@ export function useOntologyApp() {
 
   // Same "read 'before' from the ref first" shape as `updateEntity` above, so the same one
   // function covers Renamed/Edited Property AND all three Mapping History events (Created/
-  // Reconnected/Disconnected — see the `"mapping" in patch` branch) without `updateMapping` below
+  // Reconnected/Disconnected — see the `patch.mappings` branch) without `connectMapping` below
   // needing any logging of its own, since every one of its calls already funnels through here.
   const updateProperty = useCallback(
     (entityId: string, propertyId: string, patch: Partial<Omit<Property, "id">>) => {
@@ -868,7 +933,14 @@ export function useOntologyApp() {
           e.id === entityId
             ? {
                 ...e,
-                properties: e.properties.map((p) => (p.id === propertyId ? { ...p, ...patch } : p)),
+                properties: e.properties.map((p) =>
+                  p.id === propertyId
+                    ? { ...p, ...patch }
+                    : // One Identifier per Entity Type: making this one it unmarks the rest.
+                      patch.isIdentifier && p.isIdentifier
+                      ? { ...p, isIdentifier: false }
+                      : p,
+                ),
               }
             : e,
         ),
@@ -895,71 +967,40 @@ export function useOntologyApp() {
             before: { description: before.description },
           },
         });
-      } else if ("mapping" in patch) {
-        const beforeMapping = before.mapping;
-        const afterMapping = patch.mapping ?? null;
+      } else if (patch.mappings) {
         const label = `${ownerName}.${before.name || "Untitled property"}`;
-        if (!beforeMapping && afterMapping) {
+        const after = patch.mappings;
+        const added = after.filter((m) => !before.mappings.some((b) => sameColumn(b, m)));
+        const removed = before.mappings.filter((b) => !after.some((m) => sameColumn(b, m)));
+        const restatused = after.filter((m) =>
+          before.mappings.some((b) => sameColumn(b, m) && mappingStatus(b) !== mappingStatus(m)),
+        );
+        const cols = (ms: ColumnRef[]) => ms.map((m) => `${m.table}.${m.column}`).join(", ");
+        const title =
+          added.length && removed.length
+            ? "Reconnected Mapping"
+            : added.length
+              ? "Created Mapping"
+              : removed.length
+                ? "Disconnected Mapping"
+                : restatused.length
+                  ? restatused.every((m) => mappingStatus(m) === "mapped")
+                    ? "Confirmed Mapping"
+                    : "Unconfirmed Mapping"
+                  : null;
+        if (title) {
           logHistoryEvent({
-            title: "Created Mapping",
-            detail: `${label} ↔ ${afterMapping.table}.${afterMapping.column}`,
+            title,
+            detail:
+              added.length && removed.length
+                ? `${label}\n${cols(removed)} → ${cols(added)}`
+                : `${label} ↔ ${cols(added.length ? added : removed.length ? removed : restatused)}`,
             ref,
             restore: {
               kind: "propertyPatch",
               entityId,
               propertyId,
-              before: { mapping: null },
-            },
-          });
-        } else if (beforeMapping && !afterMapping) {
-          logHistoryEvent({
-            title: "Disconnected Mapping",
-            detail: `${label} ↔ ${beforeMapping.table}.${beforeMapping.column}`,
-            ref,
-            restore: {
-              kind: "propertyPatch",
-              entityId,
-              propertyId,
-              before: { mapping: beforeMapping },
-            },
-          });
-        } else if (
-          beforeMapping &&
-          afterMapping &&
-          (beforeMapping.table !== afterMapping.table ||
-            beforeMapping.column !== afterMapping.column)
-        ) {
-          logHistoryEvent({
-            title: "Reconnected Mapping",
-            detail: `${label}\n${beforeMapping.table}.${beforeMapping.column} → ${afterMapping.table}.${afterMapping.column}`,
-            ref,
-            restore: {
-              kind: "propertyPatch",
-              entityId,
-              propertyId,
-              before: { mapping: beforeMapping },
-            },
-          });
-        } else if (
-          // Same table/column, only the mapping's own confirmation state changed — see
-          // `confirmMapping` below, the one caller that patches `mapping` this way. A genuinely
-          // separate case from the three above: nothing about WHICH column this points at
-          // changed, only whether it's still a Suggested Mapping or now Mapped.
-          beforeMapping &&
-          afterMapping &&
-          beforeMapping.table === afterMapping.table &&
-          beforeMapping.column === afterMapping.column &&
-          (beforeMapping.status ?? "suggested") !== (afterMapping.status ?? "suggested")
-        ) {
-          logHistoryEvent({
-            title: afterMapping.status === "mapped" ? "Confirmed Mapping" : "Unconfirmed Mapping",
-            detail: `${label} ↔ ${afterMapping.table}.${afterMapping.column}`,
-            ref,
-            restore: {
-              kind: "propertyPatch",
-              entityId,
-              propertyId,
-              before: { mapping: beforeMapping },
+              before: { mappings: before.mappings },
             },
           });
         }
@@ -968,66 +1009,33 @@ export function useOntologyApp() {
     [pushHistory, logHistoryEvent],
   );
 
-  // A named wrapper over updateProperty for the specific "connect/disconnect/reconnect a column"
-  // family of interactions, rather than callers reaching for the more general updateProperty to
-  // touch `mapping` directly — see updateProperty's own doc comment for where its History logging
-  // (Created/Reconnected/Disconnected Mapping) actually lives.
-  const updateMapping = useCallback(
-    (entityId: string, propertyId: string, mapping: ColumnRef | null) => {
-      updateProperty(entityId, propertyId, { mapping });
+  // Connecting a Property to a column. An Identifier gains the column (several in one dataset form
+  // its composite identifier there); any other Property has one column per dataset, so the new one
+  // replaces whatever it had in that dataset. Its mappings in other datasets stay. History logging
+  // lives in `updateProperty`.
+  const connectMapping = useCallback(
+    (entityId: string, propertyId: string, mapping: ColumnRef) => {
+      const property = entitiesRef.current
+        .find((e) => e.id === entityId)
+        ?.properties.find((p) => p.id === propertyId);
+      if (!property || property.mappings.some((m) => sameColumn(m, mapping))) return;
+      const kept = isIdentifierProperty(property)
+        ? property.mappings
+        : property.mappings.filter((m) => m.table !== mapping.table);
+      updateProperty(entityId, propertyId, { mappings: [...kept, mapping] });
     },
     [updateProperty],
   );
 
-  // Moves one Property's column mapping onto another Property (dragging the Property end of a
-  // mapping line onto a different Property row) as ONE History step — two separate
-  // `updateMapping` calls would need two undos to reverse a single gesture. The receiving Property
-  // replaces any mapping it had; the move itself confirms the mapping ("mapped").
-  const moveMapping = useCallback(
-    (
-      from: { entityId: string; propertyId: string },
-      to: { entityId: string; propertyId: string },
-    ) => {
-      const mapping = entitiesRef.current
-        .find((e) => e.id === from.entityId)
-        ?.properties.find((p) => p.id === from.propertyId)?.mapping;
-      if (!mapping || (from.entityId === to.entityId && from.propertyId === to.propertyId)) return;
-      pushHistory();
-      setEntities((es) =>
-        es.map((e) =>
-          e.id !== from.entityId && e.id !== to.entityId
-            ? e
-            : {
-                ...e,
-                properties: e.properties.map((p) => {
-                  if (e.id === from.entityId && p.id === from.propertyId) {
-                    return { ...p, mapping: null };
-                  }
-                  if (e.id === to.entityId && p.id === to.propertyId) {
-                    return { ...p, mapping: { ...mapping, status: "mapped" as const } };
-                  }
-                  return p;
-                }),
-              },
-        ),
-      );
-    },
-    [pushHistory],
-  );
-
-  // Accepts a Suggested Mapping — "Suggested Mapping → Mapped" (see `ColumnRef`'s own doc
-  // comment), WITHOUT touching the owning Property's own ontology `status` at all. Deliberately
-  // separate from `acceptSuggestions`: a mapping's own confirmation state and its Property's
-  // Suggested/Confirmed lifecycle are two independent facts (see the module-level mapping-state
-  // doc), so accepting one must never silently accept the other. A no-op if the Property is
-  // already unmapped (nothing to confirm).
-  const confirmMapping = useCallback(
-    (entityId: string, propertyId: string) => {
-      const owner = entitiesRef.current.find((e) => e.id === entityId);
-      const property = owner?.properties.find((p) => p.id === propertyId);
-      if (!property?.mapping) return;
+  // Removing one of a Property's mappings (its others stay).
+  const disconnectMapping = useCallback(
+    (entityId: string, propertyId: string, mapping: { table: string; column: string }) => {
+      const property = entitiesRef.current
+        .find((e) => e.id === entityId)
+        ?.properties.find((p) => p.id === propertyId);
+      if (!property) return;
       updateProperty(entityId, propertyId, {
-        mapping: { ...property.mapping, status: "mapped" },
+        mappings: property.mappings.filter((m) => !sameColumn(m, mapping)),
       });
     },
     [updateProperty],
@@ -1110,7 +1118,7 @@ export function useOntologyApp() {
         type: "string",
         confidence: 1,
         status: "confirmed",
-        mapping: null,
+        mappings: [],
       };
       // Read the owning entity's name from the ref, not from inside the updater below — see
       // `entitiesRef`'s own doc comment for why.
@@ -1131,6 +1139,43 @@ export function useOntologyApp() {
     [pushHistory, logHistoryEvent],
   );
 
+  // Several Properties created together (the Create properties dialog): one undo step for the
+  // lot, with a History entry per Property.
+  const createProperties = useCallback(
+    (entityId: string, drafts: NewPropertyDraft[]) => {
+      pushHistory();
+      const created = drafts.map(newPropertyFromDraft);
+      const entityName = entitiesRef.current.find((e) => e.id === entityId)?.name;
+      // One Identifier per Entity Type: a new one replaces the old.
+      const newIdentifier = created.some((p) => p.isIdentifier);
+      setEntities((es) =>
+        es.map((e) =>
+          e.id === entityId
+            ? {
+                ...e,
+                properties: [
+                  ...e.properties.map((p) =>
+                    newIdentifier && p.isIdentifier ? { ...p, isIdentifier: false } : p,
+                  ),
+                  ...created,
+                ],
+              }
+            : e,
+        ),
+      );
+      created.forEach((property) =>
+        logHistoryEvent({
+          title: "Created Property",
+          detail: `${entityName || "Untitled entity"}.${property.name || "Untitled property"}`,
+          ref: { kind: "property", entityId, propertyId: property.id },
+          restore: { kind: "undoPropertyCreate", entityId, propertyId: property.id },
+        }),
+      );
+      return created.map((property) => property.id);
+    },
+    [pushHistory, logHistoryEvent],
+  );
+
   // --- Canvas-first Entity creation (see the creation wizard's own doc comment) ---------------
   // Everything the wizard collects across its 2-3 steps is applied in exactly ONE call, here —
   // never assembled by calling `createEntity`/`createProperty`/`addRelation` one after another,
@@ -1144,8 +1189,9 @@ export function useOntologyApp() {
   const createEntityWithProperties = useCallback(
     (params: {
       name: string;
+      description?: string;
       position: { x: number; y: number };
-      properties: { name: string; type: string; isIdentifier?: boolean }[];
+      properties: NewPropertyDraft[];
       connection?:
         | {
             sourceEntityId: string;
@@ -1158,20 +1204,11 @@ export function useOntologyApp() {
     }) => {
       pushHistory();
       const newEntityId = entityUid();
-      const newProperties: Property[] = params.properties.map((p) => ({
-        id: propUid(),
-        name: p.name.trim(),
-        description: "",
-        type: p.type,
-        confidence: 1,
-        status: "confirmed",
-        mapping: null,
-        ...(p.isIdentifier ? { isIdentifier: true as const } : {}),
-      }));
+      const newProperties = params.properties.map(newPropertyFromDraft);
       const newEntity: Entity = {
         id: newEntityId,
         name: params.name.trim(),
-        description: "",
+        description: params.description?.trim() ?? "",
         confidence: 1,
         status: "confirmed",
         table: "",
@@ -1256,77 +1293,81 @@ export function useOntologyApp() {
     [pushHistory],
   );
 
-  // Accept for the Suggestion selection workflow (Header's contextual selection bar) — unlike
-  // `confirmItems` above (which trusts its caller's own eligibility check, e.g. the Confirm
-  // dialog's), this one re-checks each key's live status itself and silently drops anything
-  // that's already confirmed or blocked by an Error, since the selection can go stale between
-  // when an item was selected and when Accept is actually clicked (someone could have fixed or
-  // re-flagged it in between). Error items are never accepted, but are left exactly as they were
-  // — still selected, still visible, still requiring attention — never silently declined.
-  //
-  // Entity/Property lifecycle invariant: a Property can never end up Applied ("confirmed") while
-  // its own Entity is still Suggested — "Child Applied → Parent must be Applied." This function is
-  // the only place that resolves suggestion keys into the id lists `confirmItems` actually writes,
-  // so it's the one place that both enforces and satisfies that invariant:
-  //   - A lone Property key is only honored once its Entity is already Applied, or is being
-  //     Applied together in this very call — otherwise it's silently dropped, exactly like an
-  //     already-confirmed or Errored key.
-  //   - Accepting an Entity applies every one of its OWN current Properties right along with it
-  //     (Warnings included — only an Error still blocks, the same rule `buildConfirmPlan` already
-  //     uses elsewhere), even if the user only selected the Entity itself. This is what "apply the
-  //     Entity and the Properties that belong to that accepted Entity proposal together" means in
-  //     practice. A Property added later, once the Entity is already Applied, is an independent
-  //     future suggestion and is never swept in by this cascade.
+  // Accept for every selection bar and the detail panel. Unlike `confirmItems` above (which
+  // trusts its caller), this re-checks each key's live state and silently drops anything already
+  // confirmed or blocked, since a selection can go stale between selecting and clicking Accept.
+  // Blocked items are left exactly as they were — still selected, never silently declined.
   const acceptSuggestions = useCallback(
     (keys: string[]) => {
       const entityIds: string[] = [];
       const relationIds: string[] = [];
       const propertyKeys: { entityId: string; propertyId: string }[] = [];
-      const mappingKeys: { entityId: string; propertyId: string }[] = [];
+      const mappingKeys: Extract<SuggestionRef, { kind: "mapping" }>[] = [];
+      // Review rules (see mock-data's review model): an Error blocks confirming; confirming an
+      // Entity Type confirms all its Properties; a Property can be confirmed on its own (its Entity
+      // Type follows once all are); a Relation needs every connected Entity Type confirmed — by
+      // the end of this same Accept — with no Error.
       keys.forEach((key) => {
         const ref = parseSuggestionKey(key);
         if (!ref) return;
         if (ref.kind === "entity") {
           const e = entities.find((x) => x.id === ref.id);
-          if (e && e.status !== "error" && e.status !== "confirmed") entityIds.push(ref.id);
+          if (e && entityReview(e) === "suggested" && canConfirmEntity(e)) entityIds.push(ref.id);
         } else if (ref.kind === "relation") {
           const r = relations.find((x) => x.id === ref.id);
-          if (r && r.status !== "error" && r.status !== "confirmed") relationIds.push(ref.id);
+          if (r && relationReview(r) === "suggested") relationIds.push(ref.id);
         } else if (ref.kind === "property") {
           propertyKeys.push({ entityId: ref.entityId, propertyId: ref.propertyId });
         } else {
           const property = entities
             .find((entity) => entity.id === ref.entityId)
             ?.properties.find((item) => item.id === ref.propertyId);
-          if (property?.mapping && mappingStatus(property.mapping) === "suggested") {
-            mappingKeys.push(ref);
-          }
+          if (property && targetedMappings(property, ref).length > 0) mappingKeys.push(ref);
         }
       });
 
-      const acceptingEntitySet = new Set(entityIds);
       const propertyIds: { entityId: string; propertyId: string }[] = [];
       const addedPropertyKeys = new Set<string>();
       const addProperty = (entityId: string, propertyId: string) => {
-        const dedupeKey = `${entityId} ${propertyId}`;
+        const dedupeKey = `${entityId} ${propertyId}`;
         if (addedPropertyKeys.has(dedupeKey)) return;
         addedPropertyKeys.add(dedupeKey);
         propertyIds.push({ entityId, propertyId });
       };
       propertyKeys.forEach(({ entityId, propertyId }) => {
-        const owner = entities.find((x) => x.id === entityId);
-        const p = owner?.properties.find((x) => x.id === propertyId);
-        if (!owner || !p || p.status === "error" || p.status === "confirmed") return;
-        if (owner.status !== "confirmed" && !acceptingEntitySet.has(entityId)) return;
+        const p = entities
+          .find((x) => x.id === entityId)
+          ?.properties.find((x) => x.id === propertyId);
+        if (!p || propertyReview(p) === "confirmed" || !canConfirmProperty(p)) return;
         addProperty(entityId, propertyId);
       });
       entityIds.forEach((entityId) => {
-        const owner = entities.find((x) => x.id === entityId);
-        owner?.properties.forEach((p) => {
-          if (p.status === "confirmed" || propertyStatus(p) === "error") return;
-          addProperty(entityId, p.id);
-        });
+        entities
+          .find((x) => x.id === entityId)
+          ?.properties.forEach((p) => {
+            if (propertyReview(p) === "suggested") addProperty(entityId, p.id);
+          });
       });
+
+      // Which Entity Types will be confirmed once this Accept lands.
+      const confirmedAfter = new Set(entityIds);
+      entities.forEach((e) => {
+        if (confirmedAfter.has(e.id) || entityIssue(e) === "error") return;
+        const allConfirmed =
+          e.properties.length === 0
+            ? entityReview(e) === "confirmed"
+            : e.properties.every(
+                (p) =>
+                  propertyReview(p) === "confirmed" || addedPropertyKeys.has(`${e.id} ${p.id}`),
+              );
+        if (allConfirmed) confirmedAfter.add(e.id);
+      });
+      const confirmableRelationIds = relationIds.filter((id) => {
+        const r = relations.find((x) => x.id === id);
+        return !!r && !r.errorReason && confirmedAfter.has(r.from) && confirmedAfter.has(r.to);
+      });
+      relationIds.length = 0;
+      relationIds.push(...confirmableRelationIds);
 
       if (
         entityIds.length > 0 ||
@@ -1339,17 +1380,21 @@ export function useOntologyApp() {
         if (hasOntologyItems) confirmItems({ entityIds, propertyIds, relationIds });
         else pushHistory();
         if (mappingKeys.length > 0) {
-          const mappingKeySet = new Set(
-            mappingKeys.map(({ entityId, propertyId }) => `${entityId}|${propertyId}`),
-          );
           setEntities((current) =>
             current.map((entity) => ({
               ...entity,
-              properties: entity.properties.map((property) =>
-                property.mapping && mappingKeySet.has(`${entity.id}|${property.id}`)
-                  ? { ...property, mapping: { ...property.mapping, status: "mapped" } }
-                  : property,
-              ),
+              properties: entity.properties.map((property) => {
+                const targets = mappingKeys
+                  .filter((k) => k.entityId === entity.id && k.propertyId === property.id)
+                  .flatMap((k) => targetedMappings(property, k));
+                if (targets.length === 0) return property;
+                return {
+                  ...property,
+                  mappings: property.mappings.map((m) =>
+                    targets.includes(m) ? { ...m, status: "mapped" as const } : m,
+                  ),
+                };
+              }),
             })),
           );
         }
@@ -1424,7 +1469,7 @@ export function useOntologyApp() {
                     kind: "propertyPatch" as const,
                     entityId,
                     propertyId,
-                    before: { mapping: property.mapping },
+                    before: { mappings: property.mappings },
                   }
                 : undefined,
             };
@@ -1526,17 +1571,23 @@ export function useOntologyApp() {
   // behavior — a name is now always supplied up front via the dialog, so there's nothing left
   // in-flight to review.
   const createRelation = useCallback(
-    (fromId: string, toId: string, name: string) => {
+    (
+      fromId: string,
+      toId: string,
+      name: string,
+      extra?: { description?: string; datasets?: string[] },
+    ) => {
       pushHistory();
       const id = relationUid();
       const newRelation: Relation = {
         id,
         name: name.trim(),
-        description: "",
+        description: extra?.description?.trim() ?? "",
         from: fromId,
         to: toId,
         confidence: 1,
         status: "confirmed",
+        ...(extra?.datasets?.length ? { datasets: extra.datasets } : {}),
       };
       setRelations((rs) => [...rs, newRelation]);
       logHistoryEvent({
@@ -1568,7 +1619,7 @@ export function useOntologyApp() {
         from: fromId,
         to: toId,
         confidence: 0,
-        status: "error",
+        status: "suggested",
         errorReason: PLACEHOLDER_RELATION_REASON,
       };
       setRelations((rs) => [...rs, newRelation]);
@@ -1583,11 +1634,51 @@ export function useOntologyApp() {
     [entities, pushHistory, logHistoryEvent],
   );
 
+  // A Relation's mappings are datasets (its key columns follow both Identifiers' mappings there —
+  // see mock-data's `relationJoins`). Connecting adds one; disconnecting removes it. One History
+  // step each.
+  const setRelationDatasets = useCallback(
+    (id: string, datasets: string[], title: string, table: string) => {
+      const relation = relationsRef.current.find((r) => r.id === id);
+      if (!relation) return;
+      pushHistory();
+      setRelations((rs) => rs.map((r) => (r.id === id ? { ...r, datasets } : r)));
+      logHistoryEvent({
+        title,
+        detail: `${relationLabel(relation)} ↔ ${table}`,
+        ref: { kind: "relation", id },
+        restore: { kind: "relationPatch", id, before: { datasets: relation.datasets ?? [] } },
+      });
+    },
+    [pushHistory, logHistoryEvent],
+  );
+  const connectRelationDataset = useCallback(
+    (id: string, table: string) => {
+      const current = relationsRef.current.find((r) => r.id === id)?.datasets ?? [];
+      if (current.includes(table)) return;
+      setRelationDatasets(id, [...current, table], "Mapped Relation", table);
+    },
+    [setRelationDatasets],
+  );
+  const disconnectRelationDataset = useCallback(
+    (id: string, table: string) => {
+      const current = relationsRef.current.find((r) => r.id === id)?.datasets ?? [];
+      if (!current.includes(table)) return;
+      setRelationDatasets(
+        id,
+        current.filter((t) => t !== table),
+        "Disconnected Relation mapping",
+        table,
+      );
+    },
+    [setRelationDatasets],
+  );
+
   // Renaming a Relation is a plain field update for any other Relation, but one that's still
   // unnamed (whichever of the two "no name yet" creation paths put it in Error — a drag-created
   // Relation via `addRelation`, or a placement-adjacency one via `createPlaceholderRelation`) has
   // its Error purely *because* it has no name, so giving it any real, non-blank name is exactly
-  // what resolves that Error — the one rename that also clears status back to "suggested", never
+  // what resolves that Error — the one rename that also clears its error reason, never
   // touching a Relation whose Error has some other, unrelated cause (which by definition already
   // has a real name, since neither of those two paths ever sets an Error with a name attached).
   const renameRelation = useCallback(
@@ -1597,8 +1688,12 @@ export function useOntologyApp() {
       pushHistory();
       const trimmed = name.trim();
       const patch: Partial<Omit<Relation, "id">> = { name: trimmed };
-      if (relation.status === "error" && relation.name.trim() === "" && trimmed !== "") {
-        patch.status = "suggested";
+      if (
+        relation.errorReason === PLACEHOLDER_RELATION_REASON &&
+        relation.name.trim() === "" &&
+        trimmed !== ""
+      ) {
+        patch.errorReason = undefined;
       }
       setRelations((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
       if (trimmed !== relation.name.trim()) {
@@ -1607,12 +1702,11 @@ export function useOntologyApp() {
           detail: `${relationLabel(relation)} → ${trimmed || "Unnamed relation"}`,
           ref: { kind: "relation", id },
           // Restoring the old name may also need to put the Relation back into its old Error
-          // state (renaming out of "unnamed" clears it — see `patch.status` above), so this
-          // carries the full pre-rename name+status, not just the name.
+          // (renaming out of "unnamed" clears it — see `patch.errorReason` above).
           restore: {
             kind: "relationPatch",
             id,
-            before: { name: relation.name, status: relation.status },
+            before: { name: relation.name, errorReason: relation.errorReason },
           },
         });
       }
@@ -1862,7 +1956,7 @@ export function useOntologyApp() {
     (keys: string[]) => {
       const entityIds = new Set<string>();
       const propertyRefs: { entityId: string; propertyId: string }[] = [];
-      const mappingRefs: { entityId: string; propertyId: string }[] = [];
+      const mappingRefs: Extract<SuggestionRef, { kind: "mapping" }>[] = [];
       const relationIds = new Set<string>();
       keys.forEach((key) => {
         const ref = parseSuggestionKey(key);
@@ -1886,14 +1980,17 @@ export function useOntologyApp() {
         .map((r) => r.id);
       const allRelationIds = new Set([...relationIds, ...cascadedRelationIds]);
       const declinedRelations = relations.filter((r) => allRelationIds.has(r.id));
-      const declinedMappings = mappingRefs.filter(({ entityId, propertyId }) => {
-        if (entityIds.has(entityId) || propertyIdsByEntity.get(entityId)?.has(propertyId)) {
+      const declinedMappings = mappingRefs.filter((ref) => {
+        if (
+          entityIds.has(ref.entityId) ||
+          propertyIdsByEntity.get(ref.entityId)?.has(ref.propertyId)
+        ) {
           return false;
         }
         const property = entities
-          .find((entity) => entity.id === entityId)
-          ?.properties.find((item) => item.id === propertyId);
-        return !!property?.mapping && mappingStatus(property.mapping) === "suggested";
+          .find((entity) => entity.id === ref.entityId)
+          ?.properties.find((item) => item.id === ref.propertyId);
+        return !!property && targetedMappings(property, ref).length > 0;
       });
 
       if (
@@ -1913,20 +2010,24 @@ export function useOntologyApp() {
           .filter((e) => !entityIds.has(e.id))
           .map((e) => {
             const propIds = propertyIdsByEntity.get(e.id);
-            const rejectedMappingIds = new Set(
-              declinedMappings
-                .filter((mapping) => mapping.entityId === e.id)
-                .map((mapping) => mapping.propertyId),
-            );
+            const rejected = declinedMappings.filter((mapping) => mapping.entityId === e.id);
             const properties = propIds
               ? e.properties.filter((p) => !propIds.has(p.id))
               : e.properties;
-            return rejectedMappingIds.size > 0
+            return rejected.length > 0
               ? {
                   ...e,
-                  properties: properties.map((property) =>
-                    rejectedMappingIds.has(property.id) ? { ...property, mapping: null } : property,
-                  ),
+                  properties: properties.map((property) => {
+                    const drop = rejected
+                      .filter((r) => r.propertyId === property.id)
+                      .flatMap((r) => targetedMappings(property, r));
+                    return drop.length
+                      ? {
+                          ...property,
+                          mappings: property.mappings.filter((m) => !drop.includes(m)),
+                        }
+                      : property;
+                  }),
                 }
               : propIds
                 ? { ...e, properties }
@@ -2037,7 +2138,7 @@ export function useOntologyApp() {
                     kind: "propertyPatch" as const,
                     entityId,
                     propertyId,
-                    before: { mapping: property.mapping },
+                    before: { mappings: property.mappings },
                   }
                 : undefined,
             };
@@ -2105,13 +2206,12 @@ export function useOntologyApp() {
       const ownerExists = entities.some((e) => e.id === trashed.entityId);
       if (!ownerExists) return;
       pushHistory();
-      const mapping = trashed.property.mapping;
-      const mappingStillValid =
-        mapping != null &&
-        (tableByName(mapping.table)?.columns.some((c) => c.name === mapping.column) ?? false);
+      // Only the mappings whose column still exists come back.
       const restored: Property = {
         ...trashed.property,
-        mapping: mappingStillValid ? mapping : null,
+        mappings: trashed.property.mappings.filter(
+          (m) => tableByName(m.table)?.columns.some((c) => c.name === m.column) ?? false,
+        ),
       };
       setEntities((es) =>
         es.map((e) =>
@@ -2253,16 +2353,14 @@ export function useOntologyApp() {
           if (!owner || !prop) {
             return { ok: false, reason: "This Property no longer exists." };
           }
-          if (op.before.mapping) {
-            const m = op.before.mapping;
-            const stillValid =
-              tableByName(m.table)?.columns.some((c) => c.name === m.column) ?? false;
-            if (!stillValid) {
-              return {
-                ok: false,
-                reason: `${m.table}.${m.column} no longer exists, so this mapping can't be restored.`,
-              };
-            }
+          const gone = op.before.mappings?.find(
+            (m) => !(tableByName(m.table)?.columns.some((c) => c.name === m.column) ?? false),
+          );
+          if (gone) {
+            return {
+              ok: false,
+              reason: `${gone.table}.${gone.column} no longer exists, so this mapping can't be restored.`,
+            };
           }
           updateProperty(op.entityId, op.propertyId, op.before);
           return { ok: true };
@@ -2559,13 +2657,15 @@ export function useOntologyApp() {
     trashedRelations,
     updateEntity,
     updateProperty,
-    updateMapping,
-    moveMapping,
-    confirmMapping,
+    connectMapping,
+    disconnectMapping,
+    connectRelationDataset,
+    disconnectRelationDataset,
     updateRelation,
     createEntity,
     createProperty,
     createEntityWithProperties,
+    createProperties,
     confirmItems,
     moveProperties,
     createRelation,
