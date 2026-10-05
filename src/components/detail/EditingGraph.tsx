@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowLeftRight, Check, Plus, Table2, X } from "lucide-react";
+import { ArrowLeftRight, Plus, Table2, X } from "lucide-react";
 import type { NewPropertyDraft, OntologyApp } from "@/lib/app-state";
 import {
   entityDraftBlocker,
@@ -960,12 +960,6 @@ export function EditingGraphView({
   // --- Selection / detail panel ------------------------------------------------------------
   const selected = app.suggestionSelection;
   const isSelected = (ref: SuggestionRef) => selected.has(suggestionKey(ref));
-  // A Property list's Accept / Reject (a row's hover buttons, a group's heading).
-  const reviewProperties = (entityId: string) => (action: "accept" | "reject", ids: string[]) => {
-    const keys = ids.map((propertyId) => suggestionKey({ kind: "property", entityId, propertyId }));
-    if (action === "accept") app.acceptSuggestions(keys);
-    else app.declineSuggestions(keys);
-  };
   const detailItem = resolveDetailItem(app, inspectedTable);
   const shownProps = focused ? focused.mapped : centerPropsOpen ? centerProperties : [];
   const queue = [
@@ -1304,7 +1298,6 @@ export function EditingGraphView({
                     onSearchChange={setPropSearch}
                     onCreateProperty={(draft) => createPropertyIn(app, focusEntity.id, draft)}
                     onUpdateProperty={(id, patch) => app.updateProperty(focusEntity.id, id, patch)}
-                    onReviewProperties={reviewProperties(focusEntity.id)}
                     identifierName={identifierNames(focusEntity)}
                     keyPartOf={(p) => keyPartOf(focusEntity, p)}
                     isSelected={(p) =>
@@ -1555,7 +1548,6 @@ export function EditingGraphView({
                           )}
                           onCreateProperty={(draft) => createPropertyIn(app, entity.id, draft)}
                           onUpdateProperty={(id, patch) => app.updateProperty(entity.id, id, patch)}
-                          onReviewProperties={reviewProperties(entity.id)}
                           isSelected={(p) =>
                             isSelected({ kind: "property", entityId: entity.id, propertyId: p.id })
                           }
@@ -2989,13 +2981,10 @@ function ListGroup({
   label,
   count,
   children,
-  bulk,
 }: {
   label: "Mapped" | "Unmapped";
   count: number;
   children: ReactNode;
-  // Review every suggested row in the group at once (shown while the heading is hovered).
-  bulk?: { count: number; onAccept: () => void; onReject: () => void } | undefined;
 }) {
   return (
     <div
@@ -3004,25 +2993,9 @@ function ListGroup({
         label === "Mapped" ? "bg-[#edf3f2]" : "bg-[#fafafa]",
       )}
     >
-      <div className="group/listhead flex items-center justify-between gap-2 pb-1.5 text-[14px] leading-none">
+      <div className="flex items-center justify-between pb-1.5 text-[14px] leading-none">
         <span className="text-[#080a09]">{label}</span>
-        <span className="flex items-center gap-2">
-          {bulk && bulk.count > 0 && (
-            <span className="hidden items-center gap-2 text-[12px] font-medium leading-4 group-hover/listhead:flex">
-              <button
-                type="button"
-                onClick={bulk.onReject}
-                className="text-[#6d7472] hover:text-[#dc2626]"
-              >
-                Reject {bulk.count}
-              </button>
-              <button type="button" onClick={bulk.onAccept} className="text-[#0891b2]">
-                Accept {bulk.count}
-              </button>
-            </span>
-          )}
-          <span className="tabular-nums text-[#6d7472]">{count}</span>
-        </span>
+        <span className="tabular-nums text-[#6d7472]">{count}</span>
       </div>
       {children}
     </div>
@@ -3107,10 +3080,7 @@ function PropertyPanel({
   entityId,
   frame,
   onUpdateProperty,
-  onReviewProperties,
 }: {
-  // Accepting / rejecting suggested Properties (a row's hover buttons, a group's heading).
-  onReviewProperties?: ((action: "accept" | "reject", propertyIds: string[]) => void) | undefined;
   // Editing a row in place (its pencil): name, Identifier and type.
   onUpdateProperty?:
     | ((
@@ -3214,28 +3184,7 @@ function PropertyPanel({
             ] as const
           ).map(([label, group]) =>
             group.length > 0 ? (
-              <ListGroup
-                key={label}
-                label={label}
-                count={group.length}
-                bulk={
-                  onReviewProperties
-                    ? {
-                        count: group.filter((p) => propertyReview(p) === "suggested").length,
-                        onAccept: () =>
-                          onReviewProperties(
-                            "accept",
-                            group.filter((p) => propertyReview(p) === "suggested").map((p) => p.id),
-                          ),
-                        onReject: () =>
-                          onReviewProperties(
-                            "reject",
-                            group.filter((p) => propertyReview(p) === "suggested").map((p) => p.id),
-                          ),
-                      }
-                    : undefined
-                }
-              >
+              <ListGroup key={label} label={label} count={group.length}>
                 {group.map((property) =>
                   editingId === property.id && onUpdateProperty ? (
                     <PropertyInlineEditor
@@ -3258,14 +3207,6 @@ function PropertyPanel({
                         propertyReview(property) === "suggested" ? (
                           <PropertyConfidenceChip property={property} tone="muted" />
                         ) : null
-                      }
-                      review={
-                        onReviewProperties && propertyReview(property) === "suggested"
-                          ? {
-                              onAccept: () => onReviewProperties("accept", [property.id]),
-                              onReject: () => onReviewProperties("reject", [property.id]),
-                            }
-                          : undefined
                       }
                       selected={isSelected(property)}
                       onClick={() => onSelect(property)}
@@ -3319,10 +3260,8 @@ function EntityPropertyPanel({
   isSelected,
   onSelect,
   frame,
-  onReviewProperties,
 }: {
   entity: Entity;
-  onReviewProperties?: ((action: "accept" | "reject", propertyIds: string[]) => void) | undefined;
   frame?: string | undefined;
   onCreateProperty?: ((draft: NewPropertyDraft) => void) | undefined;
   onUpdateProperty?:
@@ -3352,7 +3291,6 @@ function EntityPropertyPanel({
       identifierName={identifierNames(entity)}
       keyPartOf={(p) => keyPartOf(entity, p)}
       frame={frame}
-      onReviewProperties={onReviewProperties}
       isSelected={isSelected}
       onSelect={onSelect}
     />
@@ -3469,7 +3407,6 @@ function PanelRow({
   identifierPart,
   type,
   chip,
-  review,
   grip = true,
   selected = false,
   onClick,
@@ -3491,8 +3428,6 @@ function PanelRow({
   identifierPart?: number | undefined;
   type: string | undefined;
   chip?: ReactNode;
-  // A suggested row's own review: its chip gives way to Reject / Accept while the row is hovered.
-  review?: { onAccept: () => void; onReject: () => void } | undefined;
   sampleValues?: string[];
   // Only Property rows have the drag grip; Column rows don't move.
   grip?: boolean;
@@ -3571,50 +3506,7 @@ function PanelRow({
           </span>
         )}
       </span>
-      {chip && (
-        <span
-          className={cn(
-            "lod-confidence",
-            review
-              ? "flex group-hover/panelrow:hidden group-focus-within/panelrow:hidden"
-              : "contents",
-          )}
-        >
-          {chip}
-        </span>
-      )}
-      {review && (
-        <span className="lod-detail hidden shrink-0 items-center gap-0.5 group-hover/panelrow:flex group-focus-within/panelrow:flex">
-          <button
-            type="button"
-            aria-label={`Reject ${name}`}
-            title="Reject"
-            draggable={false}
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={(event) => {
-              event.stopPropagation();
-              review.onReject();
-            }}
-            className="flex size-5 items-center justify-center rounded-[6px] text-[#dc2626] hover:bg-[#ffe6db]"
-          >
-            <X className="size-3.5" strokeWidth={1.5} />
-          </button>
-          <button
-            type="button"
-            aria-label={`Accept ${name}`}
-            title="Accept"
-            draggable={false}
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={(event) => {
-              event.stopPropagation();
-              review.onAccept();
-            }}
-            className="flex size-5 items-center justify-center rounded-[6px] text-[#0891b2] hover:bg-[#d2fffa]"
-          >
-            <Check className="size-3.5" strokeWidth={1.5} />
-          </button>
-        </span>
-      )}
+      {chip && <span className="lod-confidence contents">{chip}</span>}
       {onEdit && (
         <button
           type="button"
