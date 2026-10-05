@@ -31,7 +31,7 @@ export function classNodeCounts(entity: Entity): string {
 
 /**
  * Figma "Node-Editing mode" (472:110792): a white card, 1px light border and the standard card
- * shadow. Focused is a 2px cyan border, selected a 1px near-black one, dim fades it to 20%.
+ * shadow. Focused is a 2px cyan border, selected a near-black one (1px collapsed, 2px open), dim fades it to 20%.
  */
 const CARD_SHADOW = "shadow-[0_1px_3px_0_rgba(0,0,0,0.1),0_1px_2px_-1px_rgba(0,0,0,0.1)]";
 
@@ -49,8 +49,11 @@ export function classNodeClass({
   return cn(
     "relative flex items-center gap-1 rounded-[4px] border bg-white px-3 text-left transition-[box-shadow,opacity,border-color]",
     CARD_SHADOW,
+    // Selected is 1px collapsed and 2px once the list is open (Figma 492:60789 / 492:60532).
     selected
-      ? "border-[#080a09]"
+      ? attached
+        ? "border-2 border-[#080a09]"
+        : "border-[#080a09]"
       : focus
         ? "border-2 border-[#0891b2]"
         : "border-[#e3e5e4] hover:border-[#0891b2]",
@@ -72,7 +75,7 @@ export function classNodeBodyClass({
     "rounded-b-[4px] rounded-t-none border border-t-0 bg-white",
     CARD_SHADOW,
     selected
-      ? "border-[#080a09]"
+      ? "border-2 border-t-0 border-[#080a09]"
       : focus
         ? "border-2 border-t-0 border-[#0891b2]"
         : "border-[#e3e5e4]",

@@ -367,10 +367,9 @@ const mappingsIn = (property: Property, table: string) =>
 const mapsInto = (property: Property, table: string) =>
   property.mappings.some((m) => m.table === table);
 
-/** "367 columns · 19 entities" — a Data Table node's counts. */
-function tableNodeCounts(table: TableSchema, entities: Entity[]) {
-  const mapped = entities.filter((e) => e.properties.some((p) => mapsInto(p, table.name))).length;
-  return `${plural(table.columns.length, "column", "columns")} · ${plural(mapped, "entity", "entities")}`;
+/** "367 columns" — a Data Table node's counts (Figma "Type=Table"). */
+function tableNodeCounts(table: TableSchema, _entities: Entity[]) {
+  return plural(table.columns.length, "column", "columns");
 }
 
 function entityDetail(entity: Entity) {
@@ -4222,8 +4221,8 @@ function MappingPanels({
               />
               <span
                 aria-hidden
-                className="pointer-events-none absolute z-40 size-1.5 -translate-y-1/2 translate-x-1/2 rounded-full bg-[#62748E]"
-                style={{ right: NODE_W, top: 16 }}
+                className="pointer-events-none absolute z-40 size-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#62748E]"
+                style={{ left: width - NODE_W, top: 16 }}
               />
               <GroupCell tone="Mapped" last={index === pairs.length - 1} width={NODE_W}>
                 {repeatedIdentifier ? (
@@ -4270,6 +4269,7 @@ function MappingPanels({
               </GroupCell>
               {/* Each composite column connects to the Identifier's single visible row. Drawn over
                   the groups' tint, under the rows, so it reaches each row's edge. */}
+              <div className="flex-1" />
               <div
                 onMouseEnter={() => mapping.alias && setHoverAlias(mapping.alias)}
                 onMouseLeave={() => setHoverAlias(null)}
@@ -4277,8 +4277,10 @@ function MappingPanels({
                   mapping.alias &&
                   setPinnedAlias((current) => (current === mapping.alias ? null : mapping.alias!))
                 }
+                // From the left panel's outer edge to the right panel's, exactly.
+                style={{ left: NODE_W, width: width - 2 * NODE_W, top: 6 }}
                 className={cn(
-                  "group/mapline relative z-20 -mx-5 mt-1.5 flex h-5 min-w-0 flex-1 items-center self-start transition-opacity",
+                  "group/mapline absolute z-20 flex h-5 items-center transition-opacity",
                   mapping.alias && "cursor-pointer",
                   connecting || (repeatedIdentifier && !sourceVisible)
                     ? "pointer-events-none opacity-0"
@@ -4393,7 +4395,6 @@ function MappingPanels({
                       />
                     )}
                     <PanelRow
-                      grip={false}
                       name={mapping.column}
                       sampleValues={columnSamples(table, mapping.column)}
                       dimmed={!reviewScope.column(table.name, mapping.column)}
@@ -4444,7 +4445,6 @@ function MappingPanels({
                 <GroupCell tone="Mapped" last={last} width={columnCellWidth} pad={columnCellPad}>
                   <div className="group/maprow relative z-30">
                     <PanelRow
-                      grip={false}
                       name={column.name}
                       sampleValues={columnSamples(table, column.name)}
                       highlight={columnQueryText}
@@ -4537,7 +4537,6 @@ function MappingPanels({
                   {column ? (
                     <div className="group/maprow relative z-30">
                       <PanelRow
-                        grip={false}
                         name={column.name}
                         sampleValues={columnSamples(table, column.name)}
                         highlight={columnQueryText}
@@ -5730,7 +5729,6 @@ function TableColumnsPanel({
                   return (
                     <PanelRow
                       key={column.name}
-                      grip={false}
                       name={column.name}
                       sampleValues={columnSamples(table, column.name)}
                       dimmed={!reviewScope.column(table.name, column.name)}
