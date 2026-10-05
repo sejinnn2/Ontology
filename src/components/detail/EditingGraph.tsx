@@ -148,9 +148,9 @@ const PREVIEW = 5;
 const GAP_Y = 16;
 
 const CENTER_W = 280;
-const CENTER_H = 56;
+const CENTER_H = 70;
 const NODE_W = 280;
-const NODE_H = 56;
+const NODE_H = 70;
 const MORE_H = 28;
 // Horizontal room between a related Entity Type and the middle node: a 180px pill with 60px
 // either side (Figma 328:30072).
@@ -220,8 +220,8 @@ const ATTACHED_HEAD = "rounded-b-none border-b-0";
 // An open Entity Type's list carries its ClassNode border down the card instead (see
 // `classFrameOf`): the frame string is then the whole body style, marked with a prefix.
 const CLASS_FRAME = "class-frame:";
-const classFrameOf = (mapping: ClassNodeMapping, accent: boolean) =>
-  CLASS_FRAME + classNodeBodyClass({ mapping, accent });
+const classFrameOf = (selected: boolean, focus: boolean) =>
+  CLASS_FRAME + classNodeBodyClass({ selected, focus });
 const attachedBody = (frame: string) =>
   frame.startsWith(CLASS_FRAME)
     ? frame.slice(CLASS_FRAME.length)
@@ -1245,7 +1245,6 @@ export function EditingGraphView({
                   onClick={() => inspect({ kind: "entity", id: focusEntity.id })}
                   className={cn(
                     classNodeClass({
-                      mapping: classNodeMapping(focusEntity),
                       selected: isSelected({ kind: "entity", id: focusEntity.id }),
                       focus: !isSelected({ kind: "entity", id: focusEntity.id }),
                       dimmed: !reviewScope.entity(focusEntity),
@@ -1268,7 +1267,7 @@ export function EditingGraphView({
                     nameClassName={focusEntity.name ? undefined : "text-[#9ea3a2]"}
                     counts={classNodeCounts(focusEntity)}
                     mapping={classNodeMapping(focusEntity)}
-                    open={centerAttached}
+                    active
                   />
                   {entityReview(focusEntity) === "suggested" && (
                     <span className="lod-confidence contents">
@@ -1287,7 +1286,10 @@ export function EditingGraphView({
               {centerPropsOpen && (
                 <div className="absolute left-0 top-full" style={{ width: CENTER_W }}>
                   <PropertyPanel
-                    frame={classFrameOf(classNodeMapping(focusEntity), true)}
+                    frame={classFrameOf(
+                      isSelected({ kind: "entity", id: focusEntity.id }),
+                      !isSelected({ kind: "entity", id: focusEntity.id }),
+                    )}
                     entityId={focusEntity.id}
                     properties={centerProperties}
                     filter={propFilter}
@@ -1542,10 +1544,7 @@ export function EditingGraphView({
                       <div style={{ width: NODE_W }}>
                         <EntityPropertyPanel
                           entity={entity}
-                          frame={classFrameOf(
-                            classNodeMapping(entity),
-                            isSelected({ kind: "entity", id: entity.id }),
-                          )}
+                          frame={classFrameOf(isSelected({ kind: "entity", id: entity.id }), false)}
                           onCreateProperty={(draft) => createPropertyIn(app, entity.id, draft)}
                           onUpdateProperty={(id, patch) => app.updateProperty(entity.id, id, patch)}
                           isSelected={(p) =>
@@ -1753,7 +1752,10 @@ export function EditingGraphView({
                   app={app}
                   entity={focusEntity}
                   frames={{
-                    left: classFrameOf(classNodeMapping(focusEntity), true),
+                    left: classFrameOf(
+                      isSelected({ kind: "entity", id: focusEntity.id }),
+                      !isSelected({ kind: "entity", id: focusEntity.id }),
+                    ),
                     right: frameOf(
                       inspectedTable === focused.table.name && detailItem?.kind === "table",
                     ),
@@ -2250,13 +2252,7 @@ function GraphNode({
       className={
         classNode
           ? cn(
-              classNodeClass({
-                mapping: classNode.mapping,
-                selected,
-                focus: highlighted,
-                dimmed,
-                attached,
-              }),
+              classNodeClass({ selected, focus: highlighted, dimmed, attached }),
               "pr-2",
               !!dropFor && move?.dropTargetId === dropFor && DROP_TARGET_CLASS,
             )
@@ -2284,7 +2280,7 @@ function GraphNode({
           name={name}
           counts={classNode.counts}
           mapping={classNode.mapping}
-          open={attached}
+          active={!!selected || !!highlighted}
         />
       ) : (
         <>
@@ -5399,8 +5395,8 @@ export function TableGraphView({
                   entity={focused.entity}
                   frames={{
                     left: classFrameOf(
-                      classNodeMapping(focused.entity),
                       isSelected({ kind: "entity", id: focused.entity.id }),
+                      false,
                     ),
                     right: frameOf(tableSelected, true),
                   }}
