@@ -26,6 +26,7 @@ import { CreateEntityButton } from "@/components/ontology/CreateEntityButton";
 import { CreateEntityWizard } from "@/components/ontology/CreateEntityWizard";
 import { DefineRelationDialog } from "@/components/ontology/DefineRelationDialog";
 import { motion } from "motion/react";
+import { EDGE_STYLE } from "@/lib/edge-style";
 import { canvasLod, LOD_LABEL_TOP_N, LOD_NAME_PX, LOD_SPARSE_LABELS } from "@/lib/zoom-lod";
 import { ItemStatusIcon } from "@/components/ontology/ItemStatusIcon";
 import { OntologyNode, ONTOLOGY_NODE_SIZE, ONTOLOGY_NODE_WRAPPER_W } from "./OntologyNode";
@@ -2035,25 +2036,19 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                     const isMuted = states.every((s) => s.isMuted);
                     const isHidden = states.every((s) => s.isHidden);
                     const blue = isZoomEmphasized || isFocusEdge;
+                    // Figma "Edge/Explorer": lit / faded / idle (see `edge-style.ts`).
+                    const edge = EDGE_STYLE[blue ? "lit" : isHidden || isMuted ? "faded" : "idle"];
                     return (
                       <path
                         key={bundleId}
                         d={bundle.d}
                         fill="none"
                         strokeLinecap="round"
-                        className={cn(
-                          "transition-opacity",
-                          blue ? "stroke-[#3b82f6]" : "stroke-[#9EA3A2]",
-                        )}
-                        opacity={
-                          isZoomEmphasized || isFocusEdge ? 1 : isHidden || isMuted ? 0.2 : 1
-                        }
+                        stroke={edge.stroke}
+                        className="transition-opacity"
+                        opacity={edge.opacity}
                         strokeWidth={
-                          isZoomEmphasized
-                            ? 2.6
-                            : isFocusEdge
-                              ? 2
-                              : Math.min(1.5 + (bundle.count - 1) * 0.8, 5)
+                          blue ? edge.width : Math.min(edge.width + (bundle.count - 1) * 0.8, 5)
                         }
                         markerEnd={bundle.count === 1 ? "url(#relation-arrow)" : undefined}
                       />
@@ -2069,6 +2064,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                     // Figma Line (362:222575): Default and Suggested are the same solid gray
                     // (the label's dot tells them apart); Deactivated is 0.2; Selected is blue.
                     const blue = isZoomEmphasized || isFocusEdge;
+                    const edge = EDGE_STYLE[blue ? "lit" : isHidden || isMuted ? "faded" : "idle"];
                     return (
                       <motion.path
                         key={r.id}
@@ -2077,14 +2073,10 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                         transition={SPRING}
                         fill="none"
                         strokeLinecap="round"
-                        className={cn(
-                          "transition-opacity",
-                          blue ? "stroke-[#3b82f6]" : "stroke-[#9EA3A2]",
-                        )}
-                        opacity={
-                          isZoomEmphasized || isFocusEdge ? 1 : isHidden || isMuted ? 0.2 : 1
-                        }
-                        strokeWidth={isZoomEmphasized ? 2.6 : isFocusEdge ? 2 : 1.5}
+                        stroke={edge.stroke}
+                        className="transition-opacity"
+                        opacity={edge.opacity}
+                        strokeWidth={edge.width}
                         markerEnd="url(#relation-arrow)"
                       />
                     );

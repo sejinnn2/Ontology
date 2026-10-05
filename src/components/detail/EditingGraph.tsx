@@ -100,6 +100,7 @@ import {
 import dotGridIcon from "@/assets/icons/dot-grid-2x3-16.svg";
 import arrowRightIcon from "@/assets/icons/arrow-right-12.svg";
 import { ItemStatusIcon, itemStatusDotColor } from "@/components/ontology/ItemStatusIcon";
+import { EDGE_STROKE, EDGE_STYLE, type EdgeLayer } from "@/lib/edge-style";
 import {
   ClassNodeBody,
   classNodeClass,
@@ -191,7 +192,6 @@ const LADDER_RUNG_GAP = 20;
 const LADDER_TRUNK = 29;
 const LADDER_TABLE_W = NODE_W - LADDER_INSET;
 const MAPPING_PREVIEW = 3;
-const BRANCH_STROKE = "#b5b9b8";
 const ladderTableH = (columns: number) =>
   LADDER_HEAD + Math.max(1, columns) * LADDER_ROW + LADDER_FOOT;
 
@@ -202,7 +202,6 @@ const SETTLED = "#9EA3A2";
 // above the line for it when it opens.
 const DRAFT_RELATION_W = 272;
 const DRAFT_CARD_ROOM = 300;
-const POTENTIAL = "#c9cccb";
 const ARROW_SUGGESTED = "editing-graph-arrow-suggested";
 const ARROW_SETTLED = "editing-graph-arrow-settled";
 const SPRING = { type: "spring" as const, visualDuration: 0.35, bounce: 0.1 };
@@ -344,7 +343,8 @@ const DROP_TARGET_CLASS = "!border-[#00ded8] !bg-[#00ded8]/10 shadow-[0_0_0_1.5p
 
 /** A left-to-right cubic curve between two horizontal anchors. */
 function curve(from: Pt, to: Pt): string {
-  const dx = (to.x - from.x) / 2;
+  // Figma "Edge/Explorer": horizontal tangents, control distance = max(dx * 0.55, 24).
+  const dx = Math.max(Math.abs(to.x - from.x) * 0.55, 24) * (to.x >= from.x ? 1 : -1);
   return `M ${from.x} ${from.y} C ${from.x + dx} ${from.y} ${to.x - dx} ${to.y} ${to.x} ${to.y}`;
 }
 
@@ -2158,19 +2158,32 @@ function Curve({
 }) {
   // Suggested and settled links share the solid gray line (the status dot tells them apart).
   const marker = `url(#${ARROW_SETTLED})`;
+  // Figma "Edge/Explorer" layers: a candidate link is "further" (dotted), a secondary table link
+  // "back" (dashed), a highlighted one "lit", an out-of-scope one "faded", the rest "idle".
+  const layer: EdgeLayer = potential
+    ? "further"
+    : branch
+      ? "back"
+      : bold
+        ? "lit"
+        : dimmed
+          ? "faded"
+          : "idle";
+  const edge = EDGE_STYLE[layer];
   return (
     <motion.path
       markerStart={arrow === "start" ? marker : undefined}
       markerEnd={arrow === "end" ? marker : undefined}
       initial={from ? { d: from } : false}
       // Opacity goes through `animate`: motion doesn't re-apply a changed `style.opacity`.
-      animate={{ d, opacity: dimmed ? 0.4 : 1 }}
+      animate={{ d, opacity: edge.opacity }}
       exit={from ? { d: from, transition: SPRING } : {}}
       transition={{ ...SPRING, delay }}
       fill="none"
-      stroke={potential ? POTENTIAL : branch ? BRANCH_STROKE : SETTLED}
-      strokeWidth={branch || potential ? 1 : bold ? 2 : 1.5}
-      strokeDasharray={potential ? "2 4" : branch ? "3 3" : undefined}
+      stroke={edge.stroke}
+      strokeWidth={edge.width}
+      strokeDasharray={edge.dash}
+      strokeLinecap={edge.round ? "round" : undefined}
     />
   );
 }
@@ -4709,7 +4722,7 @@ function ArrowMarkers() {
       {(
         [
           [ARROW_SUGGESTED, SUGGESTED],
-          [ARROW_SETTLED, SETTLED],
+          [ARROW_SETTLED, EDGE_STROKE],
         ] as const
       ).map(([id, color]) => (
         <marker
