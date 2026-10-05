@@ -274,6 +274,8 @@ const PILL_SIZE = {
   sm: "px-[6px] py-px text-[10px] leading-[16px] tracking-[-0.076px]",
   // Editing-view lanes/panels.
   md: "px-1.5 py-px text-[12px]",
+  // An Entity Type's graph node (Figma "Node-Editing mode" Badge): 10/2 padding, Medium.
+  node: "px-2.5 py-0.5 text-[12px] font-medium leading-4",
 };
 
 /**

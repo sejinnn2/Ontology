@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { entityMappingCompleteness, type Entity } from "@/lib/mock-data";
 import suggestedIcon from "@/assets/icons/class-node-suggested-24.svg";
-import activeIcon from "@/assets/icons/class-node-active-24.svg";
 import dotFull from "@/assets/icons/class-dot-full-6.svg";
 import dotPartial from "@/assets/icons/class-dot-partial-6.svg";
 import dotNone from "@/assets/icons/class-dot-none-6.svg";
@@ -80,8 +79,8 @@ export function classNodeBodyClass({
   );
 }
 
-/** The card's title: a 28px sparkle beside the 16px name, over the status dot and counts. The
- * sparkle is gray, and cyan while the node is focused or selected. */
+/** The card's title: a 20px icon beside the 16px name, over the status dot and counts. The
+ * sparkle is the same slate in every state. */
 export function ClassNodeBody({
   icon,
   name,
@@ -89,7 +88,6 @@ export function ClassNodeBody({
   lodName = "lod-name",
   counts,
   mapping,
-  active = false,
 }: {
   /** The zoom-LOD class that scales the name: `lod-title` on the middle node, `lod-name` else. */
   lodName?: "lod-name" | "lod-title";
@@ -99,15 +97,12 @@ export function ClassNodeBody({
   nameClassName?: string | undefined;
   counts: string;
   mapping: ClassNodeMapping;
-  active?: boolean;
 }) {
   return (
     <span className="flex min-w-0 flex-1 flex-col gap-1">
-      <span className="flex items-center gap-2">
-        <span className="lod-type flex size-7 shrink-0 items-center justify-center">
-          {icon ?? (
-            <img alt="" src={active ? activeIcon : suggestedIcon} className="block size-7" />
-          )}
+      <span className="flex h-6 items-center gap-2">
+        <span className="lod-type flex size-5 shrink-0 items-center justify-center">
+          {icon ?? <img alt="" src={suggestedIcon} className="block size-5" />}
         </span>
         <span
           className={cn(

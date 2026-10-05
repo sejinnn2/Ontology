@@ -151,9 +151,9 @@ const PREVIEW = 5;
 const GAP_Y = 16;
 
 const CENTER_W = 280;
-const CENTER_H = 70;
+const CENTER_H = 64;
 const NODE_W = 280;
-const NODE_H = 70;
+const NODE_H = 64;
 const MORE_H = 28;
 // Horizontal room between a related Entity Type and the middle node: a 180px pill with 60px
 // either side (Figma 328:30072).
@@ -1017,7 +1017,7 @@ export function EditingGraphView({
     <MappingStatusBadge
       status={tableMappingStatus(table.name, app.entities)}
       {...tableMappingCompleteness(table.name, app.entities)}
-      size={24}
+      size={20}
     />
   );
 
@@ -1273,7 +1273,7 @@ export function EditingGraphView({
                     <ClassNodeBody
                       icon={
                         entityDisplayStatus(focusEntity) === "suggested" ? undefined : (
-                          <ItemStatusIcon status={entityDisplayStatus(focusEntity)} size={24} />
+                          <ItemStatusIcon status={entityDisplayStatus(focusEntity)} size={20} />
                         )
                       }
                       name={focusEntity.name || "New entity type"}
@@ -1281,12 +1281,11 @@ export function EditingGraphView({
                       nameClassName={focusEntity.name ? undefined : "text-[#9ea3a2]"}
                       counts={classNodeCounts(focusEntity)}
                       mapping={classNodeMapping(focusEntity)}
-                      active
                     />
                     {centerAttached && <ClassNodeDivider />}
                     {entityReview(focusEntity) === "suggested" && (
                       <span className="lod-confidence contents">
-                        <EntityConfidenceChip entity={focusEntity} tone="muted" />
+                        <EntityConfidenceChip entity={focusEntity} tone="muted" size="node" />
                       </span>
                     )}
                     <ExpandChevron
@@ -1455,7 +1454,7 @@ export function EditingGraphView({
                             />
                           }
                           attachedStatus={
-                            <ItemStatusIcon status={entityDisplayStatus(entity)} size={24} />
+                            <ItemStatusIcon status={entityDisplayStatus(entity)} size={20} />
                           }
                           name={entity.name}
                           detail={entityDetail(entity)}
@@ -1468,7 +1467,7 @@ export function EditingGraphView({
                           dimmed={!reviewScope.entity(entity)}
                           chip={
                             entityReview(entity) === "suggested" ? (
-                              <EntityConfidenceChip entity={entity} tone="muted" />
+                              <EntityConfidenceChip entity={entity} tone="muted" size="node" />
                             ) : null
                           }
                           selected={isSelected({ kind: "entity", id: entity.id })}
@@ -2414,7 +2413,6 @@ function GraphNode({
             name={name}
             counts={classNode.counts}
             mapping={classNode.mapping}
-            active={!!selected || !!highlighted}
           />
           {attached && <ClassNodeDivider />}
         </>
@@ -5252,7 +5250,7 @@ export function TableGraphView({
           confidence={entity.confidence}
         />
       }
-      attachedStatus={<ItemStatusIcon status={entityDisplayStatus(entity)} size={24} />}
+      attachedStatus={<ItemStatusIcon status={entityDisplayStatus(entity)} size={20} />}
       name={entity.name}
       detail={entityDetail(entity)}
       classNode={{
@@ -5264,7 +5262,7 @@ export function TableGraphView({
       dimmed={!reviewScope.entity(entity)}
       chip={
         entityReview(entity) === "suggested" ? (
-          <EntityConfidenceChip entity={entity} tone="muted" />
+          <EntityConfidenceChip entity={entity} tone="muted" size="node" />
         ) : null
       }
       selected={isSelected({ kind: "entity", id: entity.id })}
@@ -5415,14 +5413,13 @@ export function TableGraphView({
                       <MappingStatusBadge
                         status={tableMappingStatus(table.name, app.entities)}
                         {...tableMappingCompleteness(table.name, app.entities)}
-                        size={24}
+                        size={20}
                       />
                     }
                     name={table.name}
                     lodName="lod-title"
                     counts={tableNodeCounts(table, app.entities)}
                     mapping={tableNodeMapping(tableMappingStatus(table.name, app.entities))}
-                    active
                   />
                   {(columnsOpen || !!focused) && <ClassNodeDivider />}
                   <ExpandChevron
