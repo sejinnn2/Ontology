@@ -1157,7 +1157,7 @@ export function EditingGraphView({
                             suggested={relSuggested}
                             bold={hovered === item.key || isOpen}
                             dimmed={!reviewScope.relation(relation)}
-                            arrow={relation.from === focusEntity.id ? "start" : undefined}
+                            handles="start"
                           />
                           <Curve
                             d={curve(
@@ -1167,7 +1167,7 @@ export function EditingGraphView({
                             suggested={relSuggested}
                             bold={hovered === item.key || isOpen}
                             dimmed={!reviewScope.relation(relation)}
-                            arrow={relation.from === focusEntity.id ? undefined : "end"}
+                            handles="end"
                           />
                         </g>
                       );
@@ -2146,6 +2146,15 @@ function Node({ x, y, children }: { x: number; y: number; children: ReactNode })
   );
 }
 
+/** The first and last point of a `curve()` / line path. */
+function curveEnds(d: string) {
+  const n = (d.match(/-?\d+(?:\.\d+)?(?:e-?\d+)?/g) ?? []).map(Number);
+  return {
+    start: { x: n[0] ?? 0, y: n[1] ?? 0 },
+    end: { x: n[n.length - 2] ?? 0, y: n[n.length - 1] ?? 0 },
+  };
+}
+
 function Curve({
   d,
   from,
@@ -2153,7 +2162,7 @@ function Curve({
   bold = false,
   branch = false,
   delay = 0,
-  arrow,
+  handles = "both",
   dimmed = false,
   potential = false,
 }: {
@@ -2169,11 +2178,11 @@ function Curve({
   // A light dashed secondary link (an Entity Type down to its source table).
   branch?: boolean;
   delay?: number;
-  // A direction arrowhead at the curve's start or end.
-  arrow?: "start" | "end" | undefined;
+  // Figma "Edge/Explorer": a 6px handle dot on a node end. A curve that runs into its label
+  // (rather than a node) leaves that end bare.
+  handles?: "both" | "start" | "end" | "none";
 }) {
   // Suggested and settled links share the solid gray line (the status dot tells them apart).
-  const marker = `url(#${ARROW_SETTLED})`;
   // Figma "Edge/Explorer" layers: a candidate link is "further" (dotted), a secondary table link
   // "back" (dashed), a highlighted one "lit", an out-of-scope one "faded", the rest "idle".
   const layer: EdgeLayer = potential
@@ -2186,21 +2195,41 @@ function Curve({
           ? "faded"
           : "idle";
   const edge = EDGE_STYLE[layer];
+  const ends = curveEnds(d);
+  const fromEnds = from ? curveEnds(from) : null;
+  const handle = (at: "start" | "end") => {
+    if (handles !== "both" && handles !== at) return null;
+    const to = ends[at];
+    const origin = fromEnds?.[at];
+    return (
+      <motion.circle
+        key={at}
+        r={3}
+        fill={EDGE_STROKE}
+        initial={origin ? { cx: origin.x, cy: origin.y } : false}
+        animate={{ cx: to.x, cy: to.y }}
+        exit={origin ? { cx: origin.x, cy: origin.y, transition: SPRING } : {}}
+        transition={{ ...SPRING, delay }}
+      />
+    );
+  };
   return (
-    <motion.path
-      markerStart={arrow === "start" ? marker : undefined}
-      markerEnd={arrow === "end" ? marker : undefined}
-      initial={from ? { d: from } : false}
-      // Opacity goes through `animate`: motion doesn't re-apply a changed `style.opacity`.
-      animate={{ d, opacity: edge.opacity }}
-      exit={from ? { d: from, transition: SPRING } : {}}
-      transition={{ ...SPRING, delay }}
-      fill="none"
-      stroke={edge.stroke}
-      strokeWidth={edge.width}
-      strokeDasharray={edge.dash}
-      strokeLinecap={edge.round ? "round" : undefined}
-    />
+    <>
+      <motion.path
+        initial={from ? { d: from } : false}
+        // Opacity goes through `animate`: motion doesn't re-apply a changed `style.opacity`.
+        animate={{ d, opacity: edge.opacity }}
+        exit={from ? { d: from, transition: SPRING } : {}}
+        transition={{ ...SPRING, delay }}
+        fill="none"
+        stroke={edge.stroke}
+        strokeWidth={edge.width}
+        strokeDasharray={edge.dash}
+        strokeLinecap={edge.round ? "round" : undefined}
+      />
+      {handle("start")}
+      {handle("end")}
+    </>
   );
 }
 
@@ -4075,7 +4104,11 @@ function MappingPanels({
           const inFocus = !!focusAlias && mapping.alias === focusAlias;
           const faded = !!focusAlias && !inFocus;
           const tone = aliasTone(aliases, mapping.alias);
-          const lineColor = inFocus ? tone : needsAlias ? "#f15b15" : SETTLED;
+          // Figma "Edge/Explorer" idle layer for an ordinary mapping line (the alias / needs-alias
+          // states keep their own colors).
+          const idleLine = !inFocus && !needsAlias;
+          const lineColor = inFocus ? tone : needsAlias ? "#f15b15" : EDGE_STROKE;
+          const lineOpacity = idleLine ? EDGE_STYLE.idle.opacity : 1;
           return (
             <div key={`${property.id}:${mapping.column}`} className="flex shrink-0 items-stretch">
               <GroupCell tone="Mapped" last={index === pairs.length - 1} width={NODE_W}>
@@ -4151,6 +4184,7 @@ function MappingPanels({
                       d={`M 0 ${10 - rowOffset} C 35 ${10 - rowOffset} 65 10 100 10`}
                       fill="none"
                       stroke={lineColor}
+                      strokeOpacity={lineOpacity}
                       strokeWidth={inFocus ? 2 : 1.5}
                       strokeDasharray={needsAlias ? "3 3" : undefined}
                       vectorEffect="non-scaling-stroke"
@@ -4165,10 +4199,21 @@ function MappingPanels({
                         ? {
                             backgroundImage: `repeating-linear-gradient(to right, ${lineColor} 0 3px, transparent 3px 6px)`,
                           }
-                        : { backgroundColor: lineColor }
+                        : { backgroundColor: lineColor, opacity: lineOpacity }
                     }
                   />
                 )}
+                {/* Figma "Edge/Explorer" handles: a 6px dot where the line meets each panel. */}
+                <span
+                  aria-hidden
+                  className="absolute left-0 size-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#62748E]"
+                  style={{ top: repeatedIdentifier ? 10 - rowOffset : 10 }}
+                />
+                <span
+                  aria-hidden
+                  className="absolute right-0 size-1.5 translate-x-1/2 -translate-y-1/2 rounded-full bg-[#62748E]"
+                  style={{ top: 10 }}
+                />
                 {/* Its alias name: only while that alias is hovered or selected. */}
                 {inFocus && (
                   <span
@@ -5217,7 +5262,7 @@ export function TableGraphView({
                                 from={origin}
                                 suggested={relSuggested}
                                 dimmed={!reviewScope.relation(relation)}
-                                arrow={towardActive ? undefined : "start"}
+                                handles="start"
                               />
                               <Curve
                                 d={curve(
@@ -5227,7 +5272,7 @@ export function TableGraphView({
                                 from={origin}
                                 suggested={relSuggested}
                                 dimmed={!reviewScope.relation(relation)}
-                                arrow={towardActive ? "end" : undefined}
+                                handles="end"
                               />
                             </motion.g>
                           );
