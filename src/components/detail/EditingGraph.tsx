@@ -1258,7 +1258,7 @@ export function EditingGraphView({
                     name={focusEntity.name || "New entity type"}
                     lodName="lod-title"
                     nameClassName={focusEntity.name ? undefined : "text-[#9ea3a2]"}
-                    counts={classNodeCounts(focusEntity, app.relations)}
+                    counts={classNodeCounts(focusEntity)}
                     mapping={classNodeMapping(focusEntity)}
                   />
                   {entityReview(focusEntity) === "suggested" && (
@@ -1433,7 +1433,7 @@ export function EditingGraphView({
                         detail={entityDetail(entity)}
                         classNode={{
                           mapping: classNodeMapping(entity),
-                          counts: classNodeCounts(entity, app.relations),
+                          counts: classNodeCounts(entity),
                           sparkle: entityDisplayStatus(entity) === "suggested",
                         }}
                         dropFor={entity.id}
@@ -5077,7 +5077,7 @@ export function TableGraphView({
       detail={entityDetail(entity)}
       classNode={{
         mapping: classNodeMapping(entity),
-        counts: classNodeCounts(entity, app.relations),
+        counts: classNodeCounts(entity),
         sparkle: entityDisplayStatus(entity) === "suggested",
       }}
       dropFor={entity.id}

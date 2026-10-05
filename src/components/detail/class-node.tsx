@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import { entityMappingCompleteness, type Entity, type Relation } from "@/lib/mock-data";
+import { entityMappingCompleteness, type Entity } from "@/lib/mock-data";
 import suggestedIcon from "@/assets/icons/class-node-suggested-24.svg";
 import dotFull from "@/assets/icons/class-dot-full-6.svg";
 import dotPartial from "@/assets/icons/class-dot-partial-6.svg";
@@ -22,11 +22,11 @@ export function classNodeMapping(entity: Entity): ClassNodeMapping {
   return total > 0 && mapped === total ? "full" : mapped === 0 ? "none" : "partial";
 }
 
-/** "17 props · 5 links" */
-export function classNodeCounts(entity: Entity, relations: Relation[]): string {
-  const links = relations.filter((r) => r.from === entity.id || r.to === entity.id).length;
+/** "17 props · 5 tables": the tables its properties are mapped into. */
+export function classNodeCounts(entity: Entity): string {
+  const tables = new Set(entity.properties.flatMap((p) => p.mappings.map((m) => m.table))).size;
   const props = entity.properties.length;
-  return `${props} ${props === 1 ? "prop" : "props"} · ${links} ${links === 1 ? "link" : "links"}`;
+  return `${props} ${props === 1 ? "prop" : "props"} · ${tables} ${tables === 1 ? "table" : "tables"}`;
 }
 
 export function classNodeClass({
