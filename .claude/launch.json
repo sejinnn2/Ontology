@@ -4,8 +4,28 @@
     {
       "name": "dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--", "--port", "8083", "--strictPort"],
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "8083",
+        "--strictPort"
+      ],
       "port": 8083
+    },
+    {
+      "name": "prototype",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "8090",
+        "--strictPort"
+      ],
+      "port": 8090
     }
   ]
 }
