@@ -18,6 +18,11 @@ export function classNodeMapping(entity: Entity): ClassNodeMapping {
   return total > 0 && mapped === total ? "full" : mapped === 0 ? "none" : "partial";
 }
 
+/** A Data Table node's status dot: how much of it is mapped. */
+export function tableNodeMapping(status: "unmapped" | "partial" | "full"): ClassNodeMapping {
+  return status === "unmapped" ? "none" : status;
+}
+
 /** "17 props · 5 tables": the tables its properties are mapped into. */
 export function classNodeCounts(entity: Entity): string {
   const tables = new Set(entity.properties.flatMap((p) => p.mappings.map((m) => m.table))).size;
@@ -99,7 +104,7 @@ export function ClassNodeBody({
   return (
     <span className="flex min-w-0 flex-1 flex-col gap-1">
       <span className="flex items-center gap-2">
-        <span className="lod-type flex shrink-0">
+        <span className="lod-type flex size-7 shrink-0 items-center justify-center">
           {icon ?? (
             <img alt="" src={active ? activeIcon : suggestedIcon} className="block size-7" />
           )}

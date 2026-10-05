@@ -109,6 +109,7 @@ import {
   classNodeBodyClass,
   classNodeCounts,
   classNodeMapping,
+  tableNodeMapping,
   type ClassNodeMapping,
 } from "@/components/detail/class-node";
 import keyIcon from "@/assets/icons/key-identifier-12.svg";
@@ -365,6 +366,12 @@ const mappingsIn = (property: Property, table: string) =>
   property.mappings.filter((m) => m.table === table);
 const mapsInto = (property: Property, table: string) =>
   property.mappings.some((m) => m.table === table);
+
+/** "367 columns · 19 entities" — a Data Table node's counts. */
+function tableNodeCounts(table: TableSchema, entities: Entity[]) {
+  const mapped = entities.filter((e) => e.properties.some((p) => mapsInto(p, table.name))).length;
+  return `${plural(table.columns.length, "column", "columns")} · ${plural(mapped, "entity", "entities")}`;
+}
 
 function entityDetail(entity: Entity) {
   const tables = new Set(entity.properties.flatMap((p) => p.mappings.map((m) => m.table)));
@@ -1542,6 +1549,13 @@ export function EditingGraphView({
                             name={table.name}
                             dimmed={!reviewScope.table(table.name)}
                             detail={plural(table.columns.length, "column", "columns")}
+                            classNode={{
+                              mapping: tableNodeMapping(
+                                tableMappingStatus(table.name, app.entities),
+                              ),
+                              counts: tableNodeCounts(table, app.entities),
+                              sparkle: false,
+                            }}
                             selected={inspectedTable === table.name && detailItem?.kind === "table"}
                             onClick={() => inspectTable(table.name)}
                           />
@@ -1735,6 +1749,13 @@ export function EditingGraphView({
                         name={item.table.name}
                         dimmed={!reviewScope.table(item.table.name)}
                         detail={plural(item.table.columns.length, "column", "columns")}
+                        classNode={{
+                          mapping: tableNodeMapping(
+                            tableMappingStatus(item.table.name, app.entities),
+                          ),
+                          counts: tableNodeCounts(item.table, app.entities),
+                          sparkle: false,
+                        }}
                         selected={
                           inspectedTable === item.table.name && detailItem?.kind === "table"
                         }
@@ -1750,7 +1771,7 @@ export function EditingGraphView({
                             }}
                             aria-label={isFocused ? "Close mappings" : "Show each mapping"}
                             title={isFocused ? "Close mappings" : "Show each mapping"}
-                            className="lod-detail flex size-6 shrink-0 items-center justify-center rounded-[6px] text-[#6d7472] hover:bg-black/[0.06] hover:text-[#161919]"
+                            className="lod-detail flex size-5 shrink-0 items-center justify-center rounded-[6px] text-[#6d7472] hover:bg-black/[0.06] hover:text-[#161919]"
                           >
                             <span
                               className={cn(
@@ -1781,8 +1802,9 @@ export function EditingGraphView({
                         isSelected({ kind: "entity", id: focusEntity.id }),
                         !isSelected({ kind: "entity", id: focusEntity.id }),
                       ),
-                      right: frameOf(
+                      right: classFrameOf(
                         inspectedTable === focused.table.name && detailItem?.kind === "table",
+                        false,
                       ),
                     }}
                     properties={focused.mapped}
@@ -5351,30 +5373,31 @@ export function TableGraphView({
                   tabIndex={0}
                   onClick={() => inspectTable(table.name)}
                   className={cn(
-                    "flex items-center gap-1 rounded-lg border bg-white pl-3 pr-2 text-left transition-opacity",
-                    CARD_SHADOW,
-                    !reviewScope.table(table.name) && DIMMED,
-                    tableSelected ? SELECTED_NODE : "border-[#3b82f6]",
-                    (columnsOpen || !!focused) && ATTACHED_HEAD,
+                    classNodeClass({
+                      selected: tableSelected,
+                      focus: !tableSelected,
+                      dimmed: !reviewScope.table(table.name),
+                      attached: columnsOpen || !!focused,
+                    }),
+                    "pr-2",
                   )}
                   style={{ width: NODE_W, height: CENTER_H }}
                 >
-                  <span className="lod-type flex shrink-0">
-                    <MappingStatusBadge
-                      status={tableMappingStatus(table.name, app.entities)}
-                      {...tableMappingCompleteness(table.name, app.entities)}
-                      size={24}
-                    />
-                  </span>
-                  <span className="flex min-w-0 flex-1 flex-col gap-0.5 pl-1.5">
-                    <span className="lod-title truncate text-[16px] font-medium leading-none text-[#080a09]">
-                      {table.name}
-                    </span>
-                    <span className="lod-detail truncate text-[12px] leading-4 text-[#6d7472]">
-                      {plural(table.columns.length, "column", "columns")} ·{" "}
-                      {plural(mappedEntities.length, "entity", "entities")}
-                    </span>
-                  </span>
+                  <ClassNodeBody
+                    icon={
+                      <MappingStatusBadge
+                        status={tableMappingStatus(table.name, app.entities)}
+                        {...tableMappingCompleteness(table.name, app.entities)}
+                        size={24}
+                      />
+                    }
+                    name={table.name}
+                    lodName="lod-title"
+                    counts={tableNodeCounts(table, app.entities)}
+                    mapping={tableNodeMapping(tableMappingStatus(table.name, app.entities))}
+                    active
+                  />
+                  {(columnsOpen || !!focused) && <ClassNodeDivider />}
                   <ExpandChevron
                     open={columnsOpen || !!focused}
                     label={
@@ -5390,7 +5413,7 @@ export function TableGraphView({
                     <TableColumnsPanel
                       app={app}
                       table={table}
-                      frame={frameOf(tableSelected, true)}
+                      frame={classFrameOf(tableSelected, !tableSelected)}
                     />
                   </div>
                 )}
@@ -5517,7 +5540,7 @@ export function TableGraphView({
                         isSelected({ kind: "entity", id: focused.entity.id }),
                         false,
                       ),
-                      right: frameOf(tableSelected, true),
+                      right: classFrameOf(tableSelected, !tableSelected),
                     }}
                     properties={focused.mapped}
                     table={table}
