@@ -104,6 +104,7 @@ import { EDGE_STROKE, EDGE_STYLE, type EdgeLayer } from "@/lib/edge-style";
 import {
   ClassNodeBody,
   classNodeClass,
+  classNodeBodyClass,
   classNodeCounts,
   classNodeMapping,
   type ClassNodeMapping,
@@ -216,8 +217,15 @@ const frameOf = (selected: boolean, accent = false) =>
   selected ? "border-[#080a09]" : accent ? "border-[#3b82f6]" : "border-[#e3e5e4]";
 // Figma 466:86067: the head runs straight into its list, no divider between them.
 const ATTACHED_HEAD = "rounded-b-none border-b-0";
+// An open Entity Type's list carries its ClassNode border down the card instead (see
+// `classFrameOf`): the frame string is then the whole body style, marked with a prefix.
+const CLASS_FRAME = "class-frame:";
+const classFrameOf = (mapping: ClassNodeMapping, accent: boolean) =>
+  CLASS_FRAME + classNodeBodyClass({ mapping, accent });
 const attachedBody = (frame: string) =>
-  cn("rounded-b-lg rounded-t-none border border-t-0 bg-white", CARD_SHADOW, frame);
+  frame.startsWith(CLASS_FRAME)
+    ? frame.slice(CLASS_FRAME.length)
+    : cn("rounded-b-lg rounded-t-none border border-t-0 bg-white", CARD_SHADOW, frame);
 const CARD_SHADOW = "shadow-[0_1px_3px_0_rgba(0,0,0,0.1),0_1px_2px_-1px_rgba(0,0,0,0.1)]";
 
 type Pt = { x: number; y: number };
@@ -1260,6 +1268,7 @@ export function EditingGraphView({
                     nameClassName={focusEntity.name ? undefined : "text-[#9ea3a2]"}
                     counts={classNodeCounts(focusEntity)}
                     mapping={classNodeMapping(focusEntity)}
+                    open={centerAttached}
                   />
                   {entityReview(focusEntity) === "suggested" && (
                     <span className="lod-confidence contents">
@@ -1278,7 +1287,7 @@ export function EditingGraphView({
               {centerPropsOpen && (
                 <div className="absolute left-0 top-full" style={{ width: CENTER_W }}>
                   <PropertyPanel
-                    frame={frameOf(isSelected({ kind: "entity", id: focusEntity.id }), true)}
+                    frame={classFrameOf(classNodeMapping(focusEntity), true)}
                     entityId={focusEntity.id}
                     properties={centerProperties}
                     filter={propFilter}
@@ -1533,7 +1542,10 @@ export function EditingGraphView({
                       <div style={{ width: NODE_W }}>
                         <EntityPropertyPanel
                           entity={entity}
-                          frame={frameOf(isSelected({ kind: "entity", id: entity.id }))}
+                          frame={classFrameOf(
+                            classNodeMapping(entity),
+                            isSelected({ kind: "entity", id: entity.id }),
+                          )}
                           onCreateProperty={(draft) => createPropertyIn(app, entity.id, draft)}
                           onUpdateProperty={(id, patch) => app.updateProperty(entity.id, id, patch)}
                           isSelected={(p) =>
@@ -1741,7 +1753,7 @@ export function EditingGraphView({
                   app={app}
                   entity={focusEntity}
                   frames={{
-                    left: frameOf(isSelected({ kind: "entity", id: focusEntity.id }), true),
+                    left: classFrameOf(classNodeMapping(focusEntity), true),
                     right: frameOf(
                       inspectedTable === focused.table.name && detailItem?.kind === "table",
                     ),
@@ -2272,6 +2284,7 @@ function GraphNode({
           name={name}
           counts={classNode.counts}
           mapping={classNode.mapping}
+          open={attached}
         />
       ) : (
         <>
@@ -5385,7 +5398,10 @@ export function TableGraphView({
                   app={app}
                   entity={focused.entity}
                   frames={{
-                    left: frameOf(isSelected({ kind: "entity", id: focused.entity.id })),
+                    left: classFrameOf(
+                      classNodeMapping(focused.entity),
+                      isSelected({ kind: "entity", id: focused.entity.id }),
+                    ),
                     right: frameOf(tableSelected, true),
                   }}
                   properties={focused.mapped}

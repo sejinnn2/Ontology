@@ -53,9 +53,26 @@ export function classNodeClass({
   );
 }
 
+/** The open node's list, as the rest of its card (Figma 530:328068): the head's border continues
+ * down both sides and the bottom, in the same style and color. */
+export function classNodeBodyClass({
+  mapping,
+  accent = false,
+}: {
+  mapping: ClassNodeMapping;
+  accent?: boolean;
+}) {
+  return cn(
+    "rounded-b-[10px] rounded-t-none border-[2.5px] border-t-0 bg-white",
+    mapping === "full" ? "border-solid" : mapping === "partial" ? "border-dashed" : "border-dotted",
+    accent ? "border-[#0092b8]" : "border-[rgba(98,116,142,0.4)]",
+  );
+}
+
 export const classNodeAccent = ACCENT;
 
-/** The card's title row (icon + name) over its status dot and counts. */
+/** The card's title (icon + name) over its status dot and counts. `open` is the larger head the
+ * card has while its list is shown. */
 export function ClassNodeBody({
   icon,
   name,
@@ -63,6 +80,7 @@ export function ClassNodeBody({
   lodName = "lod-name",
   counts,
   mapping,
+  open = false,
 }: {
   /** The zoom-LOD class that scales the name: `lod-title` on the middle node, `lod-name` else. */
   lodName?: "lod-name" | "lod-title";
@@ -72,31 +90,35 @@ export function ClassNodeBody({
   nameClassName?: string | undefined;
   counts: string;
   mapping: ClassNodeMapping;
+  open?: boolean;
 }) {
   return (
-    <>
-      <span className="lod-type flex shrink-0">
-        {icon ?? <img alt="" src={suggestedIcon} className="block size-6" />}
-      </span>
-      <span className="flex min-w-0 flex-1 flex-col gap-1 pl-1.5">
+    <span className="flex min-w-0 flex-1 flex-col gap-1">
+      <span className="flex items-center gap-2">
+        <span className="lod-type flex shrink-0">
+          {icon ?? (
+            <img alt="" src={suggestedIcon} className={cn("block", open ? "size-7" : "size-6")} />
+          )}
+        </span>
         <span
           className={cn(
             lodName,
-            "truncate text-[14px] font-medium leading-5 text-[#020618]",
+            "min-w-0 flex-1 truncate font-medium text-[#080a09]",
+            open ? "text-[16px] leading-6" : "text-[14px] leading-5",
             nameClassName,
           )}
         >
           {name}
         </span>
-        <span className="lod-detail flex items-center gap-1.5">
-          <img
-            alt=""
-            src={mapping === "full" ? dotFull : mapping === "partial" ? dotPartial : dotNone}
-            className="block size-1.5 shrink-0"
-          />
-          <span className="truncate text-[12px] leading-4 text-[#62748e]">{counts}</span>
-        </span>
       </span>
-    </>
+      <span className="lod-detail flex items-center gap-1.5">
+        <img
+          alt=""
+          src={mapping === "full" ? dotFull : mapping === "partial" ? dotPartial : dotNone}
+          className="block size-1.5 shrink-0"
+        />
+        <span className="truncate text-[12px] leading-4 text-[#6d7472]">{counts}</span>
+      </span>
+    </span>
   );
 }
