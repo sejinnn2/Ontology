@@ -1113,7 +1113,7 @@ export function EditingGraphView({
                     item.y,
                   );
                   return (
-                    <g
+                    <EdgeGroup
                       key={`edge-${item.key}`}
                       style={{
                         opacity: isOtherEntity(item.key) ? 0 : lit(item.key) ? 1 : 0.2,
@@ -1149,7 +1149,7 @@ export function EditingGraphView({
                         const isOpen = !!ladderEnds && relation.id === openRelationId;
                         const relSuggested = relationReview(relation) === "suggested";
                         return (
-                          <g
+                          <EdgeGroup
                             key={relation.id}
                             style={{
                               opacity: ladderEnds && !isOpen ? 0 : 1,
@@ -1180,7 +1180,7 @@ export function EditingGraphView({
                               handles="end"
                               arrow={relation.from === focusEntity.id ? undefined : "end"}
                             />
-                          </g>
+                          </EdgeGroup>
                         );
                       })}
                       {branchTables.map((b) => (
@@ -1203,7 +1203,7 @@ export function EditingGraphView({
                           suggested={false}
                         />
                       )}
-                    </g>
+                    </EdgeGroup>
                   );
                 })}
                 <AnimatePresence>
@@ -1225,7 +1225,7 @@ export function EditingGraphView({
                     mappingsIn(p, item.table.name).some((m) => mappingStatus(m) === "suggested"),
                   );
                   return (
-                    <g
+                    <EdgeGroup
                       key={`edge-${item.key}`}
                       style={{
                         opacity: isOtherEntity(item.key) ? 0 : lit(item.key) ? 1 : 0.2,
@@ -1238,7 +1238,7 @@ export function EditingGraphView({
                         dimmed={!reviewScope.mappings(item.mapped)}
                         bold={hovered === item.key}
                       />
-                    </g>
+                    </EdgeGroup>
                   );
                 })}
               </svg>
@@ -2196,6 +2196,32 @@ function Node({ x, y, children }: { x: number; y: number; children: ReactNode })
  * so a handle sits on top of its node's edge. */
 const HandleLayerContext = createContext<SVGGElement | null>(null);
 
+/** The handle layer's matching group for the edges inside an `EdgeGroup` (`undefined`: none). */
+const EdgeHandleGroupContext = createContext<SVGGElement | null | undefined>(undefined);
+
+/**
+ * A group of edges that fade in / out or dim together. The handles live in a separate layer above
+ * the nodes, so this mirrors the same style / animation on a group there and the edges' handles go
+ * into that one, fading with their edges.
+ */
+function EdgeGroup({
+  children,
+  ...groupProps
+}: Omit<React.ComponentProps<typeof motion.g>, "children"> & { children?: ReactNode }) {
+  const layer = useContext(HandleLayerContext);
+  const [handleGroup, setHandleGroup] = useState<SVGGElement | null>(null);
+  return (
+    <>
+      <motion.g {...groupProps}>
+        <EdgeHandleGroupContext.Provider value={handleGroup}>
+          {children}
+        </EdgeHandleGroupContext.Provider>
+      </motion.g>
+      {layer && createPortal(<motion.g {...groupProps} ref={setHandleGroup} />, layer)}
+    </>
+  );
+}
+
 /** The handle layer's SVG, placed once in each graph's world. */
 function HandleLayer({ onLayer }: { onLayer: (layer: SVGGElement | null) => void }) {
   return (
@@ -2262,7 +2288,10 @@ function Curve({
           ? "faded"
           : "idle";
   const edge = EDGE_STYLE[layer];
-  const handleLayer = useContext(HandleLayerContext);
+  const baseLayer = useContext(HandleLayerContext);
+  const groupLayer = useContext(EdgeHandleGroupContext);
+  // Inside an EdgeGroup the handles wait for (and go into) its mirrored group.
+  const handleLayer = groupLayer === undefined ? baseLayer : groupLayer;
   const ends = curveEnds(d);
   const fromEnds = from ? curveEnds(from) : null;
   const handle = (at: "start" | "end") => {
@@ -2315,7 +2344,7 @@ function Curve({
         strokeDasharray={edge.dash}
         strokeLinecap={edge.round ? "round" : undefined}
       />
-      {handleLayer ? (
+      {groupLayer === null ? null : handleLayer ? (
         createPortal(
           <>
             {handle("start")}
@@ -2491,7 +2520,7 @@ function LadderLinks({
   const leftTrunk = trunk(ends.left);
   const rightTrunk = trunk(ends.right);
   return (
-    <motion.g initial={{ opacity: 1 }} exit={{ opacity: 0, transition: { duration: 0.25 } }}>
+    <EdgeGroup initial={{ opacity: 1 }} exit={{ opacity: 0, transition: { duration: 0.25 } }}>
       {!empty && (
         <>
           <Curve d={leftTrunk.d} from={leftTrunk.from} suggested={suggested} dimmed={dimmed} />
@@ -2524,7 +2553,7 @@ function LadderLinks({
           },
         ),
       )}
-    </motion.g>
+    </EdgeGroup>
   );
 }
 
@@ -5325,7 +5354,7 @@ export function TableGraphView({
                   );
                   const dim = !!activeId && item.entity.id !== activeId;
                   return (
-                    <g
+                    <EdgeGroup
                       key={`edge-${item.key}`}
                       style={{ opacity: dim ? 0.2 : 1, transition: "opacity 300ms" }}
                     >
@@ -5335,7 +5364,7 @@ export function TableGraphView({
                         dimmed={!reviewScope.mappings(item.mapped)}
                         bold={item.entity.id === activeId}
                       />
-                    </g>
+                    </EdgeGroup>
                   );
                 })}
                 {/* The active Entity Type's Relations: related Entity Type → pill → it. */}
@@ -5353,7 +5382,7 @@ export function TableGraphView({
                               { x: TG_ENTITY_X, y: activeY },
                             );
                             return (
-                              <motion.g
+                              <EdgeGroup
                                 key={relation.id}
                                 initial={{ opacity: 0 }}
                                 animate={{ opacity: 1 }}
@@ -5381,7 +5410,7 @@ export function TableGraphView({
                                   handles="end"
                                   arrow={towardActive ? "end" : undefined}
                                 />
-                              </motion.g>
+                              </EdgeGroup>
                             );
                           }),
                     )}
