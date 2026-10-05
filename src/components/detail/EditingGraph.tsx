@@ -3849,9 +3849,7 @@ function MappingPanels({
     propSort,
   );
   const mappedColumns = new Set(tablePairs.map(columnOf));
-  // Columns this Entity Type doesn't map still show — with the other Entity Types that do map
-  // them (and whether that mapping is confirmed or only suggested), so they're not mistaken for
-  // unclaimed columns.
+  // Columns this Entity Type doesn't map but other Entity Types do (confirmed or only suggested).
   const mappedElsewhere = new Map<string, { entities: string[]; status: "mapped" | "suggested" }>();
   app.entities.forEach((other) => {
     if (other.id === entity.id) return;
@@ -3865,12 +3863,29 @@ function MappingPanels({
     );
   });
   const columnQuery = columnSearch.trim().toLowerCase();
+  const matchesColumnSearch = (name: string) =>
+    !columnQuery || name.toLowerCase().includes(columnQuery);
+  // Mapped to other Entity Types: part of the Mapped group, but with no line — a line means
+  // "mapped to this Entity Type".
+  const elsewhereColumns = sortByState(
+    table.columns.filter(
+      (c) =>
+        !mappedColumns.has(c.name) &&
+        mappedElsewhere.has(c.name) &&
+        accepts(columnFilter, true, false) &&
+        matchesColumnSearch(c.name),
+    ),
+    columnSort,
+    (c) => c.name,
+    () => undefined,
+  );
   const restColumns = sortByState(
     table.columns.filter(
       (c) =>
         !mappedColumns.has(c.name) &&
+        !mappedElsewhere.has(c.name) &&
         accepts(columnFilter, false, false) &&
-        (!columnQuery || c.name.toLowerCase().includes(columnQuery)),
+        matchesColumnSearch(c.name),
     ),
     columnSort,
     (c) => c.name,
@@ -3878,7 +3893,9 @@ function MappingPanels({
   );
   const restRows = Math.max(restProperties.length, restColumns.length);
   const columnType = (name: string) => table.columns.find((c) => c.name === name)?.type;
-  const overflows = (pairs.length + restRows) * MAP_ROW_STEP + 2 * GROUP_HEAD_H > PANEL_LIST_MAX;
+  const overflows =
+    (pairs.length + elsewhereColumns.length + restRows) * MAP_ROW_STEP + 2 * GROUP_HEAD_H >
+    PANEL_LIST_MAX;
   const panelBg = "absolute inset-y-0 rounded-[6px] bg-white shadow-[0_1px_2px_0_rgba(0,0,0,0.05)]";
   const panelClass = (side: "left" | "right") =>
     frames ? cn("absolute inset-y-0", attachedBody(frames[side])) : panelBg;
@@ -3955,7 +3972,7 @@ function MappingPanels({
         className="relative flex flex-col overflow-y-auto overscroll-contain pb-2.5 [scrollbar-width:thin]"
         style={{ maxHeight: PANEL_LIST_MAX }}
       >
-        {pairs.length === 0 && restRows === 0 && (
+        {pairs.length === 0 && elsewhereColumns.length === 0 && restRows === 0 && (
           <p
             className="py-3 text-[12px] text-[#6d7472]"
             style={{ width: NODE_W, textAlign: "center" }}
@@ -3963,7 +3980,7 @@ function MappingPanels({
             Nothing matches.
           </p>
         )}
-        {pairs.length > 0 && (
+        {pairs.length + elsewhereColumns.length > 0 && (
           <div className="flex shrink-0 items-stretch">
             <GroupCell tone="Mapped" first width={NODE_W}>
               <GroupCellHead
@@ -3973,7 +3990,7 @@ function MappingPanels({
             </GroupCell>
             <div className="flex-1" />
             <GroupCell tone="Mapped" first width={columnCellWidth} pad={columnCellPad}>
-              <GroupCellHead label="Mapped" count={pairs.length} />
+              <GroupCellHead label="Mapped" count={pairs.length + elsewhereColumns.length} />
             </GroupCell>
           </div>
         )}
@@ -3986,7 +4003,7 @@ function MappingPanels({
           const sourceTop = GROUP_HEAD_H + (firstRow ?? index) * MAP_ROW_STEP;
           const sourceVisible =
             sourceTop < listViewport.top + listViewport.height && sourceTop + 32 > listViewport.top;
-          const lastPair = index === pairs.length - 1;
+          const lastPair = index === pairs.length - 1 && elsewhereColumns.length === 0;
           const key = pairKey(property.id, mapping.column);
           const needsAlias = needing.has(key);
           const inFocus = !!focusAlias && mapping.alias === focusAlias;
@@ -4196,14 +4213,57 @@ function MappingPanels({
             </div>
           );
         })}
+        {elsewhereColumns.map((column, i) => {
+          const other = mappedElsewhere.get(column.name)!;
+          const last = i === elsewhereColumns.length - 1;
+          return (
+            <div key={`elsewhere-${column.name}`} className="flex shrink-0 items-stretch">
+              <GroupCell tone="Mapped" last={last} width={NODE_W}>
+                <div className="h-8" />
+              </GroupCell>
+              <div className="flex-1" />
+              <div
+                data-map-column={column.name}
+                className={cn("transition-opacity", !connectable(column.name) && "opacity-40")}
+                style={{ width: columnCellWidth }}
+              >
+                <GroupCell tone="Mapped" last={last} width={columnCellWidth} pad={columnCellPad}>
+                  <div className="group/maprow relative z-30">
+                    <PanelRow
+                      grip={false}
+                      name={column.name}
+                      sampleValues={columnSamples(table, column.name)}
+                      highlight={columnQueryText}
+                      dimmed={!reviewScope.column(table.name, column.name)}
+                      dotColor={itemStatusDotColor(
+                        other.status === "mapped" ? "confirmed" : "suggested",
+                      )}
+                      identifier={false}
+                      type={column.type}
+                      chip={<OtherEntitiesChip entities={other.entities} />}
+                      selected={overColumn === column.name}
+                    />
+                    {!connecting &&
+                      connectColumn(column.name, `Connect ${column.name} to a property`)}
+                  </div>
+                </GroupCell>
+              </div>
+            </div>
+          );
+        })}
         {restRows > 0 && (
-          <div className={cn("flex shrink-0 items-stretch", pairs.length > 0 && "mt-2")}>
+          <div
+            className={cn(
+              "flex shrink-0 items-stretch",
+              pairs.length + elsewhereColumns.length > 0 && "mt-2",
+            )}
+          >
             <GroupCell tone="Unmapped" first width={NODE_W}>
               <GroupCellHead label="Unmapped" count={restProperties.length} />
             </GroupCell>
             <div className="flex-1" />
             <GroupCell tone="Unmapped" first width={columnCellWidth} pad={columnCellPad}>
-              <GroupCellHead label="Other columns" count={restColumns.length} />
+              <GroupCellHead label="Unmapped" count={restColumns.length} />
             </GroupCell>
           </div>
         )}
@@ -4268,24 +4328,9 @@ function MappingPanels({
                         sampleValues={columnSamples(table, column.name)}
                         highlight={columnQueryText}
                         dimmed={!reviewScope.column(table.name, column.name)}
-                        dotColor={
-                          mappedElsewhere.has(column.name)
-                            ? itemStatusDotColor(
-                                mappedElsewhere.get(column.name)!.status === "mapped"
-                                  ? "confirmed"
-                                  : "suggested",
-                              )
-                            : "#c9cccb"
-                        }
+                        dotColor="#c9cccb"
                         identifier={false}
                         type={column.type}
-                        chip={
-                          mappedElsewhere.has(column.name) ? (
-                            <OtherEntitiesChip
-                              entities={mappedElsewhere.get(column.name)!.entities}
-                            />
-                          ) : null
-                        }
                         selected={overColumn === column.name}
                       />
                       {!connecting &&
