@@ -100,6 +100,13 @@ import {
 import dotGridIcon from "@/assets/icons/dot-grid-2x3-16.svg";
 import arrowRightIcon from "@/assets/icons/arrow-right-12.svg";
 import { ItemStatusIcon, itemStatusDotColor } from "@/components/ontology/ItemStatusIcon";
+import {
+  ClassNodeBody,
+  classNodeClass,
+  classNodeCounts,
+  classNodeMapping,
+  type ClassNodeMapping,
+} from "@/components/detail/class-node";
 import keyIcon from "@/assets/icons/key-identifier-12.svg";
 import pencilIcon from "@/assets/icons/pencil-16.svg";
 import relationPlusIcon from "@/assets/icons/relation-plus-20.svg";
@@ -1229,35 +1236,31 @@ export function EditingGraphView({
                   {...move.dropProps(focusEntity.id)}
                   onClick={() => inspect({ kind: "entity", id: focusEntity.id })}
                   className={cn(
-                    "flex items-center gap-1 rounded-lg border bg-white pl-3 pr-2 text-left transition-opacity",
-                    CARD_SHADOW,
-                    !reviewScope.entity(focusEntity) && DIMMED,
-                    drawOverCenter
-                      ? "border-[#00ded8] bg-[#ecf3f2]"
-                      : isSelected({ kind: "entity", id: focusEntity.id })
-                        ? SELECTED_NODE
-                        : "border-[#3b82f6]",
-                    centerAttached && ATTACHED_HEAD,
+                    classNodeClass({
+                      mapping: classNodeMapping(focusEntity),
+                      selected: isSelected({ kind: "entity", id: focusEntity.id }),
+                      focus: !isSelected({ kind: "entity", id: focusEntity.id }),
+                      dimmed: !reviewScope.entity(focusEntity),
+                      attached: centerAttached,
+                    }),
+                    "pr-2",
+                    drawOverCenter && "border-[#00ded8] bg-[#ecf3f2]",
                     move.dropTargetId === focusEntity.id && DROP_TARGET_CLASS,
                   )}
                   style={{ width: CENTER_W, height: CENTER_H }}
                 >
-                  <span className="lod-type flex shrink-0">
-                    <ItemStatusIcon status={entityDisplayStatus(focusEntity)} size={24} />
-                  </span>
-                  <span className="flex min-w-0 flex-1 flex-col gap-0.5 pl-1.5">
-                    <span
-                      className={cn(
-                        "lod-title truncate text-[16px] font-medium leading-none",
-                        focusEntity.name ? "text-[#080a09]" : "text-[#9ea3a2]",
-                      )}
-                    >
-                      {focusEntity.name || "New entity type"}
-                    </span>
-                    <span className="lod-detail truncate text-[12px] leading-4 text-[#6d7472]">
-                      {entityDetail(focusEntity)}
-                    </span>
-                  </span>
+                  <ClassNodeBody
+                    icon={
+                      entityDisplayStatus(focusEntity) === "suggested" ? undefined : (
+                        <ItemStatusIcon status={entityDisplayStatus(focusEntity)} size={24} />
+                      )
+                    }
+                    name={focusEntity.name || "New entity type"}
+                    lodName="lod-title"
+                    nameClassName={focusEntity.name ? undefined : "text-[#9ea3a2]"}
+                    counts={classNodeCounts(focusEntity, app.relations)}
+                    mapping={classNodeMapping(focusEntity)}
+                  />
                   {entityReview(focusEntity) === "suggested" && (
                     <span className="lod-confidence contents">
                       <EntityConfidenceChip entity={focusEntity} tone="muted" />
@@ -1428,6 +1431,11 @@ export function EditingGraphView({
                         }
                         name={entity.name}
                         detail={entityDetail(entity)}
+                        classNode={{
+                          mapping: classNodeMapping(entity),
+                          counts: classNodeCounts(entity, app.relations),
+                          sparkle: entityDisplayStatus(entity) === "suggested",
+                        }}
                         dropFor={entity.id}
                         dimmed={!reviewScope.entity(entity)}
                         chip={
@@ -2183,7 +2191,10 @@ function GraphNode({
   dropFor,
   dimmed = false,
   attached = false,
+  classNode,
 }: {
+  // An Entity Type drawn as the Figma "ClassNode" card (see `class-node.tsx`).
+  classNode?: { mapping: ClassNodeMapping; counts: string; sparkle: boolean } | undefined;
   // Its list is open under it: the node is that card's header (see `frameOf`).
   attached?: boolean;
   // Outside the Confidence range / status filter (see `ReviewScope`).
@@ -2211,30 +2222,57 @@ function GraphNode({
       onClick={onClick}
       onDoubleClick={onDoubleClick}
       {...(move && dropFor ? move.dropProps(dropFor) : {})}
-      className={cn(
-        // Figma 466:93516 / 466:93646: 56px, pl-12 pr-8, a 24px status, name over its detail.
-        "flex items-center gap-1 rounded-lg border bg-white pl-3 pr-2 text-left transition-[box-shadow,opacity]",
-        CARD_SHADOW,
-        dimmed && DIMMED,
-        selected
-          ? SELECTED_NODE
-          : highlighted
-            ? "border-[#3b82f6]"
-            : attached
-              ? "border-[#e3e5e4]"
-              : "border-[#e3e5e4] hover:border-[#3b82f6]",
-        attached && ATTACHED_HEAD,
-        !!dropFor && move?.dropTargetId === dropFor && DROP_TARGET_CLASS,
-      )}
+      className={
+        classNode
+          ? cn(
+              classNodeClass({
+                mapping: classNode.mapping,
+                selected,
+                focus: highlighted,
+                dimmed,
+                attached,
+              }),
+              "pr-2",
+              !!dropFor && move?.dropTargetId === dropFor && DROP_TARGET_CLASS,
+            )
+          : cn(
+              // Figma 466:93516 / 466:93646: 56px, pl-12 pr-8, a 24px status, name over its detail.
+              "flex items-center gap-1 rounded-lg border bg-white pl-3 pr-2 text-left transition-[box-shadow,opacity]",
+              CARD_SHADOW,
+              dimmed && DIMMED,
+              selected
+                ? SELECTED_NODE
+                : highlighted
+                  ? "border-[#3b82f6]"
+                  : attached
+                    ? "border-[#e3e5e4]"
+                    : "border-[#e3e5e4] hover:border-[#3b82f6]",
+              attached && ATTACHED_HEAD,
+              !!dropFor && move?.dropTargetId === dropFor && DROP_TARGET_CLASS,
+            )
+      }
       style={{ width: NODE_W, height: NODE_H }}
     >
-      <span className="lod-type flex shrink-0">{attachedStatus ?? status}</span>
-      <span className="flex min-w-0 flex-1 flex-col gap-0.5 pl-1.5">
-        <span className="lod-name truncate text-[16px] font-medium leading-none text-[#080a09]">
-          {name}
-        </span>
-        <span className="lod-detail truncate text-[12px] leading-4 text-[#6d7472]">{detail}</span>
-      </span>
+      {classNode ? (
+        <ClassNodeBody
+          icon={classNode.sparkle ? undefined : (attachedStatus ?? status)}
+          name={name}
+          counts={classNode.counts}
+          mapping={classNode.mapping}
+        />
+      ) : (
+        <>
+          <span className="lod-type flex shrink-0">{attachedStatus ?? status}</span>
+          <span className="flex min-w-0 flex-1 flex-col gap-0.5 pl-1.5">
+            <span className="lod-name truncate text-[16px] font-medium leading-none text-[#080a09]">
+              {name}
+            </span>
+            <span className="lod-detail truncate text-[12px] leading-4 text-[#6d7472]">
+              {detail}
+            </span>
+          </span>
+        </>
+      )}
       {chip && <span className="lod-confidence contents">{chip}</span>}
       {trailing}
     </div>
@@ -5037,6 +5075,11 @@ export function TableGraphView({
       attachedStatus={<ItemStatusIcon status={entityDisplayStatus(entity)} size={24} />}
       name={entity.name}
       detail={entityDetail(entity)}
+      classNode={{
+        mapping: classNodeMapping(entity),
+        counts: classNodeCounts(entity, app.relations),
+        sparkle: entityDisplayStatus(entity) === "suggested",
+      }}
       dropFor={entity.id}
       dimmed={!reviewScope.entity(entity)}
       chip={
