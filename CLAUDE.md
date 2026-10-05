@@ -56,11 +56,11 @@ treat as fixed — reuse the existing value rather than eyeballing a new one:
 | `#318F5A` / `#EAF7ED` | Mapped Column — text / soft green background |
 | `#553EB7` / `#F5F3FF` | Mapped Property — text / soft purple background (same purple family as Suggested, different role) |
 
-**Suggested graph nodes (Overview canvas) are the exception** — per Figma frame "Below 60%"
-(`492:57788`) they render as an ICE `#d2fffa` disc with a `#0891b2` 1px ring and an 18px sparkle
-(`OntologyNode.tsx`) instead of the purple badge. The purple Suggested trio above still applies to
-`StatusBadge` everywhere else (toolbox rows, cards, chips). Overview's Data tables panel is 240px
-wide with 14px/12px rows and 16px `MappingStatusBadge`s, from the same frame.
+**Status badges now follow Figma "Item Status(Temporal)"** (frames `492:57788` / `328:4527`):
+Suggested is an ICE `#d2fffa` disc with a `#0891b2` sparkle (ring/dot `#0891b2`), Confirmed a
+`#bbf7d0` disc with a `#16a34a` check (dot `#16a34a`) — in `StatusBadge` and `ItemStatusIcon`. The
+purple/cyan trios in the table above now only describe the older Overview edge/border accents.
+Overview's Data tables panel is 240px wide with 14px/12px rows and 16px `MappingStatusBadge`s.
 
 These review-status and mapping colors (Suggested/Confirmed/Warning/Error, Mapped Column/Property)
 are ontology-domain semantics that `design.md` doesn't define — they're intentionally untouched by

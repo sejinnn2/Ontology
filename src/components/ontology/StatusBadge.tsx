@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
 import type { ReviewStatus } from "@/lib/mock-data";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import suggestedSmall from "@/assets/status/suggested-8.svg";
-import suggestedLarge from "@/assets/status/suggested-12.svg";
-import confirmedSmall from "@/assets/status/confirmed-8.svg";
-import confirmedLarge from "@/assets/status/confirmed-12.svg";
+import suggestedSmall from "@/assets/icons/sparkle-status-8.svg";
+import suggestedLarge from "@/assets/icons/sparkle-status-12.svg";
+import confirmedSmall from "@/assets/icons/status-check-8.svg";
+import confirmedLarge from "@/assets/icons/status-check-12.svg";
 import warningSmall from "@/assets/status/warning-8.svg";
 import warningLarge from "@/assets/status/warning-12.svg";
 import errorSmall from "@/assets/status/error-8.svg";
@@ -30,17 +30,17 @@ import errorLarge from "@/assets/status/error-12.svg";
  * no trigger logic for them exists yet, by design.
  */
 
-// Suggested/Confirmed badge colors match the Zaimler Figma spec (frame "Entity Triggered
-// Editing", node 406:4814 — the `--purple/300`/`--purple/600` and `--cyan/200`/`--cyan/700`
-// circle fill + icon color sampled directly off that frame's exported assets). Warning/Error
-// are untouched: that frame doesn't produce either status, so there's no design evidence to
-// update them from — see CLAUDE.md's Figma accent palette table.
+// Suggested/Confirmed follow Figma "Item Status(Temporal)" (frames "Below 60%" 492:57788 and
+// "Click the Create button on the Entity type panel" 328:4527): Suggested is an ICE disc with a
+// cyan sparkle, Confirmed a green/200 disc with a green check — the same values `ItemStatusIcon`
+// uses. (They replace the earlier purple Suggested / cyan Confirmed.) Warning/Error are
+// unchanged. `border` is the older edge accent below and is not part of that set.
 // Status colors from the Zaimler Figma "Status" set (node 440:26406): the 6px dot, the icon's
 // circle fill, and its glyph (the glyph's color is baked into its SVG asset). `border` is a
 // separate, older accent used for Overview relation edges and isn't part of that set.
 const STATUS_STYLE: Record<ReviewStatus, { border: string; badgeBg: string; dot: string }> = {
-  suggested: { border: "#7c5eff", badgeBg: "#d8b4fe", dot: "#7e22ce" },
-  confirmed: { border: "#0298b2", badgeBg: "#a5f3fc", dot: "#0891b2" },
+  suggested: { border: "#7c5eff", badgeBg: "#d2fffa", dot: "#0891b2" },
+  confirmed: { border: "#0298b2", badgeBg: "#bbf7d0", dot: "#16a34a" },
   warning: { border: "#e6c200", badgeBg: "#fef08a", dot: "#ca8a04" },
   error: { border: "#f15b15", badgeBg: "#fecaca", dot: "#dc2626" },
 };
