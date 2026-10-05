@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import type { DetailAnchor, OntologyApp } from "@/lib/app-state";
-import { suggestionKey, parseSuggestionKey } from "@/lib/app-state";
+import { parseSuggestionKey } from "@/lib/app-state";
 import {
   entitiesUsingTable,
   entityDisplayStatus,
@@ -32,7 +32,6 @@ import {
   acceptsPropertyDrop,
   dropPropertiesOn,
   leftDropTarget,
-  revealProperties,
 } from "@/components/detail/property-move";
 import { ENTITY_PANEL_DND_TYPE, TABLE_PANEL_DND_TYPE } from "@/components/detail/panel-dnd";
 import { ItemEditorModal, type EditorRequest } from "@/components/detail/ItemEditorModal";
@@ -106,62 +105,35 @@ function useNewEntityHighlight() {
   return { newEntityId, setNewEntityId };
 }
 
-/** The create / edit modal every part of the workspace opens, and the requests that open it. */
-function useItemEditor(app: OntologyApp, onEntityCreated: (entityId: string) => void) {
+/** The Edit modal every part of the workspace opens (creating happens in place — see
+ * `PropertyDraftRow`, `startRelationDraft` and `startEntityDraft`). */
+function useItemEditor(app: OntologyApp) {
   const [editor, setEditor] = useState<EditorRequest | null>(null);
-  // Who asked for the open create-Relation modal and wants to hear how it ended.
-  const doneRef = useRef<((created: boolean) => void) | null>(null);
-  const finish = (created: boolean) => {
-    const done = doneRef.current;
-    doneRef.current = null;
-    done?.(created);
-  };
-  const createRelation = useCallback(
-    (from: string, to: string, done?: (created: boolean) => void) => {
-      doneRef.current = done ?? null;
-      setEditor({ mode: "create", kind: "relation", from, to });
-    },
-    [],
-  );
   const editKey = useCallback((key: string) => {
     const ref = parseSuggestionKey(key);
     if (ref) setEditor({ mode: "edit", ref });
   }, []);
-  const modal = (
-    <ItemEditorModal
-      app={app}
-      request={editor}
-      onClose={() => {
-        setEditor(null);
-        finish(false); // closed without creating (after a create, `done` has already run)
-      }}
-      onCreated={(refs) => {
-        const first = refs[0];
-        if (!first) return;
-        if (first.kind === "relation") finish(true);
-        // A new Entity Type is pointed out in the Entity types panel (Figma 328:5877).
-        if (first.kind === "entity") onEntityCreated(first.id);
-        // New Properties / a new Relation come up selected; Properties are scrolled into view.
-        if (first.kind === "property" || first.kind === "relation") {
-          app.selectSuggestionKeys(refs.map(suggestionKey));
-        }
-        if (first.kind === "property") {
-          revealProperties(
-            first.entityId,
-            refs.flatMap((ref) => (ref.kind === "property" ? [ref.propertyId] : [])),
-          );
-        }
-      }}
-    />
-  );
-  return { setEditor, editKey, modal, createRelation };
+  const modal = <ItemEditorModal app={app} request={editor} onClose={() => setEditor(null)} />;
+  return { editKey, modal };
+}
+
+/** An Entity Type just created in place is pointed out once the workspace is back (see
+ * `useNewEntityHighlight`). */
+function useCreatedEntityHighlight(app: OntologyApp, setNewEntityId: (id: string) => void) {
+  const { createdEntityId, clearCreatedEntity } = app;
+  useEffect(() => {
+    if (!createdEntityId) return;
+    setNewEntityId(createdEntityId);
+    clearCreatedEntity();
+  }, [createdEntityId, clearCreatedEntity, setNewEntityId]);
 }
 
 function EntityWorkspace({ app, anchor }: { app: OntologyApp; anchor: DetailAnchor }) {
   useUndoRedoShortcuts(app.undo, app.redo);
   const sidePanels = useSidePanels();
   const { newEntityId, setNewEntityId } = useNewEntityHighlight();
-  const { setEditor, editKey, modal, createRelation } = useItemEditor(app, setNewEntityId);
+  useCreatedEntityHighlight(app, setNewEntityId);
+  const { editKey, modal } = useItemEditor(app);
   const focusEntity = useMemo(
     () =>
       anchor?.kind === "entity" ? (app.entities.find((e) => e.id === anchor.id) ?? null) : null,
@@ -183,7 +155,7 @@ function EntityWorkspace({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
       <div className="relative flex h-full w-full overflow-hidden bg-white">
         <Idea4EntityPanel
           app={app}
-          onCreate={() => setEditor({ mode: "create", kind: "entity" })}
+          onCreate={app.creation ? undefined : () => void app.startEntityDraft()}
           focusEntityId={focusEntity.id}
           workingIds={relatedIds}
           highlightId={newEntityId}
@@ -193,10 +165,6 @@ function EntityWorkspace({ app, anchor }: { app: OntologyApp; anchor: DetailAnch
             app={app}
             focusEntity={focusEntity}
             onEdit={editKey}
-            onCreateProperty={(entityId) =>
-              setEditor({ mode: "create", kind: "property", entityId })
-            }
-            onCreateRelation={createRelation}
             onSplit={setNewEntityId}
           />
         </main>
@@ -211,7 +179,8 @@ function TableWorkspace({ app, table }: { app: OntologyApp; table: TableSchema }
   useUndoRedoShortcuts(app.undo, app.redo);
   const sidePanels = useSidePanels();
   const { newEntityId, setNewEntityId } = useNewEntityHighlight();
-  const { setEditor, editKey, modal } = useItemEditor(app, setNewEntityId);
+  useCreatedEntityHighlight(app, setNewEntityId);
+  const { editKey, modal } = useItemEditor(app);
   // The Entity Types mapped into it, marked in the Entity types panel.
   const usingIds = useMemo(
     () => new Set(entitiesUsingTable(table.name, app.entities).map((e) => e.id)),
@@ -222,20 +191,12 @@ function TableWorkspace({ app, table }: { app: OntologyApp; table: TableSchema }
       <div className="relative flex h-full w-full overflow-hidden bg-white">
         <Idea4EntityPanel
           app={app}
-          onCreate={() => setEditor({ mode: "create", kind: "entity" })}
+          onCreate={app.creation ? undefined : () => void app.startEntityDraft()}
           workingIds={usingIds}
           highlightId={newEntityId}
         />
         <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[#f9fafb]">
-          <TableGraphView
-            app={app}
-            table={table}
-            onEdit={editKey}
-            onCreateProperty={(entityId) =>
-              setEditor({ mode: "create", kind: "property", entityId })
-            }
-            onSplit={setNewEntityId}
-          />
+          <TableGraphView app={app} table={table} onEdit={editKey} onSplit={setNewEntityId} />
         </main>
         <Idea4TablePanel app={app} activeNames={new Set()} focusName={table.name} />
         {modal}
@@ -423,8 +384,8 @@ function Idea4EntityPanel({
   workingIds: Set<string>;
   // An Entity Type to point out (just created by a Split): outlined and scrolled into view.
   highlightId?: string | null | undefined;
-  // The + in the filter row: create a new Entity Type (in `ItemEditorModal`).
-  onCreate?: () => void;
+  // The + in the filter row: create a new Entity Type (in place — see `startEntityDraft`).
+  onCreate?: (() => void) | undefined;
 }) {
   const [open, setOpen] = useSidePanelOpen("entity");
   const highlightRef = useRef<HTMLButtonElement>(null);
@@ -536,7 +497,10 @@ function Idea4EntityPanel({
                 warningReason={entityWarningReason(entity)}
                 errorReason={entityErrorReason(entity)}
               />
-              <SidePanelRowText name={entity.name} detail={entityRowDetail(entity)} />
+              <SidePanelRowText
+                name={entity.name || "New entity type"}
+                detail={entityRowDetail(entity)}
+              />
               {/* Figma 328:30991: every row but a confirmed one shows its score. */}
               {entityReview(entity) === "suggested" && (
                 <EntityConfidenceChip entity={entity} tone="muted" />

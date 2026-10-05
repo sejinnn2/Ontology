@@ -8,6 +8,7 @@ import {
   propertyIssue,
   propertyReview,
   relationIssue,
+  isRelationOnlyUnmapped,
   relationReview,
   type Entity,
   type Relation,
@@ -126,7 +127,13 @@ export function SuggestionSelectionBar({
         if (entity && entityIssue(entity) === "warning") count += 1;
       } else if (ref.kind === "relation") {
         const relation = relations.find((x) => x.id === ref.id);
-        if (relation && relationIssue(relation, entities) === "warning") count += 1;
+        // Not being mapped yet is listed in the Warning list but doesn't interrupt Accept.
+        if (
+          relation &&
+          relationIssue(relation, entities) === "warning" &&
+          !isRelationOnlyUnmapped(relation)
+        )
+          count += 1;
       } else if (ref.kind === "property") {
         const owner = findPropertyOwner(ref.propertyId);
         if (owner && propertyIssue(owner.property) === "warning") count += 1;

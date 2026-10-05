@@ -1,0 +1,10 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="8" height="8" viewBox="0 0 8 8" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="IconControllerButtonX" clip-path="url(#clip0_0_10)">
+<path id="Vector" fill-rule="evenodd" clip-rule="evenodd" d="M4.00033 0.666016C5.84126 0.666016 7.33366 2.1584 7.33366 3.99935C7.33366 5.84028 5.84126 7.33268 4.00033 7.33268C2.15938 7.33268 0.666992 5.84028 0.666992 3.99935C0.666992 2.1584 2.15938 0.666016 4.00033 0.666016ZM4.00033 3.64585L2.88542 2.53093L2.5319 2.88444L3.64683 3.99935L2.5319 5.11425L2.88542 5.46778L4.00033 4.35285L5.11523 5.46778L5.46876 5.11425L4.35383 3.99935L5.46876 2.88444L5.11523 2.53093L4.00033 3.64585Z" fill="#DC2626"/>
+</g>
+<defs>
+<clipPath id="clip0_0_10">
+<rect width="8" height="8" fill="white"/>
+</clipPath>
+</defs>
+</svg>

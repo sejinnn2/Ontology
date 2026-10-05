@@ -38,7 +38,23 @@ export type ReviewStatus = "suggested" | "confirmed" | "warning" | "error";
  * silently becoming "already confirmed" the moment this field was introduced — the prototype's own
  * honest starting state is "AI proposed many mappings, none reviewed yet." */
 export type MappingStatus = "suggested" | "mapped";
-export type ColumnRef = { table: string; column: string; status?: MappingStatus };
+/** A Property's mapping to one column. `alias` tells apart several occurrences of one Entity
+ * Type in a dataset — a flight row's departure and arrival Airport — and is scoped to that Entity
+ * Type's mappings in that table. It starts when its Identifier is connected to a second column
+ * there (`@departure`, `@arrival`); from then on every mapping of it there needs one (an Error
+ * until assigned — see `aliasIssue`). */
+export type ColumnRef = {
+  table: string;
+  column: string;
+  status?: MappingStatus;
+  alias?: string | undefined;
+};
+/** Two aliases name the same occurrence (none = the dataset's one, unnamed occurrence). */
+export const sameAlias = (a: string | undefined, b: string | undefined) =>
+  (a || undefined) === (b || undefined);
+/** "table" or "table @alias" — one occurrence of an Entity Type in a dataset. */
+export const instanceLabel = (table: string, alias: string | undefined) =>
+  alias ? `${table} @${alias}` : table;
 
 /** `mapping.status`, defaulted — see `ColumnRef`'s own doc comment for why a missing value reads
  * as `"suggested"` rather than `"mapped"`. The one place this default is decided; every other
@@ -104,53 +120,111 @@ export type Relation = {
   status: ReviewStatus;
   cardinality?: "1:1" | "1:N" | "N:1" | "N:N";
   /** The Relation's mappings: datasets in which each row links one `from` instance to one `to`
-   * instance. Only the dataset is stored — its key columns are whatever both Entity Types'
-   * Identifiers are mapped to in it (`relationJoins`). */
-  datasets?: string[];
+   * instance, through the exact identifier columns chosen on each side (see `RelationMapping`). */
+  mappings?: RelationMapping[];
 } & ReviewFlags;
 
-/** One dataset's join keys for a Relation, derived: the `from` Identifier's column(s) and the `to`
- * Identifier's, BOTH in that one dataset — a join's columns can differ, its table can't. A side
- * whose Identifier isn't mapped there has no columns (and the Relation is in Error). */
-export type RelationJoin = {
+/** One dataset a Relation is mapped through, saved exactly as chosen: the `from` Identifier's
+ * key column(s) and the `to` Identifier's, BOTH in that one dataset — a mapping's columns can
+ * differ, its table can't. Several columns on one side are that side's composite identifier (one
+ * per key part). Its own review state (`status`, like a Property's column mapping) is separate
+ * from the Relation's. */
+export type RelationMapping = {
   table: string;
   fromColumns: string[];
   toColumns: string[];
+  // Which occurrence on each side, where the dataset holds several of that Entity Type.
+  fromAlias?: string | undefined;
+  toAlias?: string | undefined;
+  status?: MappingStatus;
 };
+/** A Relation mapping's identity: its dataset and the occurrence on each side. */
+export const relationMappingKey = (m: {
+  table: string;
+  fromAlias?: string | undefined;
+  toAlias?: string | undefined;
+}) => `${m.table}|${m.fromAlias ?? ""}|${m.toAlias ?? ""}`;
 
-const identifierColumnsIn = (entity: Entity | undefined, table: string) =>
-  (entity?.properties.find(isIdentifierProperty)?.mappings ?? [])
-    .filter((m) => m.table === table)
-    .map((m) => m.column);
+/** A saved Relation mapping, checked against the Identifier mappings as they are now: `broken`
+ * when either side's saved columns no longer are that Identifier's columns in that dataset. */
+export type RelationJoin = RelationMapping & { broken: boolean };
 
-/** A Relation's join keys, dataset by dataset, from both Entity Types' Identifier mappings. */
+/** An Entity Type's key in one dataset: the column each Identifier property (key part) is mapped
+ * to there, in part order, and the parts not mapped there yet. */
+export type IdentifierKey = { columns: string[]; missing: Property[] };
+export function identifierKeyIn(
+  entity: Entity | undefined,
+  table: string,
+  alias?: string | undefined,
+): IdentifierKey {
+  const columns: string[] = [];
+  const missing: Property[] = [];
+  (entity ? identifiersOf(entity) : []).forEach((part) => {
+    const mapping = part.mappings.find((m) => m.table === table && sameAlias(m.alias, alias));
+    if (mapping) columns.push(mapping.column);
+    else missing.push(part);
+  });
+  return { columns, missing };
+}
+/** An Entity Type's complete key columns in one dataset — none unless every key part is mapped
+ * there (a partial key can't identify its records). */
+export function identifierColumnsIn(
+  entity: Entity | undefined,
+  table: string,
+  alias?: string | undefined,
+): string[] {
+  const key = identifierKeyIn(entity, table, alias);
+  return key.columns.length > 0 && key.missing.length === 0 ? key.columns : [];
+}
+
+const sameColumns = (a: string[], b: string[]) =>
+  a.length === b.length && a.every((column) => b.includes(column));
+
+/** A Relation's saved mappings, each flagged when it no longer matches the Identifiers. */
 export function relationJoins(relation: Relation, entities: Entity[]): RelationJoin[] {
   const from = entities.find((e) => e.id === relation.from);
   const to = entities.find((e) => e.id === relation.to);
-  return (relation.datasets ?? []).map((table) => ({
-    table,
-    fromColumns: identifierColumnsIn(from, table),
-    toColumns: identifierColumnsIn(to, table),
+  return (relation.mappings ?? []).map((m) => ({
+    ...m,
+    broken:
+      m.fromColumns.length === 0 ||
+      m.toColumns.length === 0 ||
+      !sameColumns(m.fromColumns, identifierColumnsIn(from, m.table, m.fromAlias)) ||
+      !sameColumns(m.toColumns, identifierColumnsIn(to, m.table, m.toAlias)),
   }));
 }
 
-/** The datasets a Relation between these two Entity Types can be mapped through: those where both
- * Identifiers are mapped (each row there names one of each). */
-export function relationDatasetOptions(from: Entity | undefined, to: Entity | undefined): string[] {
-  const fromTables = new Set(
-    (from?.properties.find(isIdentifierProperty)?.mappings ?? []).map((m) => m.table),
+/**
+ * Every complete mapping a Relation between these two Entity Types could use: one per dataset
+ * where BOTH Identifiers are actually mapped, keyed by those Identifier columns (composite columns
+ * kept together). Derived only from real Identifier mappings — a column whose name merely looks
+ * like another Entity Type's key never counts.
+ */
+export function relationMappingCandidates(
+  from: Entity | undefined,
+  to: Entity | undefined,
+): RelationMapping[] {
+  if (!from || !to) return [];
+  // One per pair of complete occurrences sharing a dataset (one never pairs with itself).
+  const complete = (entity: Entity) => entityDatasets(entity).filter((d) => d.missing.length === 0);
+  const toDatasets = complete(to);
+  return complete(from).flatMap((a) =>
+    toDatasets
+      .filter((b) => b.table === a.table && !(from.id === to.id && sameAlias(a.alias, b.alias)))
+      .map((b) => ({
+        table: a.table,
+        fromColumns: a.columns.map((m) => m.column),
+        toColumns: b.columns.map((m) => m.column),
+        ...(a.alias ? { fromAlias: a.alias } : {}),
+        ...(b.alias ? { toAlias: b.alias } : {}),
+      })),
   );
-  return Array.from(
-    new Set((to?.properties.find(isIdentifierProperty)?.mappings ?? []).map((m) => m.table)),
-  ).filter((t) => fromTables.has(t));
 }
 
-/** A dataset the Relation is mapped through where a side's Identifier isn't mapped — the Relation
- * can't link instances there. */
+/** A saved mapping that no longer matches the Identifiers — the Relation can't link records
+ * through it as saved. */
 function brokenRelationDataset(relation: Relation, entities: Entity[]) {
-  return relationJoins(relation, entities).find(
-    (j) => j.fromColumns.length === 0 || j.toColumns.length === 0,
-  );
+  return relationJoins(relation, entities).find((j) => j.broken);
 }
 
 export type TableColumn = {
@@ -26715,6 +26789,48 @@ export const tables: TableSchema[] = [
   },
 ];
 
+// A dataset with two of one Entity Type in each row — for trying Aliases (Airport @departure /
+// @arrival).
+tables.push({
+  name: "flights",
+  description: "One row per scheduled flight, from one airport to another.",
+  columns: [
+    { name: "flight_id", type: "text", description: "Flight id." },
+    { name: "flight_number", type: "text", description: "Flight number." },
+    { name: "departure_airport_id", type: "text", description: "Departure airport code." },
+    { name: "departure_airport_name", type: "text", description: "Departure airport name." },
+    { name: "departure_city", type: "text", description: "Departure city." },
+    { name: "arrival_airport_id", type: "text", description: "Arrival airport code." },
+    { name: "arrival_airport_name", type: "text", description: "Arrival airport name." },
+    { name: "arrival_city", type: "text", description: "Arrival city." },
+    { name: "departs_at", type: "timestamp", description: "Scheduled departure." },
+  ],
+  rows: [
+    {
+      flight_id: "f-1001",
+      flight_number: "KE017",
+      departure_airport_id: "ICN",
+      departure_airport_name: "Incheon International",
+      departure_city: "Seoul",
+      arrival_airport_id: "LAX",
+      arrival_airport_name: "Los Angeles International",
+      arrival_city: "Los Angeles",
+      departs_at: "2026-10-04 14:30",
+    },
+    {
+      flight_id: "f-1002",
+      flight_number: "KE018",
+      departure_airport_id: "LAX",
+      departure_airport_name: "Los Angeles International",
+      departure_city: "Los Angeles",
+      arrival_airport_id: "ICN",
+      arrival_airport_name: "Incheon International",
+      arrival_city: "Seoul",
+      departs_at: "2026-10-05 11:50",
+    },
+  ],
+});
+
 const tableIndex = new Map(tables.map((table) => [table.name, table]));
 
 /** Initial seed data only — the live, mutable ontology lives in useOntologyApp()'s React state,
@@ -52499,7 +52615,7 @@ export const initialEntities: SeedEntity[] = [
 // The seed's Relations predate derived join keys: each names its key columns per table
 // (`sourceMapping` / `joins`), turned into `datasets` + Identifier mappings by `createDemoFixture`.
 type SeedRelationJoin = { table: string; fromColumns: string[]; toColumns: string[] };
-type SeedRelation = Omit<Relation, "datasets"> & {
+type SeedRelation = Omit<Relation, "mappings"> & {
   sourceMapping?: SeedRelationJoin;
   joins?: SeedRelationJoin[];
 };
@@ -53316,29 +53432,85 @@ function normalizeReviewModel(fixture: { entities: Entity[]; relations: Relation
   return fixture;
 }
 
-/**
- * Real ontologies find an Entity Type in several datasets: wherever its own key column reappears
- * (e.g. `claim_id` in claims, claim_payments and claim_reserves), each row there is about the same
- * instance. The seed only knows one dataset per Identifier, so suggest the others — up to three
- * more, as suggested mappings for a person to review.
- */
-function seedIdentifierDatasets(entities: Entity[]) {
-  entities.forEach((entity) => {
-    const identifier = entity.properties.find(isIdentifierProperty);
-    const first = identifier?.mappings[0];
-    // Only the Entity Type's own key (Claim → claim_id), not another one's it happens to carry.
-    const ownKey = `${entity.name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase()}_id`;
-    if (!identifier || !first || first.column !== ownKey) return;
-    tables
-      .filter((t) => t.name !== first.table && t.columns.some((c) => c.name === first.column))
-      .slice(0, 3)
-      .forEach((t) => {
-        identifier.mappings.push({ table: t.name, column: first.column, status: "suggested" });
-      });
+/** Builds a new, isolated fixture every time so switching scenarios never reuses mutated state. */
+/** The `flights` example: a Flight and its Airport — once (yet); its second airport column makes
+ * the Aliases. */
+function addFlightsExample(entities: Entity[], relations: Relation[]) {
+  const property = (id: string, name: string, isIdentifier: boolean, mappings: ColumnRef[]) => ({
+    id,
+    name,
+    description: "",
+    type: "string",
+    confidence: 0.9,
+    status: "suggested" as const,
+    ...(isIdentifier ? { isIdentifier: true } : {}),
+    mappings,
   });
+  entities.push(
+    {
+      id: "e_flight",
+      name: "Flight",
+      description: "A scheduled flight between two airports",
+      confidence: 0.9,
+      status: "suggested",
+      table: "flights",
+      x: 720,
+      y: 520,
+      properties: [
+        property("p_flight_id", "identifier", true, [
+          { table: "flights", column: "flight_id", status: "suggested" },
+        ]),
+        property("p_flight_number", "flightNumber", false, [
+          { table: "flights", column: "flight_number", status: "suggested" },
+        ]),
+      ],
+    },
+    {
+      id: "e_airport",
+      name: "Airport",
+      description: "An airport flights depart from and arrive at",
+      confidence: 0.88,
+      status: "suggested",
+      table: "flights",
+      x: 900,
+      y: 620,
+      properties: [
+        property("p_airport_id", "identifier", true, [
+          { table: "flights", column: "departure_airport_id", status: "suggested" },
+        ]),
+        property("p_airport_name", "name", false, [
+          { table: "flights", column: "departure_airport_name", status: "suggested" },
+        ]),
+        property("p_airport_city", "city", false, [
+          { table: "flights", column: "departure_city", status: "suggested" },
+        ]),
+      ],
+    },
+  );
+  relations.push(
+    {
+      id: "r_flight_departs",
+      name: "departsFrom",
+      description: "The airport the flight departs from",
+      from: "e_flight",
+      to: "e_airport",
+      confidence: 0.86,
+      status: "suggested",
+      mappings: [],
+    },
+    {
+      id: "r_flight_arrives",
+      name: "arrivesAt",
+      description: "The airport the flight arrives at",
+      from: "e_flight",
+      to: "e_airport",
+      confidence: 0.84,
+      status: "suggested",
+      mappings: [],
+    },
+  );
 }
 
-/** Builds a new, isolated fixture every time so switching scenarios never reuses mutated state. */
 export function createDemoFixture(scenario: DemoScenario): {
   entities: Entity[];
   relations: Relation[];
@@ -53350,31 +53522,26 @@ export function createDemoFixture(scenario: DemoScenario): {
       mappings: mapping ? [{ ...mapping }] : [],
     })),
   }));
-  seedIdentifierDatasets(entities);
-  // A seed Relation's key columns become Identifier mappings in that dataset (suggested), so the
-  // Relation itself keeps just the dataset and its keys follow the Identifiers from then on.
+  // A seed Relation's join is kept as a mapping only where its columns ARE both Identifiers'
+  // columns in that dataset; the rest were stand-ins and leave the Relation unmapped there.
   const relations: Relation[] = initialRelations.map(({ sourceMapping, joins, ...relation }) => {
     const seedJoins = joins?.length ? joins : sourceMapping ? [sourceMapping] : [];
-    seedJoins.forEach((join) => {
-      (
-        [
-          [relation.from, join.fromColumns],
-          [relation.to, join.toColumns],
-        ] as const
-      ).forEach(([entityId, columns]) => {
-        const identifier = entities
-          .find((e) => e.id === entityId)
-          ?.properties.find(isIdentifierProperty);
-        columns.forEach((column) => {
-          if (!identifier) return;
-          if (identifier.mappings.some((m) => m.table === join.table && m.column === column))
-            return;
-          identifier.mappings.push({ table: join.table, column, status: "suggested" });
-        });
-      });
-    });
-    return { ...relation, datasets: Array.from(new Set(seedJoins.map((j) => j.table))) };
+    const from = entities.find((e) => e.id === relation.from);
+    const to = entities.find((e) => e.id === relation.to);
+    const mappings = seedJoins
+      .filter(
+        (join, i) =>
+          seedJoins.findIndex((other) => other.table === join.table) === i &&
+          sameColumns(join.fromColumns, identifierColumnsIn(from, join.table)) &&
+          sameColumns(join.toColumns, identifierColumnsIn(to, join.table)),
+      )
+      .map((join) => ({
+        ...join,
+        status: (relation.status === "confirmed" ? "mapped" : "suggested") as MappingStatus,
+      }));
+    return { ...relation, mappings };
   });
+  addFlightsExample(entities, relations);
 
   if (scenario === "fresh") {
     entities.forEach((entity) => {
@@ -53390,6 +53557,7 @@ export function createDemoFixture(scenario: DemoScenario): {
     });
     relations.forEach((relation) => {
       relation.status = "suggested";
+      relation.mappings?.forEach((m) => (m.status = "suggested"));
       delete relation.warningReason;
       delete relation.errorReason;
     });
@@ -53441,23 +53609,91 @@ export function isIdentifierProperty(property: { name: string; isIdentifier?: bo
   return property.isIdentifier === true || property.name.trim().toLowerCase() === "id";
 }
 
-/** An Entity Type's Identifier — there is one per Entity Type. */
+/** An Entity Type's Identifier properties, in property order: usually one; two or more form a
+ * composite identifier — its records are told apart by the combination (each one a key part). */
+export function identifiersOf(entity: Entity): Property[] {
+  return entity.properties.filter(isIdentifierProperty);
+}
+/** An Entity Type's (first) Identifier property. */
 export function identifierOf(entity: Entity): Property | undefined {
   return entity.properties.find(isIdentifierProperty);
 }
 
-/** One dataset an Entity Type's instances come from: the Identifier's column(s) in it — two or
- * more columns form that dataset's composite identifier. */
-export type EntityDataset = { table: string; columns: ColumnRef[] };
+/** One occurrence an Entity Type's records come from — a dataset (and, where it holds several,
+ * an alias): the key part columns mapped for it (one per part, in part order), and the parts that
+ * aren't — a key missing a part can't identify records. */
+export type EntityDataset = {
+  table: string;
+  alias?: string | undefined;
+  columns: ColumnRef[];
+  missing: Property[];
+};
 
-/** The Entity Type's own mapping: its Identifier's mappings, grouped by dataset (in mapping
- * order). An Entity Type has no mapping of its own besides this. */
+/** The Entity Type's own mapping: every occurrence (dataset, alias) any of its Identifier
+ * properties is mapped in. An Entity Type has no mapping of its own besides this. */
 export function entityDatasets(entity: Entity): EntityDataset[] {
-  const byTable = new Map<string, ColumnRef[]>();
-  identifierOf(entity)?.mappings.forEach((m) => {
-    byTable.set(m.table, [...(byTable.get(m.table) ?? []), m]);
+  const parts = identifiersOf(entity);
+  const occurrences = new Map<string, { table: string; alias: string | undefined }>();
+  parts.forEach((p) =>
+    p.mappings.forEach((m) =>
+      occurrences.set(`${m.table}|${m.alias ?? ""}`, {
+        table: m.table,
+        alias: m.alias || undefined,
+      }),
+    ),
+  );
+  return Array.from(occurrences.values()).map(({ table, alias }) => {
+    const columns: ColumnRef[] = [];
+    const missing: Property[] = [];
+    parts.forEach((part) => {
+      const mapping = part.mappings.find((m) => m.table === table && sameAlias(m.alias, alias));
+      if (mapping) columns.push(mapping);
+      else missing.push(part);
+    });
+    return { table, ...(alias ? { alias } : {}), columns, missing };
   });
-  return Array.from(byTable, ([table, columns]) => ({ table, columns }));
+}
+/** The aliases an Entity Type's mappings use in one dataset (its named occurrences there). */
+export function aliasesIn(entity: Entity, table: string): string[] {
+  return Array.from(
+    new Set(
+      entity.properties.flatMap((p) =>
+        p.mappings.filter((m) => m.table === table && m.alias).map((m) => m.alias as string),
+      ),
+    ),
+  ).sort();
+}
+/** An Entity Type's mappings in `table` that still need an alias (it has aliases there). */
+export function mappingsNeedingAlias(
+  entity: Entity,
+  table: string,
+): { property: Property; mapping: ColumnRef }[] {
+  if (aliasesIn(entity, table).length === 0) return [];
+  return entity.properties.flatMap((property) =>
+    property.mappings
+      .filter((m) => m.table === table && !m.alias)
+      .map((mapping) => ({ property, mapping })),
+  );
+}
+/** Why an Entity Type's aliases make it an Error: a mapping in an aliased dataset with no alias
+ * yet, or an alias whose Identifier isn't mapped (its records can't be told apart). */
+export function aliasIssue(entity: Entity): string | undefined {
+  const tables = new Set(entity.properties.flatMap((p) => p.mappings.map((m) => m.table)));
+  for (const table of tables) {
+    const needing = mappingsNeedingAlias(entity, table).length;
+    if (needing > 0) {
+      return `${needing} mapping${needing === 1 ? "" : "s"} in ${table} still need${needing === 1 ? "s" : ""} an alias.`;
+    }
+    const keyless = aliasesIn(entity, table).find(
+      (alias) => identifierKeyIn(entity, table, alias).columns.length === 0,
+    );
+    if (keyless) return `@${keyless} in ${table} has no identifier mapped.`;
+  }
+  return undefined;
+}
+/** A dataset where only part of a composite identifier is mapped. */
+function incompleteKeyDataset(entity: Entity): EntityDataset | undefined {
+  return entityDatasets(entity).find((dataset) => dataset.missing.length > 0);
 }
 
 export const IDENTIFIER_UNMAPPED_ERROR_REASON = "Identifier must be mapped to a source column.";
@@ -53538,9 +53774,12 @@ export function entityReview(entity: Entity): Review {
 /** The worst issue among the Entity Type itself and its Properties. */
 export function entityIssue(entity: Entity): Issue {
   if (!entity.properties.some(isIdentifierProperty) || entity.errorReason) return "error";
+  if (aliasIssue(entity)) return "error";
   const issues = entity.properties.map(propertyIssue);
   if (issues.includes("error")) return "error";
-  if (entity.warningReason || issues.includes("warning")) return "warning";
+  if (entity.warningReason || issues.includes("warning") || incompleteKeyDataset(entity)) {
+    return "warning";
+  }
   return null;
 }
 /** What an Entity Type's badge shows: its issue (Error > Warning), else its review. */
@@ -53555,6 +53794,8 @@ export function entityDisplayStatus(entity: Entity): ReviewStatus {
 export function entityErrorReason(entity: Entity): string | undefined {
   if (!entity.properties.some(isIdentifierProperty)) return MISSING_IDENTIFIER_ERROR_REASON;
   if (entity.errorReason) return entity.errorReason;
+  const aliasReason = aliasIssue(entity);
+  if (aliasReason) return aliasReason;
   if (entity.properties.some((p) => isIdentifierProperty(p) && p.mappings.length === 0)) {
     return ENTITY_UNMAPPED_IDENTIFIER_REASON;
   }
@@ -53566,6 +53807,10 @@ export function entityErrorReason(entity: Entity): string | undefined {
 /** Why an Entity Type has its Warning: its own, else the Properties' it rolls up. */
 export function entityWarningReason(entity: Entity): string | undefined {
   if (entity.warningReason) return entity.warningReason;
+  const incomplete = incompleteKeyDataset(entity);
+  if (incomplete) {
+    return `Only part of the composite identifier is mapped in ${instanceLabel(incomplete.table, incomplete.alias)} (missing ${incomplete.missing.map((p) => p.name).join(", ")}), so its records can't be identified there.`;
+  }
   const count = entity.properties.filter((p) => propertyIssue(p) === "warning").length;
   return count > 0
     ? `${count} ${count === 1 ? "property has a warning" : "properties have warnings"}.`
@@ -53601,8 +53846,24 @@ export function relationIssue(relation: Relation, entities: Entity[]): Issue {
   if (relation.errorReason || brokenRelationDataset(relation, entities)) return "error";
   const ends = [relation.from, relation.to].map((id) => entities.find((e) => e.id === id));
   if (ends.some((e) => e && entityIssue(e) === "error")) return "error";
-  if (relation.warningReason) return "warning";
+  if (relationWarningReason(relation)) return "warning";
   return null;
+}
+/** Why a Relation has its Warning: its own, else that it has no mapping yet — it's a valid
+ * definition, but it can't link any records until it's mapped through a dataset. */
+export const RELATION_NOT_MAPPED_REASON =
+  "Not mapped yet — it won't link records until it's mapped through a dataset where both identifiers are mapped.";
+/** The one Relation Warning that's informational: a Relation mapping is optional, so it never
+ * interrupts Accept or blocks Publish. */
+export function isRelationOnlyUnmapped(relation: Relation): boolean {
+  return !relation.warningReason && !relation.mappings?.length;
+}
+export function relationWarningReason(relation: Relation): string | undefined {
+  if (relation.warningReason) return relation.warningReason;
+  if (!relation.mappings?.length) {
+    return RELATION_NOT_MAPPED_REASON;
+  }
+  return undefined;
 }
 /** What a Relation's badge shows: its issue (Error > Warning), else its review. */
 export function relationStatus(relation: Relation, entities: Entity[]): ReviewStatus {
@@ -53616,14 +53877,89 @@ export function canConfirmRelation(relation: Relation, entities: Entity[]): bool
   );
 }
 
+const listNames = (names: string[]) =>
+  names.length <= 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+
+/**
+ * Why a suggested Relation can't be accepted yet, in words: its Entity Types have to be accepted
+ * (and free of errors) first. Nothing is accepted on its behalf — this only says what's missing.
+ */
+export function relationAcceptBlockers(relation: Relation, entities: Entity[]): string[] {
+  const ends = [...new Set([relation.from, relation.to])]
+    .map((id) => entities.find((e) => e.id === id))
+    .filter((e): e is Entity => !!e);
+  const failing = ends.filter((e) => entityIssue(e) === "error").map((e) => e.name);
+  const pending = ends
+    .filter((e) => entityIssue(e) !== "error" && entityReview(e) !== "confirmed")
+    .map((e) => e.name);
+  const out: string[] = [];
+  if (pending.length > 0) {
+    out.push(
+      `${listNames(pending)} must be accepted first — ${pending.length === 1 ? "it's" : "they're"} still suggested.`,
+    );
+  }
+  if (failing.length > 0) {
+    out.push(`${listNames(failing)} ${failing.length === 1 ? "has" : "have"} errors to fix first.`);
+  }
+  return out;
+}
+
+/**
+ * Why a suggested Relation mapping can't be accepted yet: on each side, the Entity Type has to be
+ * accepted and its Identifier actually mapped in that dataset — not just suggested to be.
+ */
+export function relationMappingAcceptBlockers(
+  relation: Relation,
+  mapping: RelationMapping,
+  entities: Entity[],
+): string[] {
+  const sides = [
+    { id: relation.from, alias: mapping.fromAlias },
+    { id: relation.to, alias: mapping.toAlias },
+  ].filter(
+    (side, i, all) =>
+      all.findIndex((o) => o.id === side.id && sameAlias(o.alias, side.alias)) === i,
+  );
+  const out: string[] = [];
+  for (const side of sides) {
+    const entity = entities.find((e) => e.id === side.id);
+    if (!entity) continue;
+    const label = side.alias ? `${entity.name} @${side.alias}` : entity.name;
+    if (entityIssue(entity) === "error") {
+      out.push(`${label} has errors to fix first.`);
+      continue;
+    }
+    const pendingColumns = identifiersOf(entity).flatMap((p) =>
+      p.mappings
+        .filter(
+          (m) =>
+            m.table === mapping.table &&
+            sameAlias(m.alias, side.alias) &&
+            mappingStatus(m) === "suggested",
+        )
+        .map((m) => m.column),
+    );
+    const accepted = entityReview(entity) === "confirmed";
+    const where = `${mapping.table}.${pendingColumns.join(", ")}`;
+    if (!accepted && pendingColumns.length > 0) {
+      out.push(
+        `${label} must be accepted and its identifier mapped — both are still suggested (${where}).`,
+      );
+    } else if (!accepted) {
+      out.push(`${label} must be accepted first — it's still suggested.`);
+    } else if (pendingColumns.length > 0) {
+      out.push(`${label}'s identifier must be mapped — ${where} is only suggested to be mapped.`);
+    }
+  }
+  return out;
+}
+
 /** Why a Relation has its Error: its own, else the connected Entity Type's. */
 export function relationErrorReason(relation: Relation, entities: Entity[]): string | undefined {
   if (relation.errorReason) return relation.errorReason;
   const broken = brokenRelationDataset(relation, entities);
   if (broken) {
-    const side = broken.fromColumns.length === 0 ? relation.from : relation.to;
-    const name = entities.find((e) => e.id === side)?.name || "An Entity Type";
-    return `${name}'s identifier isn't mapped in ${broken.table}, so this relation can't link records there.`;
+    return `The ${broken.table} mapping no longer matches the identifier columns mapped there, so this relation can't link records through it.`;
   }
   const blocked = [relation.from, relation.to]
     .map((id) => entities.find((e) => e.id === id))
@@ -54266,7 +54602,7 @@ export function buildConfirmPlan(entities: Entity[], relations: Relation[]): Con
         itemKind: "relation",
         id: r.id,
         name,
-        reason: r.warningReason ?? "No warning details available.",
+        reason: relationWarningReason(r) ?? "No warning details available.",
       });
     }
     if (relationReview(r) === "suggested" && canConfirmRelation(r, entities))

@@ -91,6 +91,7 @@ export function StatusBadge({
   warningReason,
   errorReason,
   tooltipContent,
+  noTooltip = false,
 }: {
   status: ReviewStatus;
   size?: number;
@@ -99,6 +100,8 @@ export function StatusBadge({
   errorReason?: string | undefined;
   /** Optional richer tooltip body for a specific badge context. */
   tooltipContent?: ReactNode;
+  /** Just the badge, no hover tooltip. */
+  noTooltip?: boolean;
 }) {
   const style = STATUS_STYLE[status];
   // 16px and smaller use the 8px glyph (half the badge); 20px and up use the 12px glyph, which
@@ -115,6 +118,23 @@ export function StatusBadge({
       : status === "error"
         ? (errorReason ?? "No error details available.")
         : null;
+  if (noTooltip) {
+    return (
+      <span
+        style={{ width: size, height: size, background: style.badgeBg }}
+        className="inline-flex shrink-0 items-center justify-center rounded-full"
+        aria-label={label}
+      >
+        <span
+          aria-hidden
+          className="relative block shrink-0"
+          style={{ width: glyphSize, height: glyphSize }}
+        >
+          <img alt="" src={glyph} className="absolute inset-0 block size-full" />
+        </span>
+      </span>
+    );
+  }
   return (
     <Tooltip>
       <TooltipTrigger asChild>

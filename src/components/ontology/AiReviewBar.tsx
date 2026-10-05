@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import {
+  entityIssue,
+  relationIssue,
   buildConfirmPlan,
   entityReview,
   mappingStatus,
@@ -179,7 +181,7 @@ type BreakdownKey = "entities" | "properties" | "relations" | "tables" | "column
 type BreakdownCounts = Record<BreakdownKey, { inRange: number; total: number }>;
 
 const BREAKDOWN_META: Record<BreakdownKey, { icon: React.ReactNode; label: string }> = {
-  entities: { icon: <EntitiesIcon />, label: "Entities" },
+  entities: { icon: <EntitiesIcon />, label: "Entity types" },
   properties: { icon: <PropertiesIcon />, label: "Properties" },
   relations: { icon: <RelationsIcon />, label: "Relations" },
   tables: { icon: <TablesIcon />, label: "Tables" },
@@ -194,17 +196,20 @@ const BREAKDOWN_META: Record<BreakdownKey, { icon: React.ReactNode; label: strin
 // reads as if there were N/M discrete mapping suggestions, when N/M is actually a count of Tables
 // (or Columns) themselves — this spells that out instead.
 function breakdownTooltipText(key: BreakdownKey, inRange: number, total: number): string {
+  // Only the suggestions within the Confidence range count; the rest are named when there are any.
+  const outside = total - inRange;
+  const rest = outside > 0 ? ` (${outside} more outside the Confidence range)` : "";
   switch (key) {
     case "entities":
-      return `${inRange} of ${total} Entity suggestions`;
+      return `${inRange} Entity type suggestions${rest}`;
     case "properties":
-      return `${inRange} of ${total} Property suggestions`;
+      return `${inRange} Property suggestions${rest}`;
     case "relations":
-      return `${inRange} of ${total} Relation suggestions`;
+      return `${inRange} Relation suggestions${rest}`;
     case "tables":
-      return `${inRange} of ${total} Tables have a column mapping suggestion`;
+      return `${inRange} Tables have a column mapping suggestion${rest}`;
     case "columns":
-      return `${inRange} of ${total} Columns have a mapping suggestion`;
+      return `${inRange} Columns have a mapping suggestion${rest}`;
   }
 }
 const BREAKDOWN_ORDER: BreakdownKey[] = [
@@ -257,7 +262,8 @@ export function AiReviewBar({
   tables: TableSchema[];
   confidenceRange: ConfidenceRange;
   onConfidenceRangeChange: (range: ConfidenceRange) => void;
-  onSelectSuggestionsInRange: (keys: string[]) => void;
+  /** `note` explains anything in range that couldn't be selected. */
+  onSelectSuggestionsInRange: (keys: string[], note?: string) => void;
   scope?: SuggestionScope | undefined;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -311,11 +317,26 @@ export function AiReviewBar({
       eligibleKeys.push(suggestionKey({ kind: "property", entityId, propertyId }));
     }
   });
-  confirmPlan.eligible.relationIds.forEach((id) => {
-    const r = relations.find((x) => x.id === id);
-    if (r && inScope.relation(r) && inConfidenceRange(r.confidence)) {
-      eligibleKeys.push(suggestionKey({ kind: "relation", id }));
-    }
+  // A Relation needs both its Entity Types accepted — already, or by this same selection (Accept
+  // confirms them first). So the result doesn't depend on what was accepted before; one whose
+  // Entity Type is outside the selection is skipped, and counted so the user is told.
+  const acceptedAfter = new Set(
+    entities
+      .filter(
+        (e) =>
+          entityIssue(e) !== "error" &&
+          (entityReview(e) === "confirmed" ||
+            eligibleKeys.includes(suggestionKey({ kind: "entity", id: e.id }))),
+      )
+      .map((e) => e.id),
+  );
+  let relationsSkipped = 0;
+  relations.forEach((r) => {
+    if (relationReview(r) !== "suggested" || relationIssue(r, entities) === "error") return;
+    if (!inScope.relation(r) || !inConfidenceRange(r.confidence)) return;
+    if (acceptedAfter.has(r.from) && acceptedAfter.has(r.to)) {
+      eligibleKeys.push(suggestionKey({ kind: "relation", id: r.id }));
+    } else relationsSkipped += 1;
   });
   entities.forEach((entity) => {
     entity.properties.forEach((property) => {
@@ -456,11 +477,8 @@ export function AiReviewBar({
                     tabIndex={0}
                     className="flex shrink-0 items-center gap-1.5 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-[#00DED8]"
                   >
-                    <span className="size-4 shrink-0 text-[#7e22ce]">{meta.icon}</span>
                     <span className="text-sm leading-5 text-[#7e22ce]">{meta.label}</span>
-                    <span className="text-sm leading-5 tabular-nums text-[#080a09]">
-                      {inRange}/{total}
-                    </span>
+                    <span className="text-sm leading-5 tabular-nums text-[#080a09]">{inRange}</span>
                   </span>
                 </TooltipTrigger>
                 <TooltipContent side="top">
@@ -490,7 +508,14 @@ export function AiReviewBar({
           </button>
           <button
             type="button"
-            onClick={() => onSelectSuggestionsInRange(eligibleKeys)}
+            onClick={() =>
+              onSelectSuggestionsInRange(
+                eligibleKeys,
+                relationsSkipped > 0
+                  ? `${relationsSkipped} Relation${relationsSkipped === 1 ? "" : "s"} in range skipped — ${relationsSkipped === 1 ? "one of its" : "their"} Entity types are outside the range and not accepted yet.`
+                  : undefined,
+              )
+            }
             disabled={eligibleKeys.length === 0}
             // Outline button, no icon (Figma 353:132529's style).
             className="flex h-8 min-w-[64px] shrink-0 items-center justify-center whitespace-nowrap rounded-[4px] border border-[#e3e5e4] bg-white px-3 text-sm font-medium text-[#161919] transition-colors hover:bg-[#f4f4f4] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-white"

@@ -10,7 +10,7 @@ import {
   type Entity,
 } from "@/lib/mock-data";
 import { ConnectionHandle } from "@/components/ontology/ConnectionHandle";
-import { StatusBadge, reviewStatusLabel, statusDotColor } from "@/components/ontology/StatusBadge";
+import { StatusBadge, statusDotColor } from "@/components/ontology/StatusBadge";
 import { EntityConfidenceChip } from "@/components/ontology/ConfidenceChip";
 
 /** Overview's own fixed canvas-node footprint (Figma: node 246:63476 / 246:63464) — the circle
@@ -31,10 +31,10 @@ const SIDES: Side[] = ["top", "right", "bottom", "left"];
 
 // Figma "Dot": 8px, its near edge 3px outside the circle (just past the 3px hover ring).
 const SIDE_POSITION: Record<Side, string> = {
-  top: "left-1/2 -top-[11px] -translate-x-1/2",
-  bottom: "left-1/2 -bottom-[11px] -translate-x-1/2",
-  left: "-left-[11px] top-1/2 -translate-y-1/2",
-  right: "-right-[11px] top-1/2 -translate-y-1/2",
+  top: "left-1/2 -top-[16px] -translate-x-1/2",
+  bottom: "left-1/2 -bottom-[16px] -translate-x-1/2",
+  left: "-left-[16px] top-1/2 -translate-y-1/2",
+  right: "-right-[16px] top-1/2 -translate-y-1/2",
 };
 
 /**
@@ -65,7 +65,12 @@ export function OntologyNode({
   connectSourceSide = null,
   connectTargetSide = null,
   moveTarget = false,
+  onHandleHover,
+  nameSize,
 }: {
+  /** The name's size at this zoom (the shared semantic-zoom scale) — it grows as the canvas
+   * shrinks, so it stays readable on screen. */
+  nameSize?: { size: number; line: number } | undefined;
   entity: Entity;
   /** Overview hub emphasis. A transform keeps the node centered without moving its label/layout. */
   nodeScale?: number;
@@ -100,41 +105,13 @@ export function OntologyNode({
    * drop it — Detail's own related-satellite usage only; Overview has no such drag today. A
    * distinct affordance from the connection handles, shown as a plain ring around the circle. */
   moveTarget?: boolean;
+  /** Which connection dot the pointer is over (null when it leaves) — for the new-node preview. */
+  onHandleHover?: ((side: Side | null) => void) | undefined;
 }) {
   const dragging = connectSourceSide !== null;
   const isTarget = connectTargetSide !== null;
   const status = entityStatus(entity);
   const propertySummary = propertyStatusCounts(entity.properties);
-  const entityStatusGlyph =
-    status === "confirmed" ? "✓" : status === "suggested" ? "✦" : status === "warning" ? "!" : "!";
-  const entityStatusTooltip = (
-    <div className="min-w-[120px] space-y-1.5">
-      <div className="flex items-center gap-1.5 font-medium text-white">
-        <span style={{ color: statusDotColor(status) }}>{entityStatusGlyph}</span>
-        <span>Entity {reviewStatusLabel(status).toLowerCase()}</span>
-      </div>
-      <div className="border-t border-white/15 pt-1.5">
-        <p className="mb-1 font-medium text-white">Properties · {entity.properties.length}</p>
-        <div className="space-y-0.5 text-[#D4D7DC]">
-          {(["confirmed", "suggested", "warning", "error"] as const).map((propertyReviewStatus) => {
-            const count = propertySummary[propertyReviewStatus];
-            if (count === 0) return null;
-            return (
-              <div key={propertyReviewStatus} className="flex items-center gap-1.5">
-                <span
-                  className="size-1.5 shrink-0 rounded-full"
-                  style={{ backgroundColor: statusDotColor(propertyReviewStatus) }}
-                />
-                <span>
-                  {count} {reviewStatusLabel(propertyReviewStatus)}
-                </span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
   // Which of the 4 handles the pointer is directly over right now (Figma "Dot Hover": filled blue).
   const [hoveredSide, setHoveredSide] = useState<Side | null>(null);
 
@@ -186,7 +163,7 @@ export function OntologyNode({
             confidence={entity.confidence}
             warningReason={entityWarningReason(entity)}
             errorReason={entityErrorReason(entity)}
-            tooltipContent={entityStatusTooltip}
+            noTooltip
           />
           {onStartConnect &&
             SIDES.map((side) => {
@@ -200,11 +177,16 @@ export function OntologyNode({
                 <ConnectionHandle
                   key={side}
                   active={active || hovered}
+                  plus={hovered && !active}
                   hoverFill={false}
-                  onPointerEnter={() => setHoveredSide(side)}
-                  onPointerLeave={() =>
-                    setHoveredSide((current) => (current === side ? null : current))
-                  }
+                  onPointerEnter={() => {
+                    setHoveredSide(side);
+                    onHandleHover?.(side);
+                  }}
+                  onPointerLeave={() => {
+                    setHoveredSide((current) => (current === side ? null : current));
+                    onHandleHover?.(null);
+                  }}
                   onPointerDown={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -233,15 +215,18 @@ export function OntologyNode({
             <span
               data-morph-label
               className="truncate text-base font-medium leading-6 text-foreground"
+              style={
+                nameSize ? { fontSize: nameSize.size, lineHeight: `${nameSize.line}px` } : undefined
+              }
             >
               {entity.name}
             </span>
             {detailed && entityReview(entity) === "suggested" && (
-              <EntityConfidenceChip entity={entity} size="md" tone="muted" />
+              <EntityConfidenceChip entity={entity} size="sm" tone="muted" />
             )}
           </span>
           {showPropertySummary && (
-            <span className="flex items-center gap-1 whitespace-nowrap rounded-[4px] bg-[#f9fafb] px-0.5 text-xs leading-4 text-muted-foreground">
+            <span className="flex items-center gap-1 whitespace-nowrap rounded-[4px] bg-[#f9fafb] px-0.5 text-[10px] leading-[14px] text-muted-foreground">
               <span>{entity.properties.length} props</span>
               {(
                 [
@@ -254,7 +239,7 @@ export function OntologyNode({
                   <span
                     key={summaryStatus}
                     style={{ backgroundColor: statusDotColor(summaryStatus) }}
-                    className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 text-xs leading-4 text-white"
+                    className="inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-full px-1 text-[9px] leading-[14px] text-white"
                   >
                     {count}
                   </span>

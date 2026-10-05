@@ -1,8 +1,16 @@
-import { useMemo } from "react";
-import { ArrowLeft, ArrowUpRight, History as HistoryIcon, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  ArrowLeft,
+  ArrowUpRight,
+  ChevronDown,
+  History as HistoryIcon,
+  Lock,
+  Rocket,
+  X,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { HistoryInspection, HistoryLogEntry, RestoreOutcome } from "@/lib/app-state";
-import type { SearchResultRef } from "@/lib/mock-data";
+import { relationLabel, type Entity, type Relation, type SearchResultRef } from "@/lib/mock-data";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -74,19 +82,42 @@ export const circledNumber = (n: number) => CIRCLED_DIGITS[n - 1] ?? `(${n})`;
 function TimelineRow({
   entry,
   now,
+  locked,
   onInspect,
 }: {
   entry: HistoryLogEntry;
   now: number;
+  locked: boolean;
   onInspect: () => void;
 }) {
+  if (entry.milestone) {
+    return (
+      <button
+        type="button"
+        onClick={onInspect}
+        className="my-1 flex w-full items-center gap-2 rounded-lg border border-[#318F5A]/30 bg-[#EAF7ED] px-2 py-1.5 text-left"
+      >
+        <Rocket className="size-3.5 shrink-0 text-[#318F5A]" />
+        <span className="min-w-0 flex-1">
+          <span className="block text-[13px] font-medium text-[#1c1c18]">
+            {entry.title} · V{entry.milestone.version}
+          </span>
+          <span className="block text-[11px] text-[#318F5A]">
+            {entry.detail} · {relativeTime(entry.at, now)}
+          </span>
+        </span>
+      </button>
+    );
+  }
   return (
     <button
       type="button"
       onClick={onInspect}
       className="flex w-full flex-col items-start gap-0.5 rounded-lg px-2 py-1.5 text-left hover:bg-accent"
     >
-      <span className="text-[13px] font-medium text-foreground">{entry.title}</span>
+      <span className={cn("text-[13px] font-medium text-foreground", locked && "opacity-60")}>
+        {entry.title}
+      </span>
       {entry.detail && (
         <span className="whitespace-pre-line text-[12px] text-muted-foreground">
           {entry.detail}
@@ -106,12 +137,50 @@ function TimelineRow({
  * to stay in sync — see `onHoverChange`/`hoveredNumber` and app-state's own
  * `historyInspectionHoveredNumber`.
  */
+type ChangeGroup = {
+  group: number;
+  label: string;
+  changes: HistoryInspection["changes"];
+};
+
+/** What restoring the selected changes touches beyond themselves: the mappings of the Entity
+ * Types / Properties involved, and the Relations connected to them. */
+function restoreImpact(
+  changes: HistoryInspection["changes"],
+  entities: Entity[],
+  relations: Relation[],
+) {
+  const entityIds = new Set<string>();
+  const propertyKeys = new Set<string>();
+  const relationIds = new Set<string>();
+  changes.forEach((c) => {
+    if (c.ref?.kind === "entity") entityIds.add(c.ref.id);
+    else if (c.ref?.kind === "property") propertyKeys.add(`${c.ref.entityId}|${c.ref.propertyId}`);
+    else if (c.ref?.kind === "relation") relationIds.add(c.ref.id);
+  });
+  const mappings: string[] = [];
+  entities.forEach((e) =>
+    e.properties.forEach((p) => {
+      if (!entityIds.has(e.id) && !propertyKeys.has(`${e.id}|${p.id}`)) return;
+      p.mappings.forEach((m) => mappings.push(`${e.name}.${p.name} ← ${m.table}.${m.column}`));
+    }),
+  );
+  const touched = new Set([...entityIds, ...Array.from(propertyKeys, (k) => k.split("|")[0]!)]);
+  const affectedRelations = relations
+    .filter((r) => relationIds.has(r.id) || touched.has(r.from) || touched.has(r.to))
+    .map(relationLabel);
+  return { mappings, relations: affectedRelations };
+}
+
 function InspectionDetail({
   inspection,
   now,
   hoveredNumber,
+  entities,
+  relations,
   onBack,
   onToggleChange,
+  onToggleGroup,
   onHoverChange,
   onLocate,
   onRestore,
@@ -119,23 +188,45 @@ function InspectionDetail({
   inspection: HistoryInspection;
   now: number;
   hoveredNumber: number | null;
+  entities: Entity[];
+  relations: Relation[];
   onBack: () => void;
   onToggleChange: (number: number) => void;
+  onToggleGroup: (group: number) => void;
   onHoverChange: (number: number | null) => void;
   onLocate: (ref: SearchResultRef) => void;
   onRestore: () => RestoreOutcome;
 }) {
   const conflictFor = (childIndex: number | null) =>
     inspection.conflicts.find((c) => c.childIndex === childIndex)?.message;
-
-  const count = inspection.selected.size;
+  const groups = useMemo(() => {
+    const map = new Map<number, ChangeGroup>();
+    inspection.changes.forEach((c) => {
+      const g = map.get(c.group) ?? { group: c.group, label: c.groupLabel, changes: [] };
+      g.changes.push(c);
+      map.set(c.group, g);
+    });
+    return Array.from(map.values());
+  }, [inspection.changes]);
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [previewing, setPreviewing] = useState(false);
+  const selectedChanges = inspection.changes.filter((c) => inspection.selected.has(c.number));
+  const count = selectedChanges.length;
+  const impact = useMemo(
+    () => (previewing ? restoreImpact(selectedChanges, entities, relations) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [previewing, inspection.selected, entities, relations],
+  );
+  useEffect(() => {
+    if (count === 0) setPreviewing(false);
+  }, [count]);
 
   return (
-    <div className="flex min-h-0 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center gap-1 border-b border-[rgba(28,28,24,0.08)] px-2 py-2">
         <button
           type="button"
-          onClick={onBack}
+          onClick={previewing ? () => setPreviewing(false) : onBack}
           className="flex items-center gap-1 rounded-lg px-1.5 py-1 text-[12px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <ArrowLeft className="size-3.5" />
@@ -152,92 +243,246 @@ function InspectionDetail({
         <p className="text-[11px] text-muted-foreground">
           {relativeTime(inspection.at, now)} · You
         </p>
+        {inspection.locked && (
+          <p className="mt-2 flex items-start gap-1.5 rounded-md bg-[#f4f4f4] px-2 py-1.5 text-[11.5px] text-[#3C3C3C]">
+            <Lock className="mt-0.5 size-3 shrink-0" />
+            Before the latest publish — view only. Only changes made since then can be restored.
+          </p>
+        )}
       </div>
-      <div className="flex min-h-0 flex-col gap-2 overflow-y-auto p-2">
-        <p className="px-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-          Changes
-        </p>
-        <div className="flex flex-col gap-0.5">
-          {inspection.changes.map((c) => {
-            const conflict = conflictFor(c.childIndex);
-            const selected = inspection.selected.has(c.number);
-            const hovered = hoveredNumber === c.number;
-            return (
-              <div
-                key={c.key}
-                onMouseEnter={() => onHoverChange(c.number)}
-                onMouseLeave={() => onHoverChange(null)}
-                onClick={() => c.restorable && onToggleChange(c.number)}
-                className={cn(
-                  "flex items-start gap-2 rounded-md px-1.5 py-1.5 transition-colors",
-                  c.restorable ? "cursor-pointer" : "cursor-default",
-                  selected && "bg-[#00ded8]/10",
-                  !selected && hovered && "bg-black/[0.03]",
-                )}
-              >
-                <input
-                  type="checkbox"
-                  checked={selected}
-                  disabled={!c.restorable}
-                  onChange={() => onToggleChange(c.number)}
-                  onClick={(e) => e.stopPropagation()}
-                  className="mt-[3px] size-3.5 shrink-0 accent-[#00ded8] disabled:opacity-30"
-                />
-                <span
-                  className={cn(
-                    "mt-px flex size-4 shrink-0 items-center justify-center text-[11px] leading-none text-muted-foreground",
-                    !c.restorable && "opacity-40",
-                  )}
-                  aria-hidden="true"
-                >
-                  {circledNumber(c.number)}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span
+
+      {previewing && impact ? (
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3.5">
+          <div>
+            <p className="pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              Restoring {count} change{count === 1 ? "" : "s"}
+            </p>
+            {selectedChanges.slice(0, 30).map((c) => (
+              <p key={c.key} className="truncate text-[12.5px] text-foreground">
+                <span className="text-muted-foreground">{circledNumber(c.group)} </span>
+                {c.detail ?? c.title}
+                <span className="text-muted-foreground"> · {c.title}</span>
+              </p>
+            ))}
+            {selectedChanges.length > 30 && (
+              <p className="text-[12px] text-muted-foreground">
+                and {selectedChanges.length - 30} more
+              </p>
+            )}
+          </div>
+          <div>
+            <p className="pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              Affected mappings · {impact.mappings.length}
+            </p>
+            {impact.mappings.length === 0 && (
+              <p className="text-[12px] text-muted-foreground">None</p>
+            )}
+            {impact.mappings.slice(0, 20).map((m) => (
+              <p key={m} className="truncate font-mono text-[11.5px] text-[#3C3C3C]">
+                {m}
+              </p>
+            ))}
+            {impact.mappings.length > 20 && (
+              <p className="text-[12px] text-muted-foreground">
+                and {impact.mappings.length - 20} more
+              </p>
+            )}
+          </div>
+          <div>
+            <p className="pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              Affected relations · {impact.relations.length}
+            </p>
+            {impact.relations.length === 0 && (
+              <p className="text-[12px] text-muted-foreground">None</p>
+            )}
+            {impact.relations.slice(0, 20).map((r) => (
+              <p key={r} className="truncate text-[12px] text-[#3C3C3C]">
+                {r}
+              </p>
+            ))}
+          </div>
+          <p className="text-[11.5px] text-muted-foreground">
+            The result is saved to the Draft and recorded as a new History action. It isn't
+            published until you publish.
+          </p>
+        </div>
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
+          <p className="px-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Changes · {inspection.changes.length}
+          </p>
+          <div className="flex flex-col gap-0.5">
+            {groups.map((g) => {
+              const restorable = g.changes.filter((c) => c.restorable);
+              const picked = restorable.filter((c) => inspection.selected.has(c.number)).length;
+              const single = g.changes.length === 1 ? g.changes[0]! : null;
+              const open = expanded.has(g.group);
+              const hovered = hoveredNumber === g.group;
+              const conflict = single ? conflictFor(single.childIndex) : undefined;
+              const ref = g.changes.find((c) => c.groupRef)?.groupRef;
+              return (
+                <div key={g.group} className="flex flex-col">
+                  <div
+                    onMouseEnter={() => onHoverChange(g.group)}
+                    onMouseLeave={() => onHoverChange(null)}
+                    onClick={() => restorable.length > 0 && onToggleGroup(g.group)}
                     className={cn(
-                      "block truncate text-[12.5px] font-medium text-foreground",
-                      !c.restorable && "opacity-60",
+                      "flex items-start gap-2 rounded-md px-1.5 py-1.5 transition-colors",
+                      restorable.length > 0 ? "cursor-pointer" : "cursor-default",
+                      picked > 0 && "bg-[#00ded8]/10",
+                      picked === 0 && hovered && "bg-black/[0.03]",
                     )}
                   >
-                    {c.detail ?? c.title}
-                  </span>
-                  {c.detail && (
-                    <span className="block truncate text-[11px] text-muted-foreground">
-                      {c.title}
+                    <input
+                      type="checkbox"
+                      checked={picked > 0 && picked === restorable.length}
+                      ref={(el) => {
+                        if (el) el.indeterminate = picked > 0 && picked < restorable.length;
+                      }}
+                      disabled={restorable.length === 0}
+                      onChange={() => onToggleGroup(g.group)}
+                      onClick={(e) => e.stopPropagation()}
+                      className="mt-[3px] size-3.5 shrink-0 accent-[#00ded8] disabled:opacity-30"
+                    />
+                    <span
+                      className={cn(
+                        "mt-px flex size-4 shrink-0 items-center justify-center text-[11px] leading-none text-muted-foreground",
+                        restorable.length === 0 && "opacity-40",
+                      )}
+                      aria-hidden="true"
+                    >
+                      {circledNumber(g.group)}
                     </span>
+                    <span className="min-w-0 flex-1">
+                      <span
+                        className={cn(
+                          "block truncate text-[12.5px] font-medium text-foreground",
+                          restorable.length === 0 && "opacity-60",
+                        )}
+                      >
+                        {single ? (single.detail ?? single.title) : g.label}
+                      </span>
+                      <span className="block truncate text-[11px] text-muted-foreground">
+                        {single ? single.title : summarizeGroup(g.changes)}
+                      </span>
+                      {conflict && (
+                        <span className="block text-[11px] text-[#9c461e]">{conflict}</span>
+                      )}
+                    </span>
+                    {!single && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setExpanded((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(g.group)) next.delete(g.group);
+                            else next.add(g.group);
+                            return next;
+                          });
+                        }}
+                        aria-label={open ? "Collapse" : "Show each change"}
+                        className="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground"
+                      >
+                        <ChevronDown
+                          className={cn("size-3.5 transition-transform", open && "rotate-180")}
+                        />
+                      </button>
+                    )}
+                    {ref && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onLocate(ref);
+                        }}
+                        aria-label="Locate on the canvas"
+                        className="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground"
+                      >
+                        <ArrowUpRight className="size-3.5" />
+                      </button>
+                    )}
+                  </div>
+                  {open && !single && (
+                    <div className="ml-[30px] flex flex-col border-l border-[rgba(28,28,24,0.08)] pl-2">
+                      {g.changes.map((c) => {
+                        const childConflict = conflictFor(c.childIndex);
+                        return (
+                          <label
+                            key={c.key}
+                            className={cn(
+                              "flex items-start gap-2 rounded-md px-1 py-1",
+                              c.restorable
+                                ? "cursor-pointer hover:bg-black/[0.03]"
+                                : "cursor-default",
+                            )}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={inspection.selected.has(c.number)}
+                              disabled={!c.restorable}
+                              onChange={() => onToggleChange(c.number)}
+                              className="mt-[3px] size-3 shrink-0 accent-[#00ded8] disabled:opacity-30"
+                            />
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-[12px] text-foreground">
+                                {c.detail ?? c.title}
+                              </span>
+                              <span className="block text-[11px] text-muted-foreground">
+                                {c.title}
+                              </span>
+                              {childConflict && (
+                                <span className="block text-[11px] text-[#9c461e]">
+                                  {childConflict}
+                                </span>
+                              )}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
                   )}
-                  {conflict && <span className="block text-[11px] text-[#9c461e]">{conflict}</span>}
-                </span>
-                {c.ref && (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onLocate(c.ref!);
-                    }}
-                    aria-label="Locate on the canvas"
-                    className="mt-0.5 shrink-0 text-muted-foreground hover:text-foreground"
-                  >
-                    <ArrowUpRight className="size-3.5" />
-                  </button>
-                )}
-              </div>
-            );
-          })}
+                </div>
+              );
+            })}
+          </div>
         </div>
-      </div>
+      )}
       <div className="shrink-0 border-t border-[rgba(28,28,24,0.08)] p-2">
-        <button
-          type="button"
-          disabled={count === 0}
-          onClick={onRestore}
-          className="w-full rounded-full bg-[#1c1c18] px-3 py-1.5 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
-        >
-          {count === 0 ? "Restore selected" : `Restore ${count} change${count === 1 ? "" : "s"}`}
-        </button>
+        {inspection.locked ? (
+          <p className="py-1 text-center text-[12px] text-muted-foreground">View only</p>
+        ) : previewing ? (
+          <button
+            type="button"
+            onClick={() => {
+              onRestore();
+              setPreviewing(false);
+            }}
+            className="w-full rounded-full bg-[#1c1c18] px-3 py-1.5 text-[12px] font-medium text-white transition-opacity hover:opacity-90"
+          >
+            Restore {count} change{count === 1 ? "" : "s"}
+          </button>
+        ) : (
+          <button
+            type="button"
+            disabled={count === 0}
+            onClick={() => setPreviewing(true)}
+            className="w-full rounded-full bg-[#1c1c18] px-3 py-1.5 text-[12px] font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
+          >
+            {count === 0 ? "Select changes to restore" : `Review restore · ${count}`}
+          </button>
+        )}
       </div>
     </div>
   );
+}
+
+function summarizeGroup(changes: HistoryInspection["changes"]): string {
+  const counts = new Map<string, number>();
+  changes.forEach((c) => counts.set(c.title, (counts.get(c.title) ?? 0) + 1));
+  return Array.from(counts.entries())
+    .map(([title, n]) => (n === 1 ? title : `${n} × ${title}`))
+    .join(" · ");
 }
 
 /**
@@ -270,11 +515,17 @@ export function HistoryPanel({
   onInspectEvent,
   onExitInspection,
   onToggleChange,
+  onToggleGroup,
   onHoverChange,
   onLocate,
   onRestore,
+  entities,
+  relations,
 }: {
   entries: HistoryLogEntry[];
+  entities: Entity[];
+  relations: Relation[];
+  onToggleGroup: (group: number) => void;
   /** Whether History Mode's panel is showing at all — see app-state's own `historyPanelOpen` doc
    * comment for how this relates to `inspection` below. */
   panelOpen: boolean;
@@ -304,6 +555,7 @@ export function HistoryPanel({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const now = useMemo(() => Date.now(), [panelOpen]);
 
+  const lastPublishIndex = entries.findIndex((e) => e.milestone);
   const groups = useMemo(() => {
     const map = new Map<string, HistoryLogEntry[]>();
     entries.forEach((entry) => {
@@ -335,8 +587,11 @@ export function HistoryPanel({
               inspection={inspection}
               now={now}
               hoveredNumber={hoveredNumber}
+              entities={entities}
+              relations={relations}
               onBack={onExitInspection}
               onToggleChange={onToggleChange}
+              onToggleGroup={onToggleGroup}
               onHoverChange={onHoverChange}
               onLocate={onLocate}
               onRestore={onRestore}
@@ -346,7 +601,9 @@ export function HistoryPanel({
               <div className="flex shrink-0 items-center justify-between border-b border-[rgba(28,28,24,0.08)] px-3.5 py-3">
                 <div>
                   <p className="text-[14px] font-semibold text-foreground">History</p>
-                  <p className="text-[12px] text-muted-foreground">Changes to this ontology</p>
+                  <p className="text-[12px] text-muted-foreground">
+                    Changes to this ontology · only changes since the latest publish can be restored
+                  </p>
                 </div>
                 <button
                   type="button"
@@ -374,6 +631,9 @@ export function HistoryPanel({
                           key={entry.id}
                           entry={entry}
                           now={now}
+                          locked={
+                            lastPublishIndex !== -1 && entries.indexOf(entry) > lastPublishIndex
+                          }
                           onInspect={() => onInspectEvent(entry.id)}
                         />
                       ))}

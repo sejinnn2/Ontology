@@ -1,3 +1,4 @@
+import { Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -21,7 +22,10 @@ export function ConnectionHandle({
   onPointerLeave,
   "aria-label": ariaLabel,
   title,
+  plus = false,
 }: {
+  /** Grown into a blue "+" button (a click adds something here). */
+  plus?: boolean;
   /** Filled solid blue instead of hollow — the hovered/active/dragging-from state. */
   active?: boolean;
   /** Whether a plain CSS `:hover` should fill the dot solid on its own — the single mapping-handle
@@ -54,15 +58,18 @@ export function ConnectionHandle({
       style={style}
       className={cn(
         // Figma "Dot" (362:222226): 8px, white, 1px #e3e5e4 with a 2px canvas halo; blue when active.
-        "pointer-events-auto box-border flex size-2 shrink-0 cursor-grab items-center justify-center rounded-full border shadow-[0_0_0_2px_#f9fafb] transition-[transform,background-color,border-color] active:cursor-grabbing",
+        "pointer-events-auto box-border flex size-2 shrink-0 cursor-pointer items-center justify-center rounded-full border shadow-[0_0_0_2px_#f9fafb] transition-[transform,background-color,border-color]",
         active
           ? "border-[#3b82f6] bg-[#3b82f6]"
           : cn(
               "border-[#e3e5e4] bg-white",
               hoverFill && "hover:border-[#3b82f6] hover:bg-[#3b82f6]",
             ),
+        plus && "size-5 border-[#3b82f6] bg-[#3b82f6] text-white",
         className,
       )}
-    ></span>
+    >
+      {plus && <Plus className="size-3.5" strokeWidth={2.5} />}
+    </span>
   );
 }

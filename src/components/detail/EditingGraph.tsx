@@ -1,6 +1,5 @@
 import {
   createContext,
-  Fragment,
   useCallback,
   useContext,
   useLayoutEffect,
@@ -11,13 +10,21 @@ import {
   type ReactNode,
 } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Plus, Table2, X } from "lucide-react";
-import type { OntologyApp } from "@/lib/app-state";
-import { parseSuggestionKey, suggestionKey, type SuggestionRef } from "@/lib/app-state";
+import { ArrowLeftRight, Plus, Table2, X } from "lucide-react";
+import type { NewPropertyDraft, OntologyApp } from "@/lib/app-state";
+import {
+  entityDraftBlocker,
+  parseSuggestionKey,
+  suggestionKey,
+  type SuggestionRef,
+} from "@/lib/app-state";
 import {
   entityDisplayStatus,
-  entityErrorReason,
   entityReview,
+  identifierKeyIn,
+  aliasesIn,
+  mappingsNeedingAlias,
+  identifiersOf,
   isColumnInScope,
   isIdentifierProperty,
   isReviewItemInScope,
@@ -26,7 +33,10 @@ import {
   propertyReview,
   propertyStatus,
   relationJoins,
+  relationMappingAcceptBlockers,
   relationLabel,
+  relationMappingCandidates,
+  relationMappingKey,
   relationReview,
   relationStatus,
   tableByName,
@@ -59,9 +69,23 @@ import {
 import { cn } from "@/lib/utils";
 import { canMapPropertyToColumn, tryConnectMapping } from "@/lib/mapping-rules";
 import { ColumnSearchList, parseMappingValue } from "@/components/detail/ItemEditorModal";
+import {
+  AliasCreateForm,
+  AliasNavigator,
+  AliasPickList,
+  BulkAliasBar,
+  aliasTone,
+} from "@/components/detail/AliasControls";
+import {
+  PropertyDraftRow,
+  PropertyEditRow,
+  PropertyInlineEditor,
+} from "@/components/detail/PropertyDraftRow";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import searchIcon from "@/assets/icons/magnifying-glass-2-16.svg";
+import rejectIcon from "@/assets/icons/controller-button-x-16.svg";
+import acceptIcon from "@/assets/icons/check-circle-2-16.svg";
 import chevronDownIcon from "@/assets/icons/chevron-down-16.svg";
 import { ENTITY_PANEL_DND_TYPE, TABLE_PANEL_DND_TYPE } from "@/components/detail/panel-dnd";
 import {
@@ -69,11 +93,15 @@ import {
   dropPropertiesOn,
   leftDropTarget,
   REVEAL_PROPERTIES_EVENT,
+  revealProperties,
   setPropertyDragSource,
   startPropertyDrag,
 } from "@/components/detail/property-move";
 import dotGridIcon from "@/assets/icons/dot-grid-2x3-16.svg";
-import identifierKeyIcon from "@/assets/icons/key-2-identifier-16.svg";
+import arrowRightIcon from "@/assets/icons/arrow-right-12.svg";
+import { ItemStatusIcon, itemStatusDotColor } from "@/components/ontology/ItemStatusIcon";
+import keyIcon from "@/assets/icons/key-identifier-12.svg";
+import pencilIcon from "@/assets/icons/pencil-16.svg";
 import relationPlusIcon from "@/assets/icons/relation-plus-20.svg";
 import relationPlusHoverIcon from "@/assets/icons/relation-plus-hover-20.svg";
 import {
@@ -163,11 +191,27 @@ const ladderTableH = (columns: number) =>
 // Curve colours: a suggested (still in review) link vs a settled one.
 const SUGGESTED = "#A855F7";
 const SETTLED = "#9EA3A2";
+// A Relation being created: its card's width (between its two Entity Types), and the room kept
+// above the line for it when it opens.
+const DRAFT_RELATION_W = 272;
+const DRAFT_CARD_ROOM = 300;
+const POTENTIAL = "#c9cccb";
 const ARROW_SUGGESTED = "editing-graph-arrow-suggested";
 const ARROW_SETTLED = "editing-graph-arrow-settled";
 const SPRING = { type: "spring" as const, visualDuration: 0.35, bounce: 0.1 };
 // A selected node / pill (Figma 542:27924 et al.): a near-black hairline on white.
-const SELECTED_NODE = "border-[#161919] bg-white";
+// Figma "Node-Editing mode" (472:110792): Default gray, Focused blue, Selected near-black — all
+// 1px — and Dim at 20%.
+const SELECTED_NODE = "border-[#080a09] bg-white";
+// A node with its list open reads as ONE card (like a workflow node's settings): the node is its
+// header — status in a boxed icon — the list its body, and an ID line its foot, all inside the
+// node's own frame (`frameOf`: black when selected, blue for the workspace's focus, else grey).
+const frameOf = (selected: boolean, accent = false) =>
+  selected ? "border-[#080a09]" : accent ? "border-[#3b82f6]" : "border-[#e3e5e4]";
+// Figma 466:86067: the head runs straight into its list, no divider between them.
+const ATTACHED_HEAD = "rounded-b-none border-b-0";
+const attachedBody = (frame: string) =>
+  cn("rounded-b-lg rounded-t-none border border-t-0 bg-white", CARD_SHADOW, frame);
 const CARD_SHADOW = "shadow-[0_1px_3px_0_rgba(0,0,0,0.1),0_1px_2px_-1px_rgba(0,0,0,0.1)]";
 
 type Pt = { x: number; y: number };
@@ -236,7 +280,7 @@ function useReviewScope(app: OntologyApp): ReviewScope {
     [entities, range, statusFilter],
   );
 }
-const DIMMED = "opacity-40";
+const DIMMED = "opacity-20";
 
 function usePropertyMove(app: OntologyApp): PropertyMove {
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
@@ -339,19 +383,12 @@ export function EditingGraphView({
   app,
   focusEntity,
   onEdit,
-  onCreateProperty,
-  onCreateRelation,
   onSplit,
 }: {
   app: OntologyApp;
   focusEntity: Entity;
   // Opens the detail panel's item in the Edit modal (owned by the Entity mode around this view).
   onEdit?: (key: string) => void;
-  // A property panel's + (the create modal is owned by the Entity mode around this view too).
-  onCreateProperty?: (entityId: string) => void;
-  // Asks for a new Relation (`from` → `to`) in the create modal; `done` hears whether one was
-  // made (Create) or not (Cancel).
-  onCreateRelation?: (from: string, to: string, done?: (created: boolean) => void) => void;
   // A Split made from the selection bar: the new Entity Type (for the workspace to point out).
   onSplit?: (newEntityId: string) => void;
 }) {
@@ -400,14 +437,17 @@ export function EditingGraphView({
   }, []);
   const [inspectedTable, setInspectedTable] = useState<string | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
+  // Whether the open Relation shows all its mappings, past the first `MAPPING_PREVIEW`.
+  const [allMappings, setAllMappings] = useState(false);
   // The Relation opened in place (see `openRelation`). Selecting a Relation opens it (selecting it
   // again closes it); selecting an Entity Type or Property, or closing the detail panel, closes
   // it — but inspecting one of its join tables keeps it open.
   const [openRelationId, setOpenRelationId] = useState<string | null>(null);
   // A related Entity Type's + (on its node's right edge, where its lines start): hovering it
-  // previews a placeholder Relation in the pill column (the others make room); clicking it asks
-  // for the new Relation (that Entity Type → the selected one); pressing and dragging draws the
-  // line, and releasing it on the selected Entity Type does the same (elsewhere, or Esc, cancels).
+  // previews a placeholder Relation in the pill column (the others make room); clicking it creates
+  // the new Relation (that Entity Type → the selected one) and opens it to be named and mapped;
+  // pressing and dragging draws the line, and releasing it on the selected Entity Type does the
+  // same (elsewhere, or Esc, cancels).
   const [relationPlusFor, setRelationPlusFor] = useState<string | null>(null);
   const [relationDraw, setRelationDraw] = useState<{
     fromEntityId: string;
@@ -422,6 +462,20 @@ export function EditingGraphView({
     const scale = scaleRef.current || 1;
     return { x: (clientX - (r?.left ?? 0)) / scale, y: (clientY - (r?.top ?? 0)) / scale };
   }, []);
+  // A new Relation (`fromId` → the selected Entity Type) is created right away, unnamed, and
+  // opened: the detail panel names it, the ladder shows the datasets it could be mapped through.
+  const createRelation = useCallback(
+    (fromId: string) => {
+      const id = app.startRelationDraft(fromId, focusEntity.id);
+      if (!id) return null;
+      setInspectedTable(null);
+      setFocusedTable(null);
+      setAllMappings(false);
+      setOpenRelationId(id);
+      return id;
+    },
+    [app, focusEntity.id],
+  );
   useEffect(() => {
     if (!relationDraw) return;
     const overCenter = (x: number, y: number) =>
@@ -441,7 +495,7 @@ export function EditingGraphView({
         event.clientY - relationDraw.startY,
       );
       if (moved < 4 || overCenter(event.clientX, event.clientY)) {
-        onCreateRelation?.(relationDraw.fromEntityId, focusEntity.id);
+        createRelation(relationDraw.fromEntityId);
       }
       clear();
     };
@@ -456,9 +510,7 @@ export function EditingGraphView({
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("keydown", onKey);
     };
-  }, [relationDraw, onCreateRelation, focusEntity.id, toWorld]);
-  // Whether the open Relation shows all its mappings, past the first `MAPPING_PREVIEW`.
-  const [allMappings, setAllMappings] = useState(false);
+  }, [relationDraw, createRelation, toWorld]);
 
   // Shift/⌘/ctrl held on the last press on the canvas: that click adds to (or removes from) the
   // multi-selection instead of inspecting (see `SelectionActions`).
@@ -492,20 +544,17 @@ export function EditingGraphView({
 
   // Dragging from the side panels (see `panel-dnd`). An Entity Type: the related Entity Types'
   // column lights up as the drop zone, and a dashed slot follows the pointer through it (the rows
-  // make room); dropping opens the create-Relation modal (it → the selected one), the slot held
-  // there meanwhile — Create puts the Entity Type exactly where it was dropped, Cancel leaves
-  // nothing. A Data Table: added to its column, listed first. Reset per Entity.
+  // make room); dropping creates a Relation (it → the selected one), opened to be named, with the
+  // Entity Type exactly where it was dropped. A Data Table: added to its column, listed first.
+  // Reset per Entity.
   const [dragKind, setDragKind] = useState<"entity" | "table" | null>(null);
   // Where the dragged Entity Type would land: its index among the shown related Entity Types.
   const [entitySlot, setEntitySlot] = useState<number | null>(null);
-  // A drop waiting on the create-Relation modal.
-  const [pendingDrop, setPendingDrop] = useState<{ entityId: string; index: number } | null>(null);
   // The related Entity Types' order this session, once a drop has placed one (else the data's).
   const [customOrder, setCustomOrder] = useState<string[] | null>(null);
   const [addedTableNames, setAddedTableNames] = useState<string[]>([]);
   useEffect(() => {
     setCustomOrder(null);
-    setPendingDrop(null);
     setAddedTableNames([]);
   }, [focusEntity.id]);
   useEffect(() => {
@@ -536,25 +585,17 @@ export function EditingGraphView({
       // Only the related Entity Types' column takes it.
       if (index === null) return;
       event.preventDefault();
-      if (!onCreateRelation) {
-        app.createPlaceholderRelation(focusEntity.id, entityId);
-        return;
-      }
+      if (!createRelation(entityId)) return;
       // Where it lands: before whichever shown Entity Type the slot was in front of.
       const shownIds = leftAll.map((cp) => cp.entity.id).filter((id) => id !== entityId);
       const allIds = counterparts.map((cp) => cp.entity.id);
-      setPendingDrop({ entityId, index });
-      onCreateRelation(entityId, focusEntity.id, (created) => {
-        setPendingDrop(null);
-        if (!created) return;
-        setCustomOrder((prev) => {
-          const order = (prev ?? allIds).filter((id) => id !== entityId);
-          const before = shownIds[index];
-          const last = shownIds[shownIds.length - 1];
-          const at = before ? order.indexOf(before) : last ? order.indexOf(last) + 1 : 0;
-          order.splice(at < 0 ? order.length : at, 0, entityId);
-          return order;
-        });
+      setCustomOrder((prev) => {
+        const order = (prev ?? allIds).filter((id) => id !== entityId);
+        const before = shownIds[index];
+        const last = shownIds[shownIds.length - 1];
+        const at = before ? order.indexOf(before) : last ? order.indexOf(last) + 1 : 0;
+        order.splice(at < 0 ? order.length : at, 0, entityId);
+        return order;
       });
     } else if (tableName) {
       event.preventDefault();
@@ -562,6 +603,21 @@ export function EditingGraphView({
       setFocusedTable(null);
     }
   };
+
+  // A Relation being created is always the open one (its ladder is where it gets mapped).
+  const draftRelationId = app.creation?.kind === "relation" ? app.creation.id : null;
+  useEffect(() => {
+    if (draftRelationId) setOpenRelationId(draftRelationId);
+  }, [draftRelationId]);
+  // An opened Relation's ladder hangs below it: make room for it above the detail panel. One
+  // being created also has its card above the line (`RelationDraftCard`), and no detail panel.
+  const { liftAnchorTo, placeAnchorAt } = canvas;
+  useEffect(() => {
+    if (!openRelationId) return;
+    if (openRelationId === draftRelationId) placeAnchorAt(DRAFT_CARD_ROOM);
+    else liftAnchorTo(0.14);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when a Relation opens
+  }, [openRelationId]);
 
   // --- Data -------------------------------------------------------------------------------
   const counterparts = useMemo<Counterpart[]>(() => {
@@ -627,23 +683,66 @@ export function EditingGraphView({
       const { relation } = hit;
       const nameOf = (id: string) => app.entities.find((e) => e.id === id)?.name || "Untitled";
       const leftIsFrom = relation.from === cp.entity.id;
-      // Each join is ONE table: both sides' columns come from it.
-      const mappings = relationJoins(relation, app.entities).map((join, i) => {
-        const from = {
-          table: join.table,
-          columns: join.fromColumns,
+      const fromEntity = app.entities.find((e) => e.id === relation.from);
+      const toEntity = app.entities.find((e) => e.id === relation.to);
+      // One rung per dataset, each ONE table both sides' columns come from: the saved mappings,
+      // then the datasets it could still be mapped through — both Identifiers mapped there
+      // (one click maps it), or only one (the other side's identifier column is picked first).
+      const rungOf = (
+        table: string,
+        fromColumns: string[],
+        toColumns: string[],
+        kind: LadderRung["kind"],
+        missing?: { from: Property[]; to: Property[] },
+        aliases?: { from?: string | undefined; to?: string | undefined },
+      ) => {
+        const from: MappingSide = {
+          table,
+          columns: fromColumns,
           entity: nameOf(relation.from),
+          entityId: relation.from,
+          ...(aliases?.from ? { alias: aliases.from } : {}),
+          ...(missing ? { missing: missing.from } : {}),
         };
-        const to = { table: join.table, columns: join.toColumns, entity: nameOf(relation.to) };
+        const to: MappingSide = {
+          table,
+          columns: toColumns,
+          entity: nameOf(relation.to),
+          entityId: relation.to,
+          ...(aliases?.to ? { alias: aliases.to } : {}),
+          ...(missing ? { missing: missing.to } : {}),
+        };
         const [left, right] = leftIsFrom ? [from, to] : [to, from];
-        return { key: `${join.table}:${i}`, left, right };
-      });
+        const key = relationMappingKey({ table, fromAlias: aliases?.from, toAlias: aliases?.to });
+        return { key: `${kind}:${key}`, left, right, kind };
+      };
+      const joins = relationJoins(relation, app.entities);
+      // One candidate per pair of occurrences (a dataset with aliases offers one per alias).
+      const candidates = relationMappingCandidates(fromEntity, toEntity).filter(
+        (c) => !joins.some((j) => relationMappingKey(j) === relationMappingKey(c)),
+      );
+      const mappings = [
+        ...joins.map((join) => ({
+          ...rungOf(join.table, join.fromColumns, join.toColumns, "saved", undefined, {
+            from: join.fromAlias,
+            to: join.toAlias,
+          }),
+          join,
+        })),
+        ...candidates.map((c) =>
+          rungOf(c.table, c.fromColumns, c.toColumns, "candidate", undefined, {
+            from: c.fromAlias,
+            to: c.toAlias,
+          }),
+        ),
+      ];
       return {
         relation,
         entityId: cp.entity.id,
         pillIndex: cp.relations.indexOf(hit),
         pillCount: cp.relations.length,
         suggested: relationReview(relation) === "suggested",
+        saved: joins.length,
         mappings,
         shown: allMappings ? mappings : mappings.slice(0, MAPPING_PREVIEW),
         hidden: allMappings ? 0 : Math.max(0, mappings.length - MAPPING_PREVIEW),
@@ -659,9 +758,8 @@ export function EditingGraphView({
   // so every entity → pill and pill → middle curve fans in without crossing another.
   const pillX = ENTITY_X + NODE_W + PILL_GAP;
 
-  // The drop slot among the shown related Entity Types: following the pointer while dragging, then
-  // held where it was dropped while the create modal is open.
-  const slotIndex = dragKind === "entity" ? entitySlot : (pendingDrop?.index ?? null);
+  // The drop slot among the shown related Entity Types, following the pointer while dragging.
+  const slotIndex = dragKind === "entity" ? entitySlot : null;
   const entityEntries = [
     ...leftAll.map((cp) => {
       const branch = open.has(`tables:${cp.entity.id}`)
@@ -710,10 +808,8 @@ export function EditingGraphView({
     const rungs = openRelation.shown.map((mapping) => {
       const rung = { ...mapping, top };
       top +=
-        Math.max(
-          ladderTableH(mapping.left.columns.length),
-          ladderTableH(mapping.right.columns.length),
-        ) + LADDER_RUNG_GAP;
+        Math.max(ladderTableH(sideRows(mapping.left)), ladderTableH(sideRows(mapping.right))) +
+        LADDER_RUNG_GAP;
       return rung;
     });
     const toggleable = openRelation.mappings.length > MAPPING_PREVIEW;
@@ -823,7 +919,13 @@ export function EditingGraphView({
   const leftView = leftItems;
   const rightView = rightItems;
 
-  const centerPropsOpen = open.has("props:center") && !focused && !ladderEnds;
+  // A new Entity Type being created here: named on its own node, its Properties added in the panel
+  // under it (always open), and created or dropped from the bar at the bottom.
+  const draftEntity =
+    app.creation?.kind === "entity" && app.creation.id === focusEntity.id ? focusEntity : null;
+  const centerPropsOpen = open.has("props:center") && !draftEntity && !focused && !ladderEnds;
+  // The middle node with a list open under it (its Properties, or a focused table's mappings).
+  const centerAttached = centerPropsOpen || !!focused;
 
   // The selected Entity Type's property panel: Filter / Sort / Search, the same rules as the
   // other Property lists (reset when the Entity Type changes).
@@ -890,7 +992,7 @@ export function EditingGraphView({
     <MappingStatusBadge
       status={tableMappingStatus(table.name, app.entities)}
       {...tableMappingCompleteness(table.name, app.entities)}
-      size={16}
+      size={24}
     />
   );
 
@@ -1083,7 +1185,7 @@ export function EditingGraphView({
                     key={`ladder-${openRelation.relation.id}`}
                     ends={ladderEnds}
                     rungs={ladder.rungs}
-                    empty={openRelation.mappings.length === 0}
+                    empty={ladder.rungs.length === 0}
                     suggested={openRelation.suggested}
                     dimmed={!reviewScope.relation(openRelation.relation)}
                   />
@@ -1116,58 +1218,64 @@ export function EditingGraphView({
 
             {/* The selected Entity Type. */}
             <Node x={CENTER_LEFT} y={-CENTER_H / 2}>
-              <div
-                data-canvas-card
-                role="button"
-                tabIndex={0}
-                data-graph-center
-                {...move.dropProps(focusEntity.id)}
-                onClick={() => inspect({ kind: "entity", id: focusEntity.id })}
-                className={cn(
-                  "flex items-center gap-2 rounded-lg border bg-white px-3 text-left transition-opacity",
-                  CARD_SHADOW,
-                  !reviewScope.entity(focusEntity) && DIMMED,
-                  drawOverCenter
-                    ? "border-[#00ded8] bg-[#ecf3f2]"
-                    : isSelected({ kind: "entity", id: focusEntity.id })
-                      ? SELECTED_NODE
-                      : "border-[#3b82f6]",
-                  move.dropTargetId === focusEntity.id && DROP_TARGET_CLASS,
-                )}
-                style={{ width: CENTER_W, height: CENTER_H }}
-              >
-                <span className="lod-type contents">
-                  <StatusBadge
-                    status={entityDisplayStatus(focusEntity)}
-                    size={16}
-                    confidence={focusEntity.confidence}
-                    errorReason={entityErrorReason(focusEntity)}
+              {draftEntity ? (
+                <EntityDraftCard app={app} entity={draftEntity} />
+              ) : (
+                <div
+                  data-canvas-card
+                  role="button"
+                  tabIndex={0}
+                  data-graph-center
+                  {...move.dropProps(focusEntity.id)}
+                  onClick={() => inspect({ kind: "entity", id: focusEntity.id })}
+                  className={cn(
+                    "flex items-center gap-1 rounded-lg border bg-white pl-3 pr-2 text-left transition-opacity",
+                    CARD_SHADOW,
+                    !reviewScope.entity(focusEntity) && DIMMED,
+                    drawOverCenter
+                      ? "border-[#00ded8] bg-[#ecf3f2]"
+                      : isSelected({ kind: "entity", id: focusEntity.id })
+                        ? SELECTED_NODE
+                        : "border-[#3b82f6]",
+                    centerAttached && ATTACHED_HEAD,
+                    move.dropTargetId === focusEntity.id && DROP_TARGET_CLASS,
+                  )}
+                  style={{ width: CENTER_W, height: CENTER_H }}
+                >
+                  <span className="lod-type flex shrink-0">
+                    <ItemStatusIcon status={entityDisplayStatus(focusEntity)} size={24} />
+                  </span>
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5 pl-1.5">
+                    <span
+                      className={cn(
+                        "lod-title truncate text-[16px] font-medium leading-none",
+                        focusEntity.name ? "text-[#080a09]" : "text-[#9ea3a2]",
+                      )}
+                    >
+                      {focusEntity.name || "New entity type"}
+                    </span>
+                    <span className="lod-detail truncate text-[12px] leading-4 text-[#6d7472]">
+                      {entityDetail(focusEntity)}
+                    </span>
+                  </span>
+                  {entityReview(focusEntity) === "suggested" && (
+                    <span className="lod-confidence contents">
+                      <EntityConfidenceChip entity={focusEntity} tone="muted" />
+                    </span>
+                  )}
+                  <ExpandChevron
+                    open={centerPropsOpen || !!focused}
+                    label={centerPropsOpen || focused ? "Hide properties" : "Show properties"}
+                    onClick={() =>
+                      focused ? focusTable(focused.table.name) : toggle("props:center")
+                    }
                   />
-                </span>
-                <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="lod-title truncate text-[16px] font-medium leading-6 text-[#080a09]">
-                    {focusEntity.name}
-                  </span>
-                  <span className="lod-detail truncate text-[12px] leading-4 text-[#6d7472]">
-                    {entityDetail(focusEntity)}
-                  </span>
-                </span>
-                {entityReview(focusEntity) === "suggested" && (
-                  <span className="lod-confidence contents">
-                    <EntityConfidenceChip entity={focusEntity} tone="muted" />
-                  </span>
-                )}
-                <ExpandChevron
-                  open={centerPropsOpen || !!focused}
-                  label={centerPropsOpen || focused ? "Hide properties" : "Show properties"}
-                  onClick={() =>
-                    focused ? focusTable(focused.table.name) : toggle("props:center")
-                  }
-                />
-              </div>
+                </div>
+              )}
               {centerPropsOpen && (
-                <div className="absolute left-0 top-full mt-1.5" style={{ width: CENTER_W }}>
+                <div className="absolute left-0 top-full" style={{ width: CENTER_W }}>
                   <PropertyPanel
+                    frame={frameOf(isSelected({ kind: "entity", id: focusEntity.id }), true)}
                     entityId={focusEntity.id}
                     properties={centerProperties}
                     filter={propFilter}
@@ -1176,7 +1284,10 @@ export function EditingGraphView({
                     onSortChange={(key) => setPropSort((prev) => nextSortState(prev, key))}
                     search={propSearch}
                     onSearchChange={setPropSearch}
-                    onCreate={onCreateProperty ? () => onCreateProperty(focusEntity.id) : undefined}
+                    onCreateProperty={(draft) => createPropertyIn(app, focusEntity.id, draft)}
+                    onUpdateProperty={(id, patch) => app.updateProperty(focusEntity.id, id, patch)}
+                    identifierName={identifierNames(focusEntity)}
+                    keyPartOf={(p) => keyPartOf(focusEntity, p)}
                     isSelected={(p) =>
                       isSelected({ kind: "property", entityId: focusEntity.id, propertyId: p.id })
                     }
@@ -1234,7 +1345,7 @@ export function EditingGraphView({
                 >
                   <Node x={entityXOf(entity.id)} y={item.y - NODE_H / 2}>
                     <div className="group/gnode relative">
-                      {onCreateRelation && !ladderEnds && (
+                      {!ladderEnds && (
                         <button
                           type="button"
                           aria-label={`Create a relation from ${entity.name} to ${focusEntity.name}`}
@@ -1257,7 +1368,7 @@ export function EditingGraphView({
                           onDoubleClick={(event) => event.stopPropagation()}
                           onClick={(event) => {
                             event.stopPropagation();
-                            if (event.detail === 0) onCreateRelation(entity.id, focusEntity.id);
+                            if (event.detail === 0) createRelation(entity.id);
                           }}
                           className={cn(
                             "group/relplus absolute left-full top-1/2 z-10 flex size-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full transition-opacity focus-visible:opacity-100",
@@ -1312,6 +1423,9 @@ export function EditingGraphView({
                             confidence={entity.confidence}
                           />
                         }
+                        attachedStatus={
+                          <ItemStatusIcon status={entityDisplayStatus(entity)} size={24} />
+                        }
                         name={entity.name}
                         detail={entityDetail(entity)}
                         dropFor={entity.id}
@@ -1322,6 +1436,7 @@ export function EditingGraphView({
                           ) : null
                         }
                         selected={isSelected({ kind: "entity", id: entity.id })}
+                        attached={item.branch === "props" && !isOpenEntity}
                         onClick={() => inspect({ kind: "entity", id: entity.id })}
                         // Double-click makes it the selected Entity Type (the middle of the graph).
                         onDoubleClick={() => app.openDetail("entity", entity.id)}
@@ -1344,45 +1459,57 @@ export function EditingGraphView({
                       <GhostRelationPill />
                     </Node>
                   )}
-                  {relations.map(({ relation }) => (
-                    <Node
-                      key={relation.id}
-                      x={ladderEnds && relation.id === openRelationId ? openPillX : pillX}
-                      y={
-                        (pillY.get(relation.id) ?? item.y) -
-                        (ladderEnds && relation.id === openRelationId ? OPEN_PILL_H : PILL_H) / 2
-                      }
-                    >
-                      <div
-                        className={cn(
-                          "transition-opacity duration-300",
-                          ladderEnds && relation.id !== openRelationId
-                            ? "pointer-events-none opacity-0"
-                            : "opacity-100",
-                        )}
+                  {relations.map(({ relation }) =>
+                    ladderEnds && relation.id === draftRelationId ? (
+                      // Being created: the pill opens up into its editor, above the line.
+                      <Node
+                        key={relation.id}
+                        x={openEntityX + NODE_W + (OPEN_LINK_GAP - DRAFT_RELATION_W) / 2}
+                        y={(pillY.get(relation.id) ?? item.y) + OPEN_PILL_H / 2}
                       >
-                        <RelationPill
-                          relation={relation}
-                          status={relationStatus(relation, app.entities)}
-                          selected={isSelected({ kind: "relation", id: relation.id })}
-                          dimmed={!reviewScope.relation(relation)}
-                          open={!!ladderEnds && relation.id === openRelationId}
-                          onClick={() =>
-                            openRelationId === relation.id
-                              ? closeDetail()
-                              : inspect({ kind: "relation", id: relation.id })
-                          }
-                        />
-                      </div>
-                    </Node>
-                  ))}
+                        <div className="absolute bottom-0 left-0">
+                          <RelationDraftCard app={app} relation={relation} />
+                        </div>
+                      </Node>
+                    ) : (
+                      <Node
+                        key={relation.id}
+                        x={ladderEnds && relation.id === openRelationId ? openPillX : pillX}
+                        y={
+                          (pillY.get(relation.id) ?? item.y) -
+                          (ladderEnds && relation.id === openRelationId ? OPEN_PILL_H : PILL_H) / 2
+                        }
+                      >
+                        <div
+                          className={cn(
+                            "transition-opacity duration-300",
+                            ladderEnds && relation.id !== openRelationId
+                              ? "pointer-events-none opacity-0"
+                              : "opacity-100",
+                          )}
+                        >
+                          <RelationPill
+                            relation={relation}
+                            status={relationStatus(relation, app.entities)}
+                            selected={isSelected({ kind: "relation", id: relation.id })}
+                            dimmed={!reviewScope.relation(relation)}
+                            open={!!ladderEnds && relation.id === openRelationId}
+                            onClick={() =>
+                              openRelationId === relation.id
+                                ? closeDetail()
+                                : inspect({ kind: "relation", id: relation.id })
+                            }
+                          />
+                        </div>
+                      </Node>
+                    ),
+                  )}
                   {branchTables.map((b) => {
                     const table = tableByName(b.name);
                     if (!table) return null;
                     return (
                       <Node key={b.name} x={bx} y={b.y - NODE_H / 2}>
                         <GraphNode
-                          large
                           status={tableStatus(table)}
                           name={table.name}
                           dimmed={!reviewScope.table(table.name)}
@@ -1394,13 +1521,13 @@ export function EditingGraphView({
                     );
                   })}
                   {item.branch === "props" && !isOpenEntity && (
-                    <Node x={ex} y={item.y + NODE_H / 2 + 6}>
+                    <Node x={ex} y={item.y + NODE_H / 2}>
                       <div style={{ width: NODE_W }}>
                         <EntityPropertyPanel
                           entity={entity}
-                          onCreate={
-                            onCreateProperty ? () => onCreateProperty(entity.id) : undefined
-                          }
+                          frame={frameOf(isSelected({ kind: "entity", id: entity.id }))}
+                          onCreateProperty={(draft) => createPropertyIn(app, entity.id, draft)}
+                          onUpdateProperty={(id, patch) => app.updateProperty(entity.id, id, patch)}
                           isSelected={(p) =>
                             isSelected({ kind: "property", entityId: entity.id, propertyId: p.id })
                           }
@@ -1424,7 +1551,77 @@ export function EditingGraphView({
                   status={relationStatus(openRelation.relation, app.entities)}
                   ends={ladderEnds}
                   rungs={ladder.rungs}
-                  empty={openRelation.mappings.length === 0}
+                  empty={ladder.rungs.length === 0}
+                  // No dataset maps both identifiers: nothing to map it through, so nothing shown.
+                  emptyLabel=""
+                  onMap={(rung) => {
+                    const join = openRelation.mappings.find((m) => m.key === rung.key);
+                    if (!join) return;
+                    const leftIsFrom = openRelation.relation.from === openRelation.entityId;
+                    const [from, to] = leftIsFrom
+                      ? [join.left, join.right]
+                      : [join.right, join.left];
+                    app.connectRelationMapping(openRelation.relation.id, {
+                      table: from.table,
+                      fromColumns: from.columns,
+                      toColumns: to.columns,
+                      ...(from.alias ? { fromAlias: from.alias } : {}),
+                      ...(to.alias ? { toAlias: to.alias } : {}),
+                      status: "mapped",
+                    });
+                  }}
+                  onDecide={(rung, accept) => {
+                    if (!rung.join) return;
+                    if (accept) app.acceptRelationMapping(openRelation.relation.id, rung.join);
+                    else app.disconnectRelationMapping(openRelation.relation.id, rung.join);
+                  }}
+                  blockersOf={(rung) =>
+                    rung.join
+                      ? relationMappingAcceptBlockers(
+                          openRelation.relation,
+                          rung.join,
+                          app.entities,
+                        )
+                      : []
+                  }
+                  onPickIdentifier={(rung, side, part, column) => {
+                    // The side picked for is the one whose key isn't (fully) mapped here yet.
+                    const relation = openRelation.relation;
+                    const leftIsFrom = relation.from === openRelation.entityId;
+                    const pickedIsFrom = (side === "left") === leftIsFrom;
+                    const entity = app.entities.find(
+                      (e) => e.id === (pickedIsFrom ? relation.from : relation.to),
+                    );
+                    if (!entity) return false;
+                    const table = rung.left.table;
+                    if (
+                      !tryConnectMapping(app, entity.id, part.id, {
+                        table,
+                        column,
+                        status: "mapped",
+                      })
+                    )
+                      return false;
+                    // Its whole key now mapped here: the Relation is mapped through it too.
+                    const columns = identifiersOf(entity).map((p) =>
+                      p.id === part.id ? column : p.mappings.find((m) => m.table === table)?.column,
+                    );
+                    if (columns.every((c): c is string => !!c)) {
+                      const other = side === "left" ? rung.right : rung.left;
+                      app.connectRelationMapping(relation.id, {
+                        table,
+                        fromColumns: pickedIsFrom ? columns : other.columns,
+                        toColumns: pickedIsFrom ? other.columns : columns,
+                        ...(other.alias
+                          ? pickedIsFrom
+                            ? { toAlias: other.alias }
+                            : { fromAlias: other.alias }
+                          : {}),
+                        status: "mapped",
+                      });
+                    }
+                    return true;
+                  }}
                   more={
                     ladder.toggleable
                       ? {
@@ -1437,7 +1634,13 @@ export function EditingGraphView({
                   columnType={(table, column) =>
                     tableByName(table)?.columns.find((c) => c.name === column)?.type ?? ""
                   }
-                  onOpenTable={inspectTable}
+                  // While it's being created, opening a table would leave the draft.
+                  onOpenTable={
+                    app.creation?.kind === "relation" &&
+                    app.creation.id === openRelation.relation.id
+                      ? () => {}
+                      : inspectTable
+                  }
                 />
               )}
             </AnimatePresence>
@@ -1493,8 +1696,8 @@ export function EditingGraphView({
                       name={item.table.name}
                       dimmed={!reviewScope.table(item.table.name)}
                       detail={plural(item.table.columns.length, "column", "columns")}
-                      large
                       selected={inspectedTable === item.table.name && detailItem?.kind === "table"}
+                      attached={isFocused}
                       onClick={() => inspectTable(item.table.name)}
                       onDoubleClick={() => focusTable(item.table.name)}
                       trailing={
@@ -1524,15 +1727,20 @@ export function EditingGraphView({
             {/* A focused Data Table: its Property → Column mappings, one straight row each,
               between the middle node and the table. */}
             {focused && (
-              <Node x={CENTER_LEFT} y={CENTER_H / 2 + 6}>
+              <Node x={CENTER_LEFT} y={CENTER_H / 2}>
                 <MappingPanels
                   key={focused.table.name}
                   app={app}
                   entity={focusEntity}
+                  frames={{
+                    left: frameOf(isSelected({ kind: "entity", id: focusEntity.id }), true),
+                    right: frameOf(
+                      inspectedTable === focused.table.name && detailItem?.kind === "table",
+                    ),
+                  }}
                   properties={focused.mapped}
                   table={focused.table}
                   width={TABLE_X + NODE_W - CENTER_LEFT}
-                  onCreate={onCreateProperty ? () => onCreateProperty(focusEntity.id) : undefined}
                   isSelected={(p) =>
                     isSelected({ kind: "property", entityId: focusEntity.id, propertyId: p.id })
                   }
@@ -1554,7 +1762,7 @@ export function EditingGraphView({
           )}
         </div>
 
-        {detailItem ? (
+        {draftEntity || draftRelationId ? null : detailItem ? (
           <DetailDock defaultCap={detailItem.kind === "table" ? 240 : null}>
             <CompletionNoticeSlot app={app} />
             <DetailPanel
@@ -1600,6 +1808,306 @@ export function EditingGraphView({
   );
 }
 
+/**
+ * A new Entity Type's node while it's being created: the node itself opens up into its editor —
+ * name and description in its header, its Properties listed under them in the order they're
+ * added (each still editable: name, Identifier key, type), Add property, and Cancel / Create
+ * across its foot. Enter moves on: name → description → a first Property.
+ */
+function EntityDraftCard({ app, entity }: { app: OntologyApp; entity: Entity }) {
+  const descriptionRef = useRef<HTMLInputElement>(null);
+  const [adding, setAdding] = useState(false);
+  const identifierName = identifierNames(entity);
+  const blocker = entityDraftBlocker(entity, app.entities);
+  // The foot's short version of `blocker` (the full sentence is Create's tooltip).
+  const hint = !blocker
+    ? "Ready to create"
+    : !entity.name.trim()
+      ? "Needs a name"
+      : identifierName
+        ? "Name already taken"
+        : blocker.startsWith("An entity type named")
+          ? "Name already taken"
+          : "Needs an identifier";
+  const field =
+    "h-8 w-full rounded-[4px] border border-[#e3e5e4] bg-white px-2.5 outline-none transition-colors placeholder:text-[#9ea3a2] hover:border-[#c9cccb] focus:border-[#161919]";
+  return (
+    <div
+      data-canvas-card
+      data-graph-center
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+      className={cn(
+        "flex flex-col overflow-hidden rounded-lg border border-[#3b82f6] bg-white shadow-[0_0_0_3px_rgba(59,130,246,0.2)]",
+      )}
+      style={{ width: CENTER_W }}
+    >
+      <div className="flex items-start gap-3 p-3">
+        <span aria-hidden className="mt-0.5 size-7 shrink-0 rounded-full bg-[#e3e5e4]" />
+        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+          <input
+            autoFocus
+            value={entity.name}
+            // Typed straight into the Entity Type (the draft is one undo step either way).
+            onChange={(event) => app.updateEntity(entity.id, { name: event.target.value })}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                descriptionRef.current?.focus();
+              }
+            }}
+            placeholder="Entity type name"
+            aria-label="Entity type name"
+            className={cn(field, "text-[14px] font-medium leading-5 text-[#080a09]")}
+          />
+          <input
+            ref={descriptionRef}
+            value={entity.description}
+            onChange={(event) => app.updateEntity(entity.id, { description: event.target.value })}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                setAdding(true);
+              }
+            }}
+            placeholder="Description (optional)"
+            aria-label="Entity type description"
+            className={cn(field, "text-[12px] leading-4 text-[#3c3c3c]")}
+          />
+        </div>
+      </div>
+      <div className="border-t border-[#e3e5e4] px-3 pb-3 pt-2">
+        <p className="pb-1.5 text-[12px] leading-4 text-[#6d7472]">
+          Properties · {entity.properties.length}
+        </p>
+        <div
+          data-canvas-scroll
+          className="flex flex-col gap-1.5 overflow-y-auto overscroll-contain"
+          style={{ maxHeight: PANEL_LIST_MAX }}
+        >
+          {entity.properties.map((property) => (
+            <PropertyEditRow
+              key={property.id}
+              property={property}
+              part={keyPartOf(entity, property)}
+              currentIdentifier={identifierName}
+              onChange={(patch) => app.updateProperty(entity.id, property.id, patch)}
+              onRemove={() => app.deleteProperty(entity.id, property.id)}
+            />
+          ))}
+          {adding ? (
+            <PropertyDraftRow
+              onSubmit={(draft) => app.createProperties(entity.id, [draft])}
+              onClose={() => setAdding(false)}
+              currentIdentifier={identifierName}
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => setAdding(true)}
+              className="flex h-[34px] shrink-0 items-center justify-center gap-1.5 rounded-[4px] border border-dashed border-[#c9cccb] text-[14px] font-medium leading-5 text-[#3c3c3c] transition-colors hover:border-[#161919] hover:bg-[#f4f4f4] hover:text-[#161919]"
+            >
+              <Plus className="size-4" strokeWidth={1.75} />
+              Add property
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="flex items-center gap-2 border-t border-[#e3e5e4] bg-[#fafafa] px-3 py-2">
+        <span
+          className="min-w-0 flex-1 truncate text-[12px] leading-4 text-[#6d7472]"
+          title={blocker}
+        >
+          {hint}
+        </span>
+        <button
+          type="button"
+          onClick={() => app.cancelCreation()}
+          className="flex h-7 shrink-0 items-center rounded-[4px] border border-[#e3e5e4] bg-white px-2.5 text-[13px] font-medium leading-5 text-[#161919] transition-colors hover:bg-[#f4f4f4]"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          disabled={!!blocker}
+          title={blocker}
+          onClick={() => {
+            const name = entity.name.trim();
+            if (name !== entity.name) app.updateEntity(entity.id, { name });
+            app.finishCreation();
+          }}
+          className="flex h-7 shrink-0 items-center rounded-[4px] bg-[#161919] px-2.5 text-[13px] font-medium leading-5 text-[#fafafa] transition-colors hover:bg-[#4e5553] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-[#161919]"
+        >
+          Create
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A Relation being created: its pill opens up into its editor, upward from the line between its
+ * two Entity Types (the ladder of datasets hangs below it) — name and description, its direction
+ * (swappable), the datasets it's mapped through so far (picked in the ladder: + Map, or a side's
+ * identifier column), and Cancel / Create. Name and description apply on blur and on Create; Esc
+ * cancels.
+ */
+function RelationDraftCard({ app, relation }: { app: OntologyApp; relation: Relation }) {
+  const [name, setName] = useState(relation.name);
+  const [description, setDescription] = useState(relation.description);
+  const descriptionRef = useRef<HTMLInputElement>(null);
+  const apply = () => {
+    if (name.trim() !== relation.name) app.renameRelation(relation.id, name);
+    if (description.trim() !== relation.description) {
+      app.updateRelation(relation.id, { description: description.trim() });
+    }
+  };
+  const nameOf = (id: string) => app.entities.find((e) => e.id === id)?.name || "Untitled";
+  const subject = nameOf(relation.from);
+  const object = nameOf(relation.to);
+  const joins = relationJoins(relation, app.entities);
+  const blocker = name.trim() ? undefined : "Name the relation first.";
+  const create = () => {
+    if (blocker) return;
+    apply();
+    app.finishCreation();
+  };
+  const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>, next: () => void) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      next();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      app.cancelCreation();
+    }
+  };
+  const field =
+    "h-8 w-full rounded-[4px] border border-[#e3e5e4] bg-white px-2.5 outline-none transition-colors placeholder:text-[#9ea3a2] hover:border-[#c9cccb] focus:border-[#161919]";
+  return (
+    <div
+      data-canvas-card
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+      className="flex flex-col overflow-hidden rounded-lg border border-[#3b82f6] bg-white shadow-[0_0_0_3px_rgba(59,130,246,0.2)]"
+      style={{ width: DRAFT_RELATION_W }}
+    >
+      <div className="flex flex-col gap-1.5 p-3">
+        <input
+          autoFocus
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          onBlur={apply}
+          onKeyDown={(event) => onKeyDown(event, () => descriptionRef.current?.focus())}
+          placeholder="Relation name"
+          aria-label="Relation name"
+          className={cn(field, "text-[14px] font-medium leading-5 text-[#080a09]")}
+        />
+        <input
+          ref={descriptionRef}
+          value={description}
+          onChange={(event) => setDescription(event.target.value)}
+          onBlur={apply}
+          onKeyDown={(event) => onKeyDown(event, create)}
+          placeholder="Description (optional)"
+          aria-label="Relation description"
+          className={cn(field, "text-[12px] leading-4 text-[#3c3c3c]")}
+        />
+        <div className="flex min-w-0 items-center gap-1.5 pt-0.5 text-[12px] leading-4 text-[#6d7472]">
+          <span className="min-w-0 truncate font-medium text-[#161919]">{subject}</span>
+          <FigmaIcon src={arrowRightIcon} size={12} />
+          <span className="min-w-0 truncate">{name.trim() || "…"}</span>
+          <FigmaIcon src={arrowRightIcon} size={12} />
+          <span className="min-w-0 truncate font-medium text-[#161919]">{object}</span>
+          <button
+            type="button"
+            aria-label="Swap subject and object"
+            title="Swap subject and object"
+            onClick={() =>
+              app.updateRelation(relation.id, {
+                from: relation.to,
+                to: relation.from,
+                ...(relation.mappings
+                  ? {
+                      mappings: relation.mappings.map((m) => ({
+                        ...m,
+                        fromColumns: m.toColumns,
+                        toColumns: m.fromColumns,
+                      })),
+                    }
+                  : {}),
+              })
+            }
+            className="ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px] border border-[#e3e5e4] bg-white text-[#6d7472] transition-colors hover:border-[#c9cccb] hover:bg-[#f4f4f4] hover:text-[#161919]"
+          >
+            <ArrowLeftRight className="size-3.5" strokeWidth={1.75} />
+          </button>
+        </div>
+      </div>
+      <div className="border-t border-[#e3e5e4] px-3 pb-3 pt-2">
+        <p className="pb-1.5 text-[12px] leading-4 text-[#6d7472]">Mapping · {joins.length}</p>
+        {joins.length === 0 ? (
+          <p className="text-[12px] leading-4 text-[#9ea3a2]">
+            Pick a dataset in the ladder below — or create it unmapped for now.
+          </p>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {joins.map((join) => {
+              const keys = `${subject}${join.fromAlias ? `@${join.fromAlias}` : ""}[${join.fromColumns.join(", ")}] → ${object}${join.toAlias ? `@${join.toAlias}` : ""}[${join.toColumns.join(", ")}]`;
+              return (
+                <div
+                  key={relationMappingKey(join)}
+                  title={keys}
+                  className="group/draftmap flex h-7 min-w-0 items-center gap-1.5 rounded-[4px] border border-[#e3e5e4] pl-2 pr-1 text-[12px] leading-4"
+                >
+                  <span className="shrink-0 font-medium text-[#161919]">{join.table}</span>
+                  <span
+                    className={cn(
+                      "min-w-0 flex-1 truncate",
+                      join.broken ? "text-[#dc2626]" : "text-[#6d7472]",
+                    )}
+                  >
+                    {keys}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label={`Remove the ${join.table} mapping`}
+                    title="Remove"
+                    onClick={() => app.disconnectRelationMapping(relation.id, join)}
+                    className="flex size-5 shrink-0 items-center justify-center rounded-[4px] text-[#6d7472] opacity-0 transition-opacity hover:bg-[#f4f4f4] hover:text-[#161919] focus-visible:opacity-100 group-hover/draftmap:opacity-100"
+                  >
+                    <X className="size-3.5" strokeWidth={2} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      <div className="flex items-center gap-2 border-t border-[#e3e5e4] bg-[#fafafa] px-3 py-2">
+        <span className="min-w-0 flex-1 truncate text-[12px] leading-4 text-[#6d7472]">
+          {blocker ? "Needs a name" : joins.length ? "Ready to create" : "No mapping yet"}
+        </span>
+        <button
+          type="button"
+          onClick={() => app.cancelCreation()}
+          className="flex h-7 shrink-0 items-center rounded-[4px] border border-[#e3e5e4] bg-white px-2.5 text-[13px] font-medium leading-5 text-[#161919] transition-colors hover:bg-[#f4f4f4]"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          disabled={!!blocker}
+          title={blocker}
+          onClick={create}
+          className="flex h-7 shrink-0 items-center rounded-[4px] bg-[#161919] px-2.5 text-[13px] font-medium leading-5 text-[#fafafa] transition-colors hover:bg-[#4e5553] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-[#161919]"
+        >
+          Create
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** A node positioned in world coordinates; moves smoothly when the layout changes. */
 function Node({ x, y, children }: { x: number; y: number; children: ReactNode }) {
   return (
@@ -1623,9 +2131,12 @@ function Curve({
   delay = 0,
   arrow,
   dimmed = false,
+  potential = false,
 }: {
   // Outside the Confidence range / status filter (see `ReviewScope`).
   dimmed?: boolean;
+  // A link that isn't made yet, only possible (an open Relation's candidate dataset).
+  potential?: boolean;
   d: string;
   // Where a newly shown curve grows from (and shrinks back to); otherwise it appears in place.
   from?: string | undefined;
@@ -1637,7 +2148,8 @@ function Curve({
   // A direction arrowhead at the curve's start or end.
   arrow?: "start" | "end" | undefined;
 }) {
-  const marker = `url(#${suggested ? ARROW_SUGGESTED : ARROW_SETTLED})`;
+  // Suggested and settled links share the solid gray line (the status dot tells them apart).
+  const marker = `url(#${ARROW_SETTLED})`;
   return (
     <motion.path
       markerStart={arrow === "start" ? marker : undefined}
@@ -1648,9 +2160,9 @@ function Curve({
       exit={from ? { d: from, transition: SPRING } : {}}
       transition={{ ...SPRING, delay }}
       fill="none"
-      stroke={branch ? BRANCH_STROKE : suggested ? SUGGESTED : SETTLED}
-      strokeWidth={branch ? 1 : bold ? 2 : 1.5}
-      strokeDasharray={branch ? "3 3" : suggested ? "4 4" : undefined}
+      stroke={potential ? POTENTIAL : branch ? BRANCH_STROKE : SETTLED}
+      strokeWidth={branch || potential ? 1 : bold ? 2 : 1.5}
+      strokeDasharray={potential ? "2 4" : branch ? "3 3" : undefined}
     />
   );
 }
@@ -1659,6 +2171,7 @@ function Curve({
  * trailing control. */
 function GraphNode({
   status,
+  attachedStatus,
   name,
   detail,
   chip,
@@ -1667,17 +2180,19 @@ function GraphNode({
   onClick,
   onDoubleClick,
   trailing,
-  large = false,
   dropFor,
   dimmed = false,
+  attached = false,
 }: {
+  // Its list is open under it: the node is that card's header (see `frameOf`).
+  attached?: boolean;
   // Outside the Confidence range / status filter (see `ReviewScope`).
   dimmed?: boolean;
   // An Entity Type node's id: Properties dragged from another Entity Type can be dropped on it.
   dropFor?: string | undefined;
-  // A Data Table node's name is set a step larger (16/24) than an Entity Type's (14/20).
-  large?: boolean;
   status: ReactNode;
+  // The status as the open card's head shows it (Figma 466:86067), when it differs.
+  attachedStatus?: ReactNode;
   name: string;
   detail: string;
   chip?: ReactNode;
@@ -1697,26 +2212,25 @@ function GraphNode({
       onDoubleClick={onDoubleClick}
       {...(move && dropFor ? move.dropProps(dropFor) : {})}
       className={cn(
-        "flex items-center gap-2 rounded-lg border bg-white px-3 text-left transition-[box-shadow,opacity]",
+        // Figma 466:93516 / 466:93646: 56px, pl-12 pr-8, a 24px status, name over its detail.
+        "flex items-center gap-1 rounded-lg border bg-white pl-3 pr-2 text-left transition-[box-shadow,opacity]",
         CARD_SHADOW,
         dimmed && DIMMED,
         selected
           ? SELECTED_NODE
           : highlighted
-            ? "border-[1.5px] border-[#3b82f6] bg-[#eff6ff]"
-            : "border-[#e3e5e4] hover:border-[#161919]",
+            ? "border-[#3b82f6]"
+            : attached
+              ? "border-[#e3e5e4]"
+              : "border-[#e3e5e4] hover:border-[#3b82f6]",
+        attached && ATTACHED_HEAD,
         !!dropFor && move?.dropTargetId === dropFor && DROP_TARGET_CLASS,
       )}
       style={{ width: NODE_W, height: NODE_H }}
     >
-      <span className="lod-type contents">{status}</span>
-      <span className="flex min-w-0 flex-1 flex-col">
-        <span
-          className={cn(
-            "lod-name truncate font-medium text-[#080a09]",
-            large ? "text-[16px] leading-6" : "text-[14px] leading-5",
-          )}
-        >
+      <span className="lod-type flex shrink-0">{attachedStatus ?? status}</span>
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5 pl-1.5">
+        <span className="lod-name truncate text-[16px] font-medium leading-none text-[#080a09]">
           {name}
         </span>
         <span className="lod-detail truncate text-[12px] leading-4 text-[#6d7472]">{detail}</span>
@@ -1727,8 +2241,30 @@ function GraphNode({
   );
 }
 
-type MappingSide = { table: string; columns: string[]; entity: string };
-type LadderRung = { key: string; left: MappingSide; right: MappingSide; top: number };
+type MappingSide = {
+  table: string;
+  // The occurrence, where the dataset holds several of that Entity Type.
+  alias?: string | undefined;
+  // The key columns mapped on this side (in key part order) …
+  columns: string[];
+  entity: string;
+  entityId?: string;
+  // … and, on a "half" rung, the key parts still to be mapped here.
+  missing?: Property[];
+};
+// A ladder table's rows: its key columns, plus a row per key part still to pick.
+const sideRows = (side: MappingSide) => side.columns.length + (side.missing?.length ?? 0);
+// "saved": the Relation is mapped through it; "candidate": both Identifiers are mapped there, so it
+// could be; "half": only one is, the other side's identifier column is still to be picked.
+type LadderRung = {
+  key: string;
+  left: MappingSide;
+  right: MappingSide;
+  top: number;
+  kind: "saved" | "candidate" | "half";
+  // A saved rung's Relation mapping (its own review status).
+  join?: ReturnType<typeof relationJoins>[number];
+};
 type LadderEnds = { left: Pt; right: Pt };
 
 // Where a ladder table's column rows sit, from its end's (Entity Type node's) centre.
@@ -1763,13 +2299,20 @@ function LadderLinks({
   const rightTrunk = trunk(ends.right);
   return (
     <motion.g initial={{ opacity: 1 }} exit={{ opacity: 0, transition: { duration: 0.25 } }}>
-      <Curve d={leftTrunk.d} from={leftTrunk.from} suggested={suggested} dimmed={dimmed} />
       {!empty && (
-        <Curve d={rightTrunk.d} from={rightTrunk.from} suggested={suggested} dimmed={dimmed} />
+        <>
+          <Curve d={leftTrunk.d} from={leftTrunk.from} suggested={suggested} dimmed={dimmed} />
+          <Curve d={rightTrunk.d} from={rightTrunk.from} suggested={suggested} dimmed={dimmed} />
+        </>
       )}
       {rungs.map((rung, i) =>
         Array.from(
-          { length: Math.min(rung.left.columns.length, rung.right.columns.length) },
+          {
+            length:
+              rung.kind === "half"
+                ? 0
+                : Math.min(rung.left.columns.length, rung.right.columns.length),
+          },
           (_, k) => {
             const a = { x: ends.left.x + NODE_W, y: ladderRowY(ends.left, rung, k) };
             const b = { x: ends.right.x + LADDER_INSET, y: ladderRowY(ends.right, rung, k) };
@@ -1779,6 +2322,7 @@ function LadderLinks({
                   d={curve(a, b)}
                   from={curve(a, a)}
                   suggested={suggested}
+                  potential={rung.kind !== "saved"}
                   dimmed={dimmed}
                   delay={0.18 + i * 0.06}
                 />
@@ -1792,10 +2336,12 @@ function LadderLinks({
 }
 
 /**
- * The open Relation's source tables: for each join, the table under the related Entity Type
+ * The open Relation's source tables: for each dataset, the table under the related Entity Type
  * (left) and the one under the middle node (right), each holding its own key column(s) — so a
  * column always reads as part of its table. They drop out of their Entity Type and fold back
- * into it on close.
+ * into it on close. Datasets it isn't mapped through yet are drawn faint: where both Identifiers
+ * are mapped, Map (between the two) maps it; where only one is, the other side picks its
+ * identifier column in that table first.
  */
 function LadderTables({
   app,
@@ -1803,9 +2349,14 @@ function LadderTables({
   ends,
   rungs,
   empty,
+  emptyLabel,
   more,
   columnType,
   onOpenTable,
+  onMap,
+  onDecide,
+  blockersOf,
+  onPickIdentifier,
 }: {
   app: OntologyApp;
   // The open Relation's review status (its dot on each column row).
@@ -1813,19 +2364,32 @@ function LadderTables({
   ends: LadderEnds;
   rungs: LadderRung[];
   empty: boolean;
+  emptyLabel: string;
   more: { top: number; label: string; onToggle: () => void } | null;
   columnType: (table: string, column: string) => string;
   onOpenTable: (table: string) => void;
+  onMap: (rung: LadderRung) => void;
+  // A suggested mapping's Accept / Reject on its line, and why Accept is off (empty when it isn't).
+  onDecide: (rung: LadderRung, accept: boolean) => void;
+  blockersOf: (rung: LadderRung) => string[];
+  // Maps that side's key part `part` to `column` in the rung's table (and, once its whole key is
+  // mapped there, the Relation through it); false when the column's type doesn't fit.
+  onPickIdentifier: (
+    rung: LadderRung,
+    side: "left" | "right",
+    part: Property,
+    column: string,
+  ) => boolean;
 }) {
   return (
     <>
       {rungs.map((rung, i) =>
         (
           [
-            [ends.left, rung.left],
-            [ends.right, rung.right],
+            [ends.left, rung.left, "left"],
+            [ends.right, rung.right, "right"],
           ] as const
-        ).map(([end, side], s) => (
+        ).map(([end, side, sideName], s) => (
           <Drop
             key={`${rung.key}-${s}`}
             end={end}
@@ -1833,24 +2397,77 @@ function LadderTables({
             y={end.y + rung.top}
             delay={0.06 + i * 0.06 + s * 0.04}
           >
-            <LadderTable
-              app={app}
-              status={status}
-              side={side}
-              columnType={columnType}
-              onOpen={() => onOpenTable(side.table)}
-            />
+            {rung.kind === "half" && (side.missing?.length || side.columns.length === 0) ? (
+              <MissingIdentifierTable
+                app={app}
+                side={side}
+                onPick={(part, column) => onPickIdentifier(rung, sideName, part, column)}
+              />
+            ) : (
+              <LadderTable
+                app={app}
+                status={status}
+                side={side}
+                potential={rung.kind !== "saved"}
+                columnType={columnType}
+                onOpen={() => onOpenTable(side.table)}
+              />
+            )}
           </Drop>
         )),
       )}
-      {empty && (
+      {rungs
+        .filter((rung) => rung.kind === "candidate")
+        .map((rung) => (
+          <Drop
+            key={`${rung.key}-map`}
+            end={ends.left}
+            x={(ends.left.x + NODE_W + ends.right.x + LADDER_INSET) / 2}
+            y={ladderRowY(ends.left, rung, 0)}
+            delay={0.24}
+          >
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onMap(rung);
+              }}
+              aria-label={`Map the relation through ${rung.left.table}`}
+              title={`Map the relation through ${rung.left.table}`}
+              className="flex h-6 -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded-full border border-[#161919] bg-white pl-1.5 pr-2.5 text-[12px] font-medium leading-4 text-[#161919] shadow-[0_1px_2px_0_rgba(0,0,0,0.08)] transition-colors hover:bg-[#f4f4f4]"
+            >
+              <Plus className="size-3.5" strokeWidth={2} />
+              Map
+            </button>
+          </Drop>
+        ))}
+      {rungs
+        .filter(
+          (rung) => rung.kind === "saved" && rung.join?.status !== "mapped" && !rung.join?.broken,
+        )
+        .map((rung) => (
+          <Drop
+            key={`${rung.key}-decide`}
+            end={ends.left}
+            x={(ends.left.x + NODE_W + ends.right.x + LADDER_INSET) / 2}
+            y={ladderRowY(ends.left, rung, 0)}
+            delay={0.24}
+          >
+            <SuggestedMappingDecision
+              table={rung.left.table}
+              blockers={blockersOf(rung)}
+              onDecide={(accept) => onDecide(rung, accept)}
+            />
+          </Drop>
+        ))}
+      {empty && emptyLabel && (
         <Drop
           end={ends.left}
           x={ends.left.x + LADDER_INSET}
           y={ends.left.y + NODE_H / 2 + LADDER_GAP}
         >
           <span className="whitespace-nowrap text-[11.5px] leading-6 text-[#6d7472]">
-            No source mapping yet
+            {emptyLabel}
           </span>
         </Drop>
       )}
@@ -1869,6 +2486,200 @@ function LadderTables({
         </Drop>
       )}
     </>
+  );
+}
+
+/** On a suggested Relation mapping's line: Reject / Accept. Accept stays off — with the reason on
+ * its hover — until both Entity Types are accepted and their Identifiers mapped in that dataset;
+ * nothing is accepted on its behalf. */
+function SuggestedMappingDecision({
+  table,
+  blockers,
+  onDecide,
+}: {
+  table: string;
+  blockers: string[];
+  onDecide: (accept: boolean) => void;
+}) {
+  const blocked = blockers.length > 0;
+  const button =
+    "flex size-6 items-center justify-center rounded-full transition-colors hover:bg-[#f4f4f4]";
+  return (
+    <div
+      onPointerDown={(event) => event.stopPropagation()}
+      className="flex h-7 -translate-x-1/2 -translate-y-1/2 items-center gap-0.5 rounded-full border border-[#c9cccb] bg-white px-0.5 shadow-[0_1px_2px_0_rgba(0,0,0,0.08)]"
+    >
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label={`Reject the ${table} mapping`}
+            onClick={(event) => {
+              event.stopPropagation();
+              onDecide(false);
+            }}
+            className={button}
+          >
+            <FigmaIcon src={rejectIcon} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>Reject</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label={`Accept the ${table} mapping`}
+            aria-disabled={blocked}
+            onClick={(event) => {
+              event.stopPropagation();
+              if (!blocked) onDecide(true);
+            }}
+            className={cn(button, blocked && "cursor-not-allowed opacity-40 hover:bg-transparent")}
+          >
+            <FigmaIcon src={acceptIcon} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-[280px]">
+          {blocked ? (
+            <span className="flex flex-col gap-1">
+              {blockers.map((blocker) => (
+                <span key={blocker}>{blocker}</span>
+              ))}
+            </span>
+          ) : (
+            "Accept"
+          )}
+        </TooltipContent>
+      </Tooltip>
+    </div>
+  );
+}
+
+/** A dataset only the other side's whole key is mapped in: this side picks the column for each
+ * of its key parts still missing there (its Identifier gets that mapping; once its whole key is
+ * mapped, the Relation is mapped through it). */
+function MissingIdentifierTable({
+  app,
+  side,
+  onPick,
+}: {
+  app: OntologyApp;
+  side: MappingSide;
+  onPick: (part: Property, column: string) => boolean;
+}) {
+  const missing = side.missing ?? [];
+  return (
+    <div
+      data-canvas-card
+      className="rounded-lg border border-dashed border-[#c9cccb] bg-white/70 px-4 pb-[5px] pt-[9px]"
+      style={{ width: LADDER_TABLE_W }}
+    >
+      <div className="flex h-6 min-w-0 items-center gap-2 opacity-60">
+        <MappingStatusBadge
+          status={tableMappingStatus(side.table, app.entities)}
+          {...tableMappingCompleteness(side.table, app.entities)}
+          size={16}
+        />
+        <span className="truncate text-[16px] font-medium leading-6 text-[#080a09]">
+          {side.table}
+        </span>
+      </div>
+      {side.columns.map((column) => (
+        <div key={column} className="flex h-6 min-w-0 items-center gap-2 opacity-60">
+          <span className="flex size-4 shrink-0 items-center justify-center">
+            <span className="size-1.5 rounded-full bg-[#c9cccb]" />
+          </span>
+          <span className="min-w-0 flex-1 truncate text-[14px] leading-6 text-[#080a09]">
+            {column}
+          </span>
+        </div>
+      ))}
+      {missing.length === 0 && side.columns.length === 0 ? (
+        <p className="truncate text-[13px] leading-6 text-[#6d7472]">
+          {side.entity} has no identifier yet
+        </p>
+      ) : (
+        missing.map((part) => (
+          <KeyPartPicker
+            key={part.id}
+            app={app}
+            side={side}
+            part={part}
+            composite={missing.length + side.columns.length > 1}
+            onPick={(column) => onPick(part, column)}
+          />
+        ))
+      )}
+    </div>
+  );
+}
+
+/** "Pick X's identifier column": the column search for one key part, in one dataset. */
+function KeyPartPicker({
+  app,
+  side,
+  part,
+  composite,
+  onPick,
+}: {
+  app: OntologyApp;
+  side: MappingSide;
+  part: Property;
+  // Part of a composite identifier: the part is named.
+  composite: boolean;
+  onPick: (column: string) => boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [rejected, setRejected] = useState<string | null>(null);
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setRejected(null);
+      }}
+    >
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+          title={`${side.entity}'s ${part.name} isn't mapped in ${side.table} yet`}
+          className="flex h-6 w-full min-w-0 items-center gap-1.5 rounded-[4px] text-left text-[13px] leading-6 text-[#3b82f6] hover:underline"
+        >
+          <Plus className="size-3.5 shrink-0" strokeWidth={2} />
+          <span className="truncate">
+            {composite ? `Pick ${part.name}'s column` : `Pick ${side.entity}'s identifier column`}
+          </span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        onPointerDown={(event) => event.stopPropagation()}
+        className="w-[340px] rounded-[10px] border-[#e3e5e4] bg-white p-0 shadow-[0_8px_24px_-6px_rgba(0,0,0,0.16)]"
+      >
+        <p className="border-b border-[#e3e5e4] px-3 py-2 text-[12px] leading-4 text-[#6d7472]">
+          Which column in <span className="font-medium text-[#161919]">{side.table}</span> holds{" "}
+          {side.entity}'s {part.name}?
+        </p>
+        <ColumnSearchList
+          app={app}
+          onlyTable={side.table}
+          onPick={(value) => {
+            const mapping = parseMappingValue(value);
+            if (!mapping) return;
+            if (onPick(mapping.column)) setOpen(false);
+            else setRejected(mapping.column);
+          }}
+        />
+        {rejected && (
+          <p className="border-t border-[#e3e5e4] px-3 py-2 text-[12px] leading-4 text-[#9c461e]">
+            {rejected}'s type doesn't fit {part.name} ({part.type}).
+          </p>
+        )}
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -1907,12 +2718,15 @@ function LadderTable({
   app,
   side,
   status,
+  potential = false,
   columnType,
   onOpen,
 }: {
   app: OntologyApp;
   side: MappingSide;
   status: ReturnType<typeof relationStatus>;
+  // A dataset it could be mapped through, not one it is: faint, dashed, with no status dot.
+  potential?: boolean;
   columnType: (table: string, column: string) => string;
   onOpen: () => void;
 }) {
@@ -1921,8 +2735,10 @@ function LadderTable({
       data-canvas-card
       // 64px tall with its 1px border: 9 + 24 (table) + 24 per column + 5.
       className={cn(
-        "rounded-lg border border-[#e3e5e4] bg-white px-4 pb-[5px] pt-[9px]",
-        CARD_SHADOW,
+        "rounded-lg border px-4 pb-[5px] pt-[9px]",
+        potential
+          ? "border-dashed border-[#c9cccb] bg-white/70 [&>*]:opacity-60"
+          : cn("border-[#e3e5e4] bg-white", CARD_SHADOW),
       )}
       style={{ width: LADDER_TABLE_W }}
     >
@@ -1942,13 +2758,16 @@ function LadderTable({
         <span className="truncate text-[16px] font-medium leading-6 text-[#080a09] hover:underline">
           {side.table}
         </span>
+        {side.alias && (
+          <span className="shrink-0 text-[13px] leading-6 text-[#6d7472]">@{side.alias}</span>
+        )}
       </button>
       {side.columns.map((column) => (
         <div key={column} className="flex h-6 min-w-0 items-center gap-2">
           <span className="flex size-4 shrink-0 items-center justify-center">
             <span
               className="size-1.5 rounded-full"
-              style={{ background: statusDotColor(status) }}
+              style={{ background: potential ? "#c9cccb" : statusDotColor(status) }}
             />
           </span>
           <span className="min-w-0 flex-1 truncate text-[14px] leading-6 text-[#080a09]">
@@ -1999,7 +2818,7 @@ function ExpandChevron({
       onDoubleClick={(event) => event.stopPropagation()}
       aria-expanded={open}
       aria-label={label}
-      className="lod-detail flex size-6 shrink-0 items-center justify-center rounded-[6px] hover:bg-black/[0.06]"
+      className="flex size-6 shrink-0 items-center justify-center rounded-[6px] hover:bg-black/[0.06]"
     >
       <span className={cn("size-4 transition-transform", open && "rotate-180")}>
         <img src={chevronDownIcon} alt="" className="block size-full" />
@@ -2092,18 +2911,86 @@ function RelationPill({
 
 const PANEL_LIST_MAX = 350;
 
-function ListGroupHeading({ label, count }: { label: "Mapped" | "Unmapped"; count: number }) {
+/** A Mapped / Unmapped group in a property or column panel (Figma 466:88737): a tinted box with its
+ * label and count on top. */
+function ListGroup({
+  label,
+  count,
+  children,
+}: {
+  label: "Mapped" | "Unmapped";
+  count: number;
+  children: ReactNode;
+}) {
   return (
-    <p className="shrink-0 px-1.5 py-1 text-[14px] leading-[14px] text-[#6d7472]">
-      {label} ({count})
-    </p>
+    <div
+      className={cn(
+        "flex shrink-0 flex-col gap-1.5 rounded-[8px] p-2.5",
+        label === "Mapped" ? "bg-[#edf3f2]" : "bg-[#fafafa]",
+      )}
+    >
+      <div className="flex items-center justify-between pb-1.5 text-[14px] leading-none">
+        <span className="text-[#080a09]">{label}</span>
+        <span className="tabular-nums text-[#6d7472]">{count}</span>
+      </div>
+      {children}
+    </div>
   );
 }
+
+/** One side's cell of a Mapped / Unmapped group in the side-by-side mapping view: the same tinted
+ * box as `ListGroup` (Figma 466:86067), drawn one row at a time so both sides' rows stay level. */
+function GroupCell({
+  tone,
+  first = false,
+  last = false,
+  width,
+  pad = "px-2.5",
+  children,
+}: {
+  tone: "Mapped" | "Unmapped";
+  first?: boolean;
+  last?: boolean;
+  width: number;
+  pad?: string;
+  children?: ReactNode;
+}) {
+  return (
+    <div className={pad} style={{ width }}>
+      <div
+        className={cn(
+          "px-2.5",
+          tone === "Mapped" ? "bg-[#edf3f2]" : "bg-[#fafafa]",
+          first && "rounded-t-[8px]",
+          last ? "rounded-b-[8px] pb-2.5" : "pb-1.5",
+        )}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** A group's head row in the side-by-side view: its label and count. */
+function GroupCellHead({ label, count }: { label: string; count: number }) {
+  return (
+    <div className="flex items-center justify-between pt-2.5 text-[14px] leading-[14px]">
+      <span className="text-[#080a09]">{label}</span>
+      <span className="tabular-nums text-[#6d7472]">{count}</span>
+    </div>
+  );
+}
+
+// The side-by-side mapping view's rhythm: a group's head, and one row (32px + its 6px gap).
+const GROUP_HEAD_H = 30;
+const MAP_ROW_STEP = 38;
 
 function columnSamples(table: TableSchema, column: string): string[] {
   return [
     ...new Set(
-      table.rows.map((row) => row[column]).filter((value) => value != null && value !== ""),
+      table.rows
+        .map((row) => row[column])
+        .filter((value): value is string => value != null && value !== ""),
     ),
   ].slice(0, 3);
 }
@@ -2121,11 +3008,26 @@ function PropertyPanel({
   onSortChange,
   search,
   onSearchChange,
-  onCreate,
+  onCreateProperty,
+  identifierName,
+  keyPartOf: partOf,
   isSelected,
   onSelect,
   entityId,
+  frame,
+  onUpdateProperty,
 }: {
+  // Editing a row in place (its pencil): name, Identifier and type.
+  onUpdateProperty?:
+    | ((
+        propertyId: string,
+        patch: { name?: string; type?: string; isIdentifier?: boolean },
+      ) => void)
+    | undefined;
+  // A Property's key part number in a composite identifier.
+  keyPartOf?: ((property: Property) => number | undefined) | undefined;
+  // Its node's frame: the panel is that node card's body (see `frameOf`).
+  frame?: string | undefined;
   // The Properties' owner — lets each row be dragged to another Entity Type.
   entityId?: string | undefined;
   properties: Property[];
@@ -2135,7 +3037,10 @@ function PropertyPanel({
   onSortChange: (key: SortKey) => void;
   search: string;
   onSearchChange: (value: string) => void;
-  onCreate?: (() => void) | undefined;
+  // The list's +: a blank row at the top (`PropertyDraftRow`), added through this.
+  onCreateProperty?: ((draft: NewPropertyDraft) => void) | undefined;
+  // The owner's current Identifier (a new one takes over from it).
+  identifierName?: string | undefined;
   isSelected: (property: Property) => boolean;
   onSelect: (property: Property) => void;
 }) {
@@ -2161,6 +3066,8 @@ function PropertyPanel({
     return () => cancelAnimationFrame(frame);
   }, [reveal, entityId]);
   const isTarget = !!entityId && move?.dropTargetId === entityId;
+  const [drafting, setDrafting] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const mappedProperties = properties.filter((property) => property.mappings.length > 0);
   const unmappedProperties = properties.filter((property) => property.mappings.length === 0);
   return (
@@ -2168,7 +3075,10 @@ function PropertyPanel({
       data-canvas-card
       {...(move && entityId ? move.dropProps(entityId) : {})}
       className={cn(
-        "flex flex-col overflow-hidden rounded-[6px] bg-white shadow-[0_1px_2px_0_rgba(0,0,0,0.05)] transition-shadow",
+        "flex flex-col overflow-hidden transition-shadow",
+        frame
+          ? attachedBody(frame)
+          : "rounded-[6px] bg-white shadow-[0_1px_2px_0_rgba(0,0,0,0.05)]",
         isTarget && "shadow-[0_0_0_1.5px_#00ded8] !bg-[#e6f9f8]",
       )}
     >
@@ -2181,14 +3091,23 @@ function PropertyPanel({
         search={search}
         onSearchChange={onSearchChange}
         searchPlaceholder="Search properties…"
-        onCreate={onCreate}
+        onCreate={onCreateProperty ? () => setDrafting(true) : undefined}
         createLabel="New property"
       />
+      {drafting && onCreateProperty && (
+        <div className="px-2 pb-1.5">
+          <PropertyDraftRow
+            onSubmit={onCreateProperty}
+            onClose={() => setDrafting(false)}
+            currentIdentifier={identifierName}
+          />
+        </div>
+      )}
       <div className="relative">
         <div
           ref={scrollRef}
           data-canvas-scroll
-          className="flex flex-col gap-1.5 overflow-y-auto overscroll-contain px-2 pb-2"
+          className="flex flex-col gap-2 overflow-y-auto overscroll-contain px-2.5 pb-2.5"
           style={{ maxHeight: PANEL_LIST_MAX }}
         >
           {properties.length === 0 && (
@@ -2201,27 +3120,37 @@ function PropertyPanel({
             ] as const
           ).map(([label, group]) =>
             group.length > 0 ? (
-              <Fragment key={label}>
-                <ListGroupHeading label={label} count={group.length} />
-                {group.map((property) => (
-                  <PanelRow
-                    key={property.id}
-                    name={property.name}
-                    dotColor={statusDotColor(propertyStatus(property))}
-                    dimmed={!reviewScope.property(property)}
-                    identifier={isIdentifierProperty(property)}
-                    type={property.type}
-                    chip={
-                      propertyReview(property) === "suggested" ? (
-                        <PropertyConfidenceChip property={property} tone="muted" />
-                      ) : null
-                    }
-                    selected={isSelected(property)}
-                    onClick={() => onSelect(property)}
-                    moveFrom={entityId ? { entityId, propertyId: property.id } : undefined}
-                  />
-                ))}
-              </Fragment>
+              <ListGroup key={label} label={label} count={group.length}>
+                {group.map((property) =>
+                  editingId === property.id && onUpdateProperty ? (
+                    <PropertyInlineEditor
+                      key={property.id}
+                      property={property}
+                      onApply={(patch) => onUpdateProperty(property.id, patch)}
+                      onClose={() => setEditingId(null)}
+                    />
+                  ) : (
+                    <PanelRow
+                      key={property.id}
+                      onEdit={onUpdateProperty ? () => setEditingId(property.id) : undefined}
+                      name={property.name}
+                      dotColor={itemStatusDotColor(propertyStatus(property))}
+                      dimmed={!reviewScope.property(property)}
+                      identifier={isIdentifierProperty(property)}
+                      identifierPart={partOf?.(property)}
+                      type={property.type}
+                      chip={
+                        propertyReview(property) === "suggested" ? (
+                          <PropertyConfidenceChip property={property} tone="muted" />
+                        ) : null
+                      }
+                      selected={isSelected(property)}
+                      onClick={() => onSelect(property)}
+                      moveFrom={entityId ? { entityId, propertyId: property.id } : undefined}
+                    />
+                  ),
+                )}
+              </ListGroup>
             ) : null,
           )}
         </div>
@@ -2262,12 +3191,21 @@ function filterProperties(
 /** A property panel that keeps its own Filter / Sort / Search (a related Entity Type's). */
 function EntityPropertyPanel({
   entity,
-  onCreate,
+  onCreateProperty,
+  onUpdateProperty,
   isSelected,
   onSelect,
+  frame,
 }: {
   entity: Entity;
-  onCreate?: (() => void) | undefined;
+  frame?: string | undefined;
+  onCreateProperty?: ((draft: NewPropertyDraft) => void) | undefined;
+  onUpdateProperty?:
+    | ((
+        propertyId: string,
+        patch: { name?: string; type?: string; isIdentifier?: boolean },
+      ) => void)
+    | undefined;
   isSelected: (property: Property) => boolean;
   onSelect: (property: Property) => void;
 }) {
@@ -2284,7 +3222,11 @@ function EntityPropertyPanel({
       onSortChange={(key) => setSort((prev) => nextSortState(prev, key))}
       search={search}
       onSearchChange={setSearch}
-      onCreate={onCreate}
+      onCreateProperty={onCreateProperty}
+      onUpdateProperty={onUpdateProperty}
+      identifierName={identifierNames(entity)}
+      keyPartOf={(p) => keyPartOf(entity, p)}
+      frame={frame}
       isSelected={isSelected}
       onSelect={onSelect}
     />
@@ -2361,11 +3303,30 @@ function HighlightedName({ name, query }: { name: string; query?: string | undef
   );
 }
 
+/** "a + b": an Entity Type's Identifier(s), for "composite with …" (undefined with none). */
+const identifierNames = (entity: Entity) =>
+  identifiersOf(entity)
+    .map((p) => p.name)
+    .join(" + ") || undefined;
+/** A Property's key part number (1, 2, …) — only in a composite identifier. */
+function keyPartOf(entity: Entity, property: Property): number | undefined {
+  const parts = identifiersOf(entity);
+  const at = parts.findIndex((p) => p.id === property.id);
+  return parts.length > 1 && at !== -1 ? at + 1 : undefined;
+}
+
+/** A Property typed into a list's blank row: added to `entityId` and scrolled into view. */
+function createPropertyIn(app: OntologyApp, entityId: string, draft: NewPropertyDraft) {
+  const [id] = app.createProperties(entityId, [draft]);
+  if (id) revealProperties(entityId, [id]);
+}
+
 /** One white row in a property / column panel: grip, status dot, name, key, type, confidence. */
 function PanelRow({
   name,
   dotColor,
   identifier,
+  identifierPart,
   type,
   chip,
   grip = true,
@@ -2375,13 +3336,18 @@ function PanelRow({
   highlight,
   sampleValues,
   dimmed = false,
+  onEdit,
 }: {
+  // Shows a pencil on hover that edits the row in place.
+  onEdit?: (() => void) | undefined;
   dimmed?: boolean;
   name: string;
   // A search query: the matching part of `name` is set semibold (no color change).
   highlight?: string | undefined;
   dotColor: string;
   identifier: boolean;
+  // Its key part number, in a composite identifier (shown on its key).
+  identifierPart?: number | undefined;
   type: string | undefined;
   chip?: ReactNode;
   sampleValues?: string[];
@@ -2409,10 +3375,11 @@ function PanelRow({
       onDragEnd={() => move?.endDrag()}
       style={movable ? ({ WebkitUserDrag: "element" } as React.CSSProperties) : undefined}
       className={cn(
-        "relative flex h-[34px] shrink-0 items-center gap-2 rounded-[4px] border py-1 pl-1.5 pr-2 transition-opacity",
+        // Figma 466:86067: 32px, 6px corners; hover fills it gray (and shows the pencil).
+        "group/panelrow relative flex h-8 shrink-0 items-center gap-1 rounded-[6px] border py-1.5 pl-1.5 pr-2 transition-[opacity,background-color]",
         dimmed && DIMMED,
         selected ? SELECTED_NODE : "border-[#e3e5e4] bg-white",
-        onClick && !selected && "hover:border-[#161919]",
+        onClick && !selected && "hover:bg-[#e3e5e4]",
         !grip && "pl-3",
       )}
     >
@@ -2426,23 +3393,56 @@ function PanelRow({
           <FigmaIcon src={dotGridIcon} />
         </span>
       )}
-      <span className="lod-type size-1.5 shrink-0 rounded-full" style={{ background: dotColor }} />
+      {/* Figma Item (472:108647): the dot and name 6px apart, then the key / type icons 4px apart,
+          both at full color. */}
       <span className="flex min-w-0 flex-1 items-center gap-1">
-        <span className="lod-name min-w-0 flex-1 truncate text-[14px] leading-6 text-[#080a09]">
-          <HighlightedName name={name} query={highlight} />
+        <span className="flex min-w-0 flex-1 items-center gap-1.5">
+          <span
+            className="lod-type size-1.5 shrink-0 rounded-full"
+            style={{ background: dotColor }}
+          />
+          <span className="lod-name min-w-0 flex-1 truncate text-[14px] leading-5 text-[#080a09]">
+            <HighlightedName name={name} query={highlight} />
+          </span>
         </span>
         {identifier && (
-          <span role="img" aria-label="Identifier" className="lod-type shrink-0">
-            <FigmaIcon src={identifierKeyIcon} />
+          <span
+            role="img"
+            aria-label={identifierPart ? `Identifier part ${identifierPart}` : "Identifier"}
+            title={identifierPart ? `Identifier part ${identifierPart} (composite)` : undefined}
+            className="lod-type flex h-4 shrink-0 items-center justify-center"
+          >
+            <span className="flex size-4 items-center justify-center">
+              <img alt="" src={keyIcon} className="block size-[12.667px]" />
+            </span>
+            {identifierPart && (
+              <span className="text-[10px] font-medium leading-3 text-[#967700]">
+                {identifierPart}
+              </span>
+            )}
           </span>
         )}
         {type && (
-          <span className="lod-type contents">
+          <span className="lod-type flex size-4 shrink-0 items-center justify-center">
             <PropertyTypeGlyph type={type} color="#6d7472" />
           </span>
         )}
       </span>
       {chip && <span className="lod-confidence contents">{chip}</span>}
+      {onEdit && (
+        <button
+          type="button"
+          aria-label={`Edit ${name}`}
+          title="Edit"
+          onClick={(event) => {
+            event.stopPropagation();
+            onEdit();
+          }}
+          className="hidden size-5 shrink-0 items-center justify-center rounded-[6px] mix-blend-multiply hover:bg-[#d3d5d4] active:bg-[#c9cccb] group-hover/panelrow:flex"
+        >
+          <FigmaIcon src={pencilIcon} />
+        </button>
+      )}
     </div>
   );
   if (!sampleValues) return row;
@@ -2482,17 +3482,18 @@ function MappingPanels({
   properties,
   table,
   width,
-  onCreate,
   isSelected,
   onSelect,
+  frames,
 }: {
+  // The two nodes' frames: each panel is its node card's body (see `frameOf`), with an ID foot.
+  frames?: { left: string; right: string } | undefined;
   app: OntologyApp;
   // The Properties' owner (the selected Entity Type) — for the mappings' confidence.
   entity: Entity;
   properties: Property[];
   table: TableSchema;
   width: number;
-  onCreate?: (() => void) | undefined;
   isSelected: (property: Property) => boolean;
   onSelect: (property: Property) => void;
 }) {
@@ -2505,6 +3506,50 @@ function MappingPanels({
   const [columnSort, setColumnSort] = useState<SortState>(DEFAULT_SORT);
   // The side whose Sort was changed last orders the pairs.
   const [sortSide, setSortSide] = useState<"property" | "column">("property");
+  // A new Property being named (the Properties side's +), over the lists.
+  const [drafting, setDrafting] = useState(false);
+
+  const inTable = (m: ColumnRef) => m.table === table.name;
+
+  // Aliases (see `ColumnRef.alias`): several of this Entity Type in this table — they start when
+  // its Identifier gets a second column here. Each mapping carries its alias; the view can show one
+  // alias at a time (`aliasView`, just navigation), and hovering / selecting one brings out its
+  // lines and names.
+  const aliases = aliasesIn(entity, table.name);
+  const pairKey = (propertyId: string, column: string) => `${propertyId}|${column}`;
+  const needing = new Set(
+    mappingsNeedingAlias(entity, table.name).map(({ property, mapping }) =>
+      pairKey(property.id, mapping.column),
+    ),
+  );
+  const keyedAlias = (alias: string) =>
+    identifierKeyIn(entity, table.name, alias).columns.length > 0;
+  const [aliasViewRaw, setAliasView] = useState("all");
+  const aliasView =
+    aliasViewRaw === "all" ||
+    (aliasViewRaw === "needs" && needing.size > 0) ||
+    aliases.includes(aliasViewRaw)
+      ? aliasViewRaw
+      : "all";
+  const [hoverAlias, setHoverAlias] = useState<string | null>(null);
+  const [pinnedAlias, setPinnedAlias] = useState<string | null>(null);
+  const focusAlias =
+    hoverAlias ?? (pinnedAlias && aliases.includes(pinnedAlias) ? pinnedAlias : null);
+  // Mapped columns picked (⌘/Shift-click) to assign to one alias at once.
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [aliasCreate, setAliasCreate] = useState<{
+    propertyId: string;
+    existingColumn: string;
+    newColumn: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [aliasPick, setAliasPick] = useState<{
+    propertyId: string;
+    column: string;
+    x: number;
+    y: number;
+  } | null>(null);
 
   // The list scrolls at its right edge, over the Columns panel: the Column rows give up the
   // scrollbar's width, so they fill the panel up to it instead of running under it.
@@ -2524,14 +3569,17 @@ function MappingPanels({
     return () => observer.disconnect();
   }, []);
   const columnCellWidth = NODE_W - scrollbar;
-  const columnCellPad = scrollbar > 0 ? "pl-2 pr-1" : "px-2";
+  const columnCellPad = scrollbar > 0 ? "pl-2.5 pr-1" : "px-2.5";
 
-  // Connecting a Property to a Column: press a Property's + and drag onto a
-  // Column, or click it — then the line follows the pointer until the next click, which connects
-  // on a Column or, anywhere else, opens the column search right there. Esc cancels.
+  // Connecting a Property and a Column, from either end: press a Property's (or a Column's) +
+  // and drag onto a Column (or a Property), or click it — then the line follows the pointer until
+  // the next click, which connects on the other side or, from a Property anywhere else, opens the
+  // column search right there. Esc cancels.
   const rootRef = useRef<HTMLDivElement>(null);
   const [connect, setConnect] = useState<{
-    propertyId: string;
+    from: "property" | "column";
+    // The Property's id, or the Column's name.
+    id: string;
     x1: number;
     y1: number;
     mode: "press" | "click";
@@ -2540,6 +3588,36 @@ function MappingPanels({
   } | null>(null);
   const [pointer, setPointer] = useState<Pt | null>(null);
   const [overColumn, setOverColumn] = useState<string | null>(null);
+  const [overProperty, setOverProperty] = useState<string | null>(null);
+  // An Identifier dropped on a second column of this table: replace, or add a key part?
+  const [keyChoice, setKeyChoice] = useState<{
+    propertyId: string;
+    column: string;
+    current: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  // Connecting a Property to a Column here. With aliases here, which one it belongs to is asked
+  // first. Without: an Identifier already keyed by another column here asks — replace it, add a
+  // composite key part, or another occurrence (aliases); anything else connects right away.
+  const requestConnect = (propertyId: string, column: string, at: Pt) => {
+    const property = entity.properties.find((p) => p.id === propertyId);
+    if (!property) return;
+    const here = property.mappings.filter(inTable);
+    if (here.some((m) => m.column === column)) return;
+    if (aliases.length > 0) {
+      setAliasPick({ propertyId, column, ...at });
+      return;
+    }
+    const current = isIdentifierProperty(property) ? here[0] : undefined;
+    if (current) {
+      setKeyChoice({ propertyId, column, current: current.column, ...at });
+      return;
+    }
+    tryConnectMapping(app, entity.id, propertyId, { table: table.name, column, status: "mapped" });
+  };
+  const requestConnectRef = useRef(requestConnect);
+  requestConnectRef.current = requestConnect;
   const [lineSearch, setLineSearch] = useState<{
     propertyId: string;
     x1: number;
@@ -2560,24 +3638,32 @@ function MappingPanels({
       ?.closest<HTMLElement>("[data-map-column]");
     return hit && rootRef.current?.contains(hit) ? (hit.dataset["mapColumn"] ?? null) : null;
   }, []);
+  const propertyAt = useCallback((clientX: number, clientY: number) => {
+    const hit = document
+      .elementFromPoint(clientX, clientY)
+      ?.closest<HTMLElement>("[data-map-property]");
+    return hit && rootRef.current?.contains(hit) ? (hit.dataset["mapProperty"] ?? null) : null;
+  }, []);
   const startConnect = (
-    propertyId: string,
-    from: Element,
+    from: "property" | "column",
+    id: string,
+    handle: Element,
     mode: "press" | "click",
     event?: React.PointerEvent,
   ) => {
-    const r = from.getBoundingClientRect();
+    const r = handle.getBoundingClientRect();
     const at = toLocal(r.left + r.width / 2, r.top + r.height / 2);
     setLineSearch(null);
     setConnect({
-      propertyId,
+      from,
+      id,
       x1: at.x,
       y1: at.y,
       mode,
       startX: event?.clientX ?? 0,
       startY: event?.clientY ?? 0,
     });
-    setPointer(mode === "click" ? { x: at.x + 48, y: at.y } : at);
+    setPointer(mode === "click" ? { x: at.x + (from === "property" ? 48 : -48), y: at.y } : at);
   };
   useEffect(() => {
     if (!connect) return;
@@ -2585,16 +3671,22 @@ function MappingPanels({
       setConnect(null);
       setPointer(null);
       setOverColumn(null);
+      setOverProperty(null);
     };
-    const connectTo = (column: string) =>
-      tryConnectMapping(app, entity.id, connect.propertyId, {
-        table: table.name,
-        column,
-        status: "mapped",
-      });
+    // The other end under the pointer: a Column from a Property, a Property from a Column.
+    const targetAt = (event: PointerEvent) =>
+      connect.from === "property"
+        ? columnAt(event.clientX, event.clientY)
+        : propertyAt(event.clientX, event.clientY);
+    const connectTo = (target: string, event: PointerEvent) => {
+      const at = toLocal(event.clientX, event.clientY);
+      if (connect.from === "property") requestConnectRef.current(connect.id, target, at);
+      else requestConnectRef.current(target, connect.id, at);
+    };
     const onMove = (event: PointerEvent) => {
       setPointer(toLocal(event.clientX, event.clientY));
-      setOverColumn(columnAt(event.clientX, event.clientY));
+      if (connect.from === "property") setOverColumn(columnAt(event.clientX, event.clientY));
+      else setOverProperty(propertyAt(event.clientX, event.clientY));
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") finish();
@@ -2613,11 +3705,11 @@ function MappingPanels({
         event.stopPropagation();
         window.addEventListener("click", swallow, { capture: true, once: true });
         window.setTimeout(() => window.removeEventListener("click", swallow, true), 400);
-        const column = columnAt(event.clientX, event.clientY);
-        if (column) connectTo(column);
-        else {
+        const target = targetAt(event);
+        if (target) connectTo(target, event);
+        else if (connect.from === "property") {
           const at = toLocal(event.clientX, event.clientY);
-          setLineSearch({ propertyId: connect.propertyId, x1: connect.x1, y1: connect.y1, ...at });
+          setLineSearch({ propertyId: connect.id, x1: connect.x1, y1: connect.y1, ...at });
         }
         finish();
       };
@@ -2630,8 +3722,8 @@ function MappingPanels({
           setConnect({ ...connect, mode: "click" });
           return;
         }
-        const column = columnAt(event.clientX, event.clientY);
-        if (column) connectTo(column);
+        const target = targetAt(event);
+        if (target) connectTo(target, event);
         finish();
       };
       window.addEventListener("pointerup", onUp);
@@ -2642,12 +3734,35 @@ function MappingPanels({
       window.removeEventListener("keydown", onKey);
       stop();
     };
-  }, [connect, app, entity.id, table.name, toLocal, columnAt]);
+  }, [connect, toLocal, columnAt, propertyAt]);
   // While connecting, the other lines step aside and Columns of another data type fade.
   const connecting = !!connect || !!lineSearch;
   const connectable = (column: string) =>
-    !connect ||
-    canMapPropertyToColumn(app, entity.id, connect.propertyId, { table: table.name, column });
+    connect?.from !== "property" ||
+    canMapPropertyToColumn(app, entity.id, connect.id, { table: table.name, column });
+  // From a Column: the Properties it can't map to (another data type) fade.
+  const propertyConnectable = (property: Property) =>
+    connect?.from !== "column" ||
+    canMapPropertyToColumn(app, entity.id, property.id, { table: table.name, column: connect.id });
+  const connectProperty = (property: Property, label: string) => (
+    <ConnectPlus
+      label={label}
+      color={SUGGESTED}
+      onPress={(event) =>
+        startConnect("property", property.id, event.currentTarget, "press", event)
+      }
+      onActivate={(target) => startConnect("property", property.id, target, "click")}
+    />
+  );
+  const connectColumn = (column: string, label: string) => (
+    <ConnectPlus
+      side="left"
+      label={label}
+      color={SUGGESTED}
+      onPress={(event) => startConnect("column", column, event.currentTarget, "press", event)}
+      onActivate={(target) => startConnect("column", column, target, "click")}
+    />
+  );
   // One row per mapping into this table — an Identifier with a composite key there has several.
   type Pair = { property: Property; mapping: ColumnRef };
   const columnOf = (pair: Pair) => pair.mapping.column;
@@ -2662,7 +3777,16 @@ function MappingPanels({
   const columnQueryText = columnSearch.trim().toLowerCase();
   const searching = !!(propQuery || columnQueryText);
   const allPairs: Pair[] = properties.flatMap((property) =>
-    mappingsIn(property, table.name).map((mapping) => ({ property, mapping })),
+    property.mappings
+      .filter(inTable)
+      .filter((mapping) =>
+        aliasView === "all"
+          ? true
+          : aliasView === "needs"
+            ? needing.has(pairKey(property.id, mapping.column))
+            : mapping.alias === aliasView,
+      )
+      .map((mapping) => ({ property, mapping })),
   );
   const matching = allPairs.filter(
     (pair) =>
@@ -2682,22 +3806,26 @@ function MappingPanels({
           (pair) => pair.property.confidence,
         )
       : sortByState(matching, columnSort, columnOf, () => undefined);
-  // Keep a composite Identifier's columns together, even when sorting by Column, so its
-  // Property appears once and every Column can connect back to that one row.
-  const identifierPairs = sortedPairs.filter((pair) => isIdentifierProperty(pair.property));
-  const identifierIds = [...new Set(identifierPairs.map((pair) => pair.property.id))];
+  // Keep a Property's connections together (a composite Identifier's columns, one Property's
+  // column per occurrence), even when sorting by Column, so the Property appears once and each of
+  // its Columns connects back to that one row. Identifiers stay on top.
+  const order = [...new Set(sortedPairs.map((pair) => pair.property.id))];
+  const isIdentifierId = (id: string) =>
+    isIdentifierProperty(entity.properties.find((p) => p.id === id) ?? { name: "" });
   const pairs = [
-    ...identifierIds.flatMap((id) => identifierPairs.filter((pair) => pair.property.id === id)),
-    ...sortedPairs.filter((pair) => !isIdentifierProperty(pair.property)),
-  ];
-  const firstIdentifierRow = new Map<string, number>();
+    ...order.filter(isIdentifierId),
+    ...order.filter((id) => !isIdentifierId(id)),
+  ].flatMap((id) => sortedPairs.filter((pair) => pair.property.id === id));
+  const firstRowOf = new Map<string, number>();
   pairs.forEach((pair, index) => {
-    if (isIdentifierProperty(pair.property) && !firstIdentifierRow.has(pair.property.id)) {
-      firstIdentifierRow.set(pair.property.id, index);
-    }
+    if (!firstRowOf.has(pair.property.id)) firstRowOf.set(pair.property.id, index);
   });
   // The rest of each side, listed on its own under the pairs.
-  const mappedIds = new Set(properties.map((p) => p.id));
+  // Mapped here at all (in any alias) — the alias view narrows the pairs, never "Unmapped".
+  const tablePairs = properties.flatMap((property) =>
+    property.mappings.filter(inTable).map((mapping) => ({ property, mapping })),
+  );
+  const mappedIds = new Set(tablePairs.map((pair) => pair.property.id));
   const restProperties = filterProperties(
     entity.properties.filter(
       (p) => !mappedIds.has(p.id) && accepts(propFilter, false, isIdentifierProperty(p)),
@@ -2706,7 +3834,7 @@ function MappingPanels({
     propSearch,
     propSort,
   );
-  const mappedColumns = new Set(allPairs.map(columnOf));
+  const mappedColumns = new Set(tablePairs.map(columnOf));
   const columnQuery = columnSearch.trim().toLowerCase();
   const restColumns = sortByState(
     table.columns.filter(
@@ -2721,14 +3849,16 @@ function MappingPanels({
   );
   const restRows = Math.max(restProperties.length, restColumns.length);
   const columnType = (name: string) => table.columns.find((c) => c.name === name)?.type;
-  const overflows = (pairs.length + restRows) * 40 > PANEL_LIST_MAX;
+  const overflows = (pairs.length + restRows) * MAP_ROW_STEP + 2 * GROUP_HEAD_H > PANEL_LIST_MAX;
   const panelBg = "absolute inset-y-0 rounded-[6px] bg-white shadow-[0_1px_2px_0_rgba(0,0,0,0.05)]";
+  const panelClass = (side: "left" | "right") =>
+    frames ? cn("absolute inset-y-0", attachedBody(frames[side])) : panelBg;
   const fade =
     "pointer-events-none absolute bottom-0 h-[30px] bg-gradient-to-b from-white/0 to-white";
   return (
     <div ref={rootRef} data-canvas-card className="relative" style={{ width }}>
-      <div aria-hidden className={cn(panelBg, "left-0")} style={{ width: NODE_W }} />
-      <div aria-hidden className={cn(panelBg, "right-0")} style={{ width: NODE_W }} />
+      <div aria-hidden className={cn(panelClass("left"), "left-0")} style={{ width: NODE_W }} />
+      <div aria-hidden className={cn(panelClass("right"), "right-0")} style={{ width: NODE_W }} />
       <div className="relative flex">
         <div style={{ width: NODE_W }}>
           <ListControls
@@ -2743,7 +3873,7 @@ function MappingPanels({
             search={propSearch}
             onSearchChange={setPropSearch}
             searchPlaceholder="Search properties…"
-            onCreate={onCreate}
+            onCreate={() => setDrafting(true)}
             createLabel="New property"
           />
         </div>
@@ -2764,6 +3894,25 @@ function MappingPanels({
           />
         </div>
       </div>
+      {drafting && (
+        <div className="relative px-2 pb-1.5" style={{ width: NODE_W }}>
+          <PropertyDraftRow
+            onSubmit={(draft) => createPropertyIn(app, entity.id, draft)}
+            onClose={() => setDrafting(false)}
+            currentIdentifier={identifierNames(entity)}
+          />
+        </div>
+      )}
+      {aliases.length > 0 && (
+        <AliasNavigator
+          aliases={aliases}
+          view={aliasView}
+          onView={setAliasView}
+          keyed={keyedAlias}
+          needing={needing.size}
+          onHover={setHoverAlias}
+        />
+      )}
       <div
         ref={scrollRef}
         data-canvas-scroll
@@ -2774,7 +3923,7 @@ function MappingPanels({
             height: event.currentTarget.clientHeight,
           })
         }
-        className="relative flex flex-col gap-1.5 overflow-y-auto overscroll-contain pb-2 [scrollbar-width:thin]"
+        className="relative flex flex-col overflow-y-auto overscroll-contain pb-2.5 [scrollbar-width:thin]"
         style={{ maxHeight: PANEL_LIST_MAX }}
       >
         {pairs.length === 0 && restRows === 0 && (
@@ -2786,46 +3935,62 @@ function MappingPanels({
           </p>
         )}
         {pairs.length > 0 && (
-          <div className="flex shrink-0 items-center">
-            <div className="px-2" style={{ width: NODE_W }}>
-              <ListGroupHeading
+          <div className="flex shrink-0 items-stretch">
+            <GroupCell tone="Mapped" first width={NODE_W}>
+              <GroupCellHead
                 label="Mapped"
                 count={new Set(pairs.map((pair) => pair.property.id)).size}
               />
-            </div>
+            </GroupCell>
             <div className="flex-1" />
-            <div className={columnCellPad} style={{ width: columnCellWidth }}>
-              <ListGroupHeading label="Mapped" count={pairs.length} />
-            </div>
+            <GroupCell tone="Mapped" first width={columnCellWidth} pad={columnCellPad}>
+              <GroupCellHead label="Mapped" count={pairs.length} />
+            </GroupCell>
           </div>
         )}
         {pairs.map((pair, index) => {
           const { property, mapping } = pair;
           const suggested = mappingStatus(mapping) === "suggested";
-          const firstRow = firstIdentifierRow.get(property.id);
+          const firstRow = firstRowOf.get(property.id);
           const repeatedIdentifier = firstRow !== undefined && firstRow !== index;
-          const rowOffset = repeatedIdentifier ? (index - firstRow) * 40 : 0;
-          const sourceTop = (pairs.length > 0 ? 28 : 0) + (firstRow ?? index) * 40;
+          const rowOffset = repeatedIdentifier ? (index - firstRow) * MAP_ROW_STEP : 0;
+          const sourceTop = GROUP_HEAD_H + (firstRow ?? index) * MAP_ROW_STEP;
           const sourceVisible =
-            sourceTop < listViewport.top + listViewport.height && sourceTop + 34 > listViewport.top;
+            sourceTop < listViewport.top + listViewport.height && sourceTop + 32 > listViewport.top;
+          const lastPair = index === pairs.length - 1;
+          const key = pairKey(property.id, mapping.column);
+          const needsAlias = needing.has(key);
+          const inFocus = !!focusAlias && mapping.alias === focusAlias;
+          const faded = !!focusAlias && !inFocus;
+          const tone = aliasTone(aliases, mapping.alias);
+          const lineColor = inFocus ? tone : needsAlias ? "#f15b15" : SETTLED;
           return (
-            <div key={`${property.id}:${mapping.column}`} className="flex shrink-0 items-center">
-              <div className="relative z-10 px-2" style={{ width: NODE_W }}>
-                {!repeatedIdentifier && (
-                  <div className="group/maprow relative">
+            <div key={`${property.id}:${mapping.column}`} className="flex shrink-0 items-stretch">
+              <GroupCell tone="Mapped" last={lastPair} width={NODE_W}>
+                {repeatedIdentifier ? (
+                  <div className="h-8" />
+                ) : (
+                  <div
+                    data-map-property={property.id}
+                    className={cn(
+                      "group/maprow relative z-30 transition-opacity",
+                      !propertyConnectable(property) && "opacity-40",
+                    )}
+                  >
                     <PanelRow
                       name={property.name}
                       highlight={propQuery}
                       dotColor={statusDotColor(propertyStatus(property))}
                       dimmed={!reviewScope.property(property)}
                       identifier={isIdentifierProperty(property)}
+                      identifierPart={keyPartOf(entity, property)}
                       type={property.type}
                       chip={
                         propertyReview(property) === "suggested" ? (
                           <PropertyConfidenceChip property={property} tone="muted" />
                         ) : null
                       }
-                      selected={isSelected(property)}
+                      selected={isSelected(property) || overProperty === property.id}
                       onClick={() => onSelect(property)}
                       moveFrom={{ entityId: entity.id, propertyId: property.id }}
                     />
@@ -2834,21 +3999,33 @@ function MappingPanels({
                         label="Connect to another column"
                         color={suggested ? SUGGESTED : SETTLED}
                         onPress={(event) =>
-                          startConnect(property.id, event.currentTarget, "press", event)
+                          startConnect("property", property.id, event.currentTarget, "press", event)
                         }
-                        onActivate={(target) => startConnect(property.id, target, "click")}
+                        onActivate={(target) =>
+                          startConnect("property", property.id, target, "click")
+                        }
                       />
                     )}
                   </div>
                 )}
-              </div>
-              {/* Each composite column connects to the Identifier's single visible row. */}
+              </GroupCell>
+              {/* Each composite column connects to the Identifier's single visible row. Drawn over
+                  the groups' tint, under the rows, so it reaches each row's edge. */}
               <div
+                onMouseEnter={() => mapping.alias && setHoverAlias(mapping.alias)}
+                onMouseLeave={() => setHoverAlias(null)}
+                onClick={() =>
+                  mapping.alias &&
+                  setPinnedAlias((current) => (current === mapping.alias ? null : mapping.alias!))
+                }
                 className={cn(
-                  "group/mapline relative -mx-2 flex h-5 min-w-0 flex-1 items-center transition-opacity",
+                  "group/mapline relative z-20 -mx-5 mt-1.5 flex h-5 min-w-0 flex-1 items-center self-start transition-opacity",
+                  mapping.alias && "cursor-pointer",
                   connecting || (repeatedIdentifier && !sourceVisible)
                     ? "pointer-events-none opacity-0"
-                    : !reviewScope.property(property) && DIMMED,
+                    : faded
+                      ? "opacity-25"
+                      : !reviewScope.property(property) && DIMMED,
                 )}
               >
                 {repeatedIdentifier ? (
@@ -2861,24 +4038,33 @@ function MappingPanels({
                     <path
                       d={`M 0 ${10 - rowOffset} C 35 ${10 - rowOffset} 65 10 100 10`}
                       fill="none"
-                      stroke={suggested ? SUGGESTED : SETTLED}
-                      strokeWidth={1.5}
-                      strokeDasharray={suggested ? "4 4" : undefined}
+                      stroke={lineColor}
+                      strokeWidth={inFocus ? 2 : 1.5}
+                      strokeDasharray={needsAlias ? "3 3" : undefined}
                       vectorEffect="non-scaling-stroke"
                     />
                   </svg>
                 ) : (
                   <span
                     aria-hidden
-                    className="h-[1.5px] w-full"
+                    className={cn("w-full", inFocus ? "h-[2px]" : "h-[1.5px]")}
                     style={
-                      suggested
+                      needsAlias
                         ? {
-                            backgroundImage: `repeating-linear-gradient(to right, ${SUGGESTED} 0 4px, transparent 4px 8px)`,
+                            backgroundImage: `repeating-linear-gradient(to right, ${lineColor} 0 3px, transparent 3px 6px)`,
                           }
-                        : { backgroundColor: SETTLED }
+                        : { backgroundColor: lineColor }
                     }
                   />
+                )}
+                {/* Its alias name: only while that alias is hovered or selected. */}
+                {inFocus && (
+                  <span
+                    className="pointer-events-none absolute left-[30%] top-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded-full border bg-white px-1.5 text-[11px] font-medium leading-4"
+                    style={{ borderColor: tone, color: tone }}
+                  >
+                    @{mapping.alias}
+                  </span>
                 )}
                 <button
                   type="button"
@@ -2895,110 +4081,176 @@ function MappingPanels({
               </div>
               <div
                 data-map-column={mapping.column}
+                onMouseEnter={() => mapping.alias && setHoverAlias(mapping.alias)}
+                onMouseLeave={() => setHoverAlias(null)}
+                onClickCapture={(event) => {
+                  // ⌘ / Shift-click picks mapped columns to assign to one alias together.
+                  if (aliases.length === 0 || !(event.metaKey || event.shiftKey || event.ctrlKey))
+                    return;
+                  event.stopPropagation();
+                  event.preventDefault();
+                  setPicked((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(key)) next.delete(key);
+                    else next.add(key);
+                    return next;
+                  });
+                }}
                 className={cn(
                   "transition-opacity",
-                  columnCellPad,
                   !connectable(mapping.column) && "opacity-40",
+                  faded && "opacity-35",
                 )}
                 style={{ width: columnCellWidth }}
               >
-                <PanelRow
-                  grip={false}
-                  name={mapping.column}
-                  sampleValues={columnSamples(table, mapping.column)}
-                  dimmed={!reviewScope.column(table.name, mapping.column)}
-                  highlight={columnQueryText}
-                  dotColor={suggested ? "#7e22ce" : "#0891b2"}
-                  identifier={isIdentifierProperty(property)}
-                  type={columnType(mapping.column)}
-                  chip={
-                    suggested ? (
-                      <MappingConfidenceChip
-                        entity={entity}
-                        property={property}
-                        mapping={mapping}
-                        tone="muted"
+                <GroupCell
+                  tone="Mapped"
+                  last={lastPair}
+                  width={columnCellWidth}
+                  pad={columnCellPad}
+                >
+                  <div
+                    className={cn(
+                      "group/maprow relative z-30 rounded-[6px]",
+                      picked.has(key) && "ring-2 ring-[#3b82f6] ring-offset-1",
+                    )}
+                  >
+                    {!connecting && connectColumn(mapping.column, "Connect to another property")}
+                    {/* Its alias's mark (or, still needing one, a red dashed one). */}
+                    {(mapping.alias || needsAlias) && (
+                      <span
+                        aria-hidden
+                        className="absolute -left-1.5 bottom-1 top-1 w-[3px] rounded-full"
+                        style={
+                          needsAlias
+                            ? {
+                                backgroundImage:
+                                  "repeating-linear-gradient(to bottom, #f15b15 0 3px, transparent 3px 5px)",
+                              }
+                            : { backgroundColor: tone }
+                        }
                       />
-                    ) : null
-                  }
-                  selected={isSelected(property) || overColumn === mapping.column}
-                  onClick={() => onSelect(property)}
-                />
+                    )}
+                    <PanelRow
+                      grip={false}
+                      name={mapping.column}
+                      sampleValues={columnSamples(table, mapping.column)}
+                      dimmed={!reviewScope.column(table.name, mapping.column)}
+                      highlight={columnQueryText}
+                      dotColor={suggested ? "#7e22ce" : "#0891b2"}
+                      identifier={isIdentifierProperty(property)}
+                      identifierPart={keyPartOf(entity, property)}
+                      type={columnType(mapping.column)}
+                      chip={
+                        <>
+                          {needsAlias && (
+                            <span className="shrink-0 rounded-full bg-[#ffe6db] px-1.5 text-[11px] font-medium leading-4 text-[#9c461e]">
+                              Needs alias
+                            </span>
+                          )}
+                          {suggested && (
+                            <MappingConfidenceChip
+                              entity={entity}
+                              property={property}
+                              mapping={mapping}
+                              tone="muted"
+                            />
+                          )}
+                        </>
+                      }
+                      selected={isSelected(property) || overColumn === mapping.column}
+                      onClick={() => onSelect(property)}
+                    />
+                  </div>
+                </GroupCell>
               </div>
             </div>
           );
         })}
         {restRows > 0 && (
-          <div className="flex shrink-0 items-center">
-            <div className="px-2" style={{ width: NODE_W }}>
-              <ListGroupHeading label="Unmapped" count={restProperties.length} />
-            </div>
+          <div className={cn("flex shrink-0 items-stretch", pairs.length > 0 && "mt-2")}>
+            <GroupCell tone="Unmapped" first width={NODE_W}>
+              <GroupCellHead label="Unmapped" count={restProperties.length} />
+            </GroupCell>
             <div className="flex-1" />
-            <div className={columnCellPad} style={{ width: columnCellWidth }}>
-              <ListGroupHeading label="Unmapped" count={restColumns.length} />
-            </div>
+            <GroupCell tone="Unmapped" first width={columnCellWidth} pad={columnCellPad}>
+              <GroupCellHead label="Unmapped" count={restColumns.length} />
+            </GroupCell>
           </div>
         )}
         {Array.from({ length: restRows }, (_, i) => {
           const property = restProperties[i];
           const column = restColumns[i];
           return (
-            <div key={`rest-${i}`} className="flex shrink-0 items-center">
-              <div className="relative z-10 px-2" style={{ width: NODE_W }}>
-                {property && (
-                  <div className="group/maprow relative">
+            <div key={`rest-${i}`} className="flex shrink-0 items-stretch">
+              <GroupCell tone="Unmapped" last={i === restRows - 1} width={NODE_W}>
+                {property ? (
+                  <div
+                    data-map-property={property.id}
+                    className={cn(
+                      "group/maprow relative z-30 transition-opacity",
+                      !propertyConnectable(property) && "opacity-40",
+                    )}
+                  >
                     <PanelRow
                       name={property.name}
                       highlight={propQuery}
                       dotColor={statusDotColor(propertyStatus(property))}
                       dimmed={!reviewScope.property(property)}
                       identifier={isIdentifierProperty(property)}
+                      identifierPart={keyPartOf(entity, property)}
                       type={property.type}
                       chip={
                         propertyReview(property) === "suggested" ? (
                           <PropertyConfidenceChip property={property} tone="muted" />
                         ) : null
                       }
-                      selected={isSelected(property)}
+                      selected={isSelected(property) || overProperty === property.id}
                       onClick={() => onSelect(property)}
                       moveFrom={{ entityId: entity.id, propertyId: property.id }}
                     />
-                    {!connecting && (
-                      <ConnectPlus
-                        label={`Connect ${property.name} to a column`}
-                        color={SUGGESTED}
-                        onPress={(event) =>
-                          startConnect(property.id, event.currentTarget, "press", event)
-                        }
-                        onActivate={(target) => startConnect(property.id, target, "click")}
-                      />
-                    )}
+                    {!connecting &&
+                      connectProperty(property, `Connect ${property.name} to a column`)}
                   </div>
+                ) : (
+                  <div className="h-8" />
                 )}
-              </div>
+              </GroupCell>
               <div className="flex-1" />
               <div
                 data-map-column={column?.name}
                 className={cn(
                   "transition-opacity",
-                  columnCellPad,
                   column && !connectable(column.name) && "opacity-40",
                 )}
                 style={{ width: columnCellWidth }}
               >
-                {column && (
-                  <PanelRow
-                    grip={false}
-                    name={column.name}
-                    sampleValues={columnSamples(table, column.name)}
-                    highlight={columnQueryText}
-                    dimmed={!reviewScope.column(table.name, column.name)}
-                    dotColor="#c9cccb"
-                    identifier={false}
-                    type={column.type}
-                    selected={overColumn === column.name}
-                  />
-                )}
+                <GroupCell
+                  tone="Unmapped"
+                  last={i === restRows - 1}
+                  width={columnCellWidth}
+                  pad={columnCellPad}
+                >
+                  {column ? (
+                    <div className="group/maprow relative z-30">
+                      <PanelRow
+                        grip={false}
+                        name={column.name}
+                        sampleValues={columnSamples(table, column.name)}
+                        highlight={columnQueryText}
+                        dimmed={!reviewScope.column(table.name, column.name)}
+                        dotColor="#c9cccb"
+                        identifier={false}
+                        type={column.type}
+                        selected={overColumn === column.name}
+                      />
+                      {!connecting &&
+                        connectColumn(column.name, `Connect ${column.name} to a property`)}
+                    </div>
+                  ) : (
+                    <div className="h-8" />
+                  )}
+                </GroupCell>
               </div>
             </div>
           );
@@ -3006,8 +4258,8 @@ function MappingPanels({
       </div>
       {overflows && (
         <>
-          <div aria-hidden className={cn(fade, "left-0")} style={{ width: NODE_W }} />
-          <div aria-hidden className={cn(fade, "right-0")} style={{ width: NODE_W }} />
+          <div aria-hidden className={cn(fade, "left-0")} style={{ width: NODE_W, bottom: 0 }} />
+          <div aria-hidden className={cn(fade, "right-0")} style={{ width: NODE_W, bottom: 0 }} />
         </>
       )}
       {/* The line being drawn, from the Property's + to the pointer (or to the open search). */}
@@ -3037,7 +4289,7 @@ function MappingPanels({
       )}
       {/* Click-to-connect: a search button rides the line's end (hidden over a Column, where a
           click connects instead). */}
-      {connect?.mode === "click" && pointer && !overColumn && (
+      {connect?.from === "property" && connect.mode === "click" && pointer && !overColumn && (
         <span
           aria-hidden
           className={cn(
@@ -3048,6 +4300,235 @@ function MappingPanels({
         >
           <FigmaIcon src={searchIcon} />
         </span>
+      )}
+      {keyChoice &&
+        (() => {
+          const property = entity.properties.find((p) => p.id === keyChoice.propertyId);
+          const target = {
+            table: table.name,
+            column: keyChoice.column,
+            status: "mapped" as const,
+          };
+          const canReplace = canMapPropertyToColumn(app, entity.id, keyChoice.propertyId, target);
+          const choice =
+            "flex w-full flex-col items-start gap-0.5 rounded-[6px] px-2.5 py-2 text-left transition-colors hover:bg-[#f4f4f4] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent";
+          return (
+            <Popover open onOpenChange={(isOpen) => !isOpen && setKeyChoice(null)}>
+              <PopoverTrigger asChild>
+                <span
+                  aria-hidden
+                  className="absolute size-0"
+                  style={{ left: keyChoice.x, top: keyChoice.y }}
+                />
+              </PopoverTrigger>
+              <PopoverContent
+                side="right"
+                align="start"
+                sideOffset={8}
+                onPointerDown={(event) => event.stopPropagation()}
+                className="w-[280px] rounded-[10px] border-[#e3e5e4] bg-white p-1 shadow-[0_8px_24px_-6px_rgba(0,0,0,0.16)]"
+              >
+                <p className="px-2.5 pb-1 pt-2 text-[12px] leading-4 text-[#6d7472]">
+                  {property?.name} is already keyed by{" "}
+                  <span className="font-medium text-[#161919]">{keyChoice.current}</span> here.
+                </p>
+                <button
+                  type="button"
+                  disabled={!canReplace}
+                  title={canReplace ? undefined : `${keyChoice.column}'s type doesn't fit`}
+                  onClick={() => {
+                    tryConnectMapping(app, entity.id, keyChoice.propertyId, target);
+                    setKeyChoice(null);
+                  }}
+                  className={choice}
+                >
+                  <span className="text-[13px] font-medium leading-5 text-[#161919]">
+                    Replace with {keyChoice.column}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    app.addIdentifierPart(entity.id, target);
+                    setKeyChoice(null);
+                  }}
+                  className={choice}
+                >
+                  <span className="text-[13px] font-medium leading-5 text-[#161919]">
+                    Add {keyChoice.column} as an identifier part
+                  </span>
+                  <span className="text-[12px] leading-4 text-[#6d7472]">
+                    Makes the identifier composite: records are told apart by both together.
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  disabled={!canReplace}
+                  onClick={() => {
+                    setAliasCreate({
+                      propertyId: keyChoice.propertyId,
+                      existingColumn: keyChoice.current,
+                      newColumn: keyChoice.column,
+                      x: keyChoice.x,
+                      y: keyChoice.y,
+                    });
+                    setKeyChoice(null);
+                  }}
+                  className={choice}
+                >
+                  <span className="text-[13px] font-medium leading-5 text-[#161919]">
+                    Another {entity.name || "one"} in each row
+                  </span>
+                  <span className="text-[12px] leading-4 text-[#6d7472]">
+                    Two {entity.name ? `${entity.name}s` : "occurrences"} per row, told apart by
+                    aliases (e.g. departure / arrival).
+                  </span>
+                </button>
+              </PopoverContent>
+            </Popover>
+          );
+        })()}
+      {aliasCreate && (
+        <Popover open onOpenChange={(isOpen) => !isOpen && setAliasCreate(null)}>
+          <PopoverTrigger asChild>
+            <span
+              aria-hidden
+              className="absolute size-0"
+              style={{ left: aliasCreate.x, top: aliasCreate.y }}
+            />
+          </PopoverTrigger>
+          <PopoverContent
+            side="right"
+            align="start"
+            sideOffset={8}
+            onPointerDown={(event) => event.stopPropagation()}
+            className="w-[300px] rounded-[10px] border-[#e3e5e4] bg-white p-0 shadow-[0_8px_24px_-6px_rgba(0,0,0,0.16)]"
+          >
+            {(() => {
+              const create = aliasCreate;
+              const others = entity.properties.flatMap((p) =>
+                p.mappings
+                  .filter((m) => inTable(m) && !(p.id === create.propertyId))
+                  .map((m) => pairKey(p.id, m.column)),
+              );
+              return (
+                <AliasCreateForm
+                  entityName={entity.name || "Entity type"}
+                  table={table.name}
+                  existingColumn={create.existingColumn}
+                  newColumn={create.newColumn}
+                  othersCount={others.length}
+                  onCancel={() => setAliasCreate(null)}
+                  onCreate={(first, second) => {
+                    app.applyAliases(
+                      entity.id,
+                      table.name,
+                      [
+                        {
+                          propertyId: create.propertyId,
+                          column: create.existingColumn,
+                          alias: first,
+                        },
+                      ],
+                      {
+                        propertyId: create.propertyId,
+                        mapping: {
+                          table: table.name,
+                          column: create.newColumn,
+                          status: "mapped",
+                          alias: second,
+                        },
+                      },
+                      "Created aliases",
+                    );
+                    setAliasCreate(null);
+                    // Next: the other mappings here, picked and shown, to assign in one go.
+                    if (others.length > 0) {
+                      setPicked(new Set(others));
+                      setAliasView("needs");
+                    }
+                  }}
+                />
+              );
+            })()}
+          </PopoverContent>
+        </Popover>
+      )}
+      {aliasPick &&
+        (() => {
+          const pick = aliasPick;
+          const property = entity.properties.find((p) => p.id === pick.propertyId);
+          if (!property) return null;
+          const taken = property.mappings
+            .filter((m) => inTable(m) && m.alias)
+            .map((m) => m.alias as string);
+          return (
+            <Popover open onOpenChange={(isOpen) => !isOpen && setAliasPick(null)}>
+              <PopoverTrigger asChild>
+                <span
+                  aria-hidden
+                  className="absolute size-0"
+                  style={{ left: pick.x, top: pick.y }}
+                />
+              </PopoverTrigger>
+              <PopoverContent
+                side="right"
+                align="start"
+                sideOffset={8}
+                onPointerDown={(event) => event.stopPropagation()}
+                className="w-[260px] rounded-[10px] border-[#e3e5e4] bg-white p-0 shadow-[0_8px_24px_-6px_rgba(0,0,0,0.16)]"
+              >
+                <AliasPickList
+                  entityName={entity.name || "Entity type"}
+                  propertyName={property.name}
+                  column={pick.column}
+                  aliases={aliases}
+                  taken={taken}
+                  allowNew={isIdentifierProperty(property)}
+                  onPick={(alias) => {
+                    const mapping: ColumnRef = {
+                      table: table.name,
+                      column: pick.column,
+                      status: "mapped",
+                      ...(alias ? { alias } : {}),
+                    };
+                    if (canMapPropertyToColumn(app, entity.id, property.id, mapping)) {
+                      app.applyAliases(
+                        entity.id,
+                        table.name,
+                        [],
+                        { propertyId: property.id, mapping },
+                        "Created Mapping",
+                      );
+                    }
+                    setAliasPick(null);
+                  }}
+                />
+              </PopoverContent>
+            </Popover>
+          );
+        })()}
+      {picked.size > 0 && aliases.length > 0 && (
+        <div className="absolute left-1/2 top-full z-40 mt-2 -translate-x-1/2">
+          <BulkAliasBar
+            count={picked.size}
+            aliases={aliases}
+            onClear={() => setPicked(new Set())}
+            onAssign={(alias) => {
+              app.applyAliases(
+                entity.id,
+                table.name,
+                [...picked].map((k) => {
+                  const [propertyId, column] = k.split("|") as [string, string];
+                  return { propertyId, column, alias };
+                }),
+                undefined,
+                "Assigned alias",
+              );
+              setPicked(new Set());
+            }}
+          />
+        </div>
       )}
       {lineSearch && (
         <Popover open onOpenChange={(isOpen) => !isOpen && setLineSearch(null)}>
@@ -3077,7 +4558,14 @@ function MappingPanels({
               preferTable={table.name}
               onPick={(value) => {
                 const mapping = parseMappingValue(value);
-                if (mapping) tryConnectMapping(app, entity.id, lineSearch.propertyId, mapping);
+                if (mapping?.table === table.name) {
+                  requestConnect(lineSearch.propertyId, mapping.column, {
+                    x: lineSearch.x,
+                    y: lineSearch.y,
+                  });
+                } else if (mapping) {
+                  tryConnectMapping(app, entity.id, lineSearch.propertyId, mapping);
+                }
                 setLineSearch(null);
               }}
             />
@@ -3141,11 +4629,14 @@ const CONNECT_ACTION =
 function ConnectPlus({
   label,
   color,
+  side = "right",
   onPress,
   onActivate,
 }: {
   label: string;
   color: string;
+  // The row edge it sits on: a Property's right, a Column's left (facing each other).
+  side?: "left" | "right";
   onPress: (event: React.PointerEvent<HTMLButtonElement>) => void;
   // The keyboard's way in (a click from the pointer is handled by the press).
   onActivate: (target: HTMLButtonElement) => void;
@@ -3163,7 +4654,10 @@ function ConnectPlus({
         event.stopPropagation();
         if (event.detail === 0) onActivate(event.currentTarget);
       }}
-      className="absolute right-0 top-1/2 flex size-5 -translate-y-1/2 translate-x-1/2 items-center justify-center rounded-full border-[1.5px] bg-white opacity-0 shadow-[0_1px_2px_0_rgba(0,0,0,0.08)] transition-[opacity,background-color] hover:bg-[#f4f4f4] focus-visible:opacity-100 group-hover/maprow:opacity-100"
+      className={cn(
+        "absolute top-1/2 z-10 flex size-5 -translate-y-1/2 items-center justify-center rounded-full border-[1.5px] bg-white opacity-0 shadow-[0_1px_2px_0_rgba(0,0,0,0.08)] transition-[opacity,background-color] hover:bg-[#f4f4f4] focus-visible:opacity-100 group-hover/maprow:opacity-100",
+        side === "right" ? "right-0 translate-x-1/2" : "left-0 -translate-x-1/2",
+      )}
       style={{ borderColor: color, color }}
     >
       <Plus className="size-3" strokeWidth={2} />
@@ -3223,13 +4717,11 @@ export function TableGraphView({
   app,
   table,
   onEdit,
-  onCreateProperty,
   onSplit,
 }: {
   app: OntologyApp;
   table: TableSchema;
   onEdit?: (key: string) => void;
-  onCreateProperty?: (entityId: string) => void;
   onSplit?: (newEntityId: string) => void;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -3443,8 +4935,10 @@ export function TableGraphView({
     };
   }, [mappedEntities, table.name]);
 
-  const entityNode = (entity: Entity, trailing?: ReactNode) => (
+  const tableSelected = inspectedTable === table.name && detailItem?.kind === "table";
+  const entityNode = (entity: Entity, trailing?: ReactNode, attached = false) => (
     <GraphNode
+      attached={attached}
       status={
         <StatusBadge
           status={entityDisplayStatus(entity)}
@@ -3452,6 +4946,7 @@ export function TableGraphView({
           confidence={entity.confidence}
         />
       }
+      attachedStatus={<ItemStatusIcon status={entityDisplayStatus(entity)} size={24} />}
       name={entity.name}
       detail={entityDetail(entity)}
       dropFor={entity.id}
@@ -3590,24 +5085,23 @@ export function TableGraphView({
                 tabIndex={0}
                 onClick={() => inspectTable(table.name)}
                 className={cn(
-                  "flex items-center gap-2 rounded-lg border bg-white px-3 text-left transition-opacity",
+                  "flex items-center gap-1 rounded-lg border bg-white pl-3 pr-2 text-left transition-opacity",
                   CARD_SHADOW,
                   !reviewScope.table(table.name) && DIMMED,
-                  inspectedTable === table.name && detailItem?.kind === "table"
-                    ? SELECTED_NODE
-                    : "border-[#3b82f6]",
+                  tableSelected ? SELECTED_NODE : "border-[#3b82f6]",
+                  (columnsOpen || !!focused) && ATTACHED_HEAD,
                 )}
                 style={{ width: NODE_W, height: CENTER_H }}
               >
-                <span className="lod-type contents">
+                <span className="lod-type flex shrink-0">
                   <MappingStatusBadge
                     status={tableMappingStatus(table.name, app.entities)}
                     {...tableMappingCompleteness(table.name, app.entities)}
-                    size={16}
+                    size={24}
                   />
                 </span>
-                <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="lod-title truncate text-[16px] font-medium leading-6 text-[#080a09]">
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5 pl-1.5">
+                  <span className="lod-title truncate text-[16px] font-medium leading-none text-[#080a09]">
                     {table.name}
                   </span>
                   <span className="lod-detail truncate text-[12px] leading-4 text-[#6d7472]">
@@ -3624,8 +5118,8 @@ export function TableGraphView({
                 />
               </div>
               {columnsOpen && !focused && (
-                <div className="absolute left-0 top-full mt-1.5" style={{ width: NODE_W }}>
-                  <TableColumnsPanel app={app} table={table} />
+                <div className="absolute left-0 top-full" style={{ width: NODE_W }}>
+                  <TableColumnsPanel app={app} table={table} frame={frameOf(tableSelected, true)} />
                 </div>
               )}
             </Node>
@@ -3670,6 +5164,7 @@ export function TableGraphView({
                         label={isFocused ? "Close mappings" : "Show each mapping"}
                         onClick={() => toggleFocus(entity.id)}
                       />,
+                      isFocused,
                     )}
                   </Node>
                   <Node x={TG_ENTITY_X + NODE_W + 10} y={item.y - 9}>
@@ -3740,17 +5235,18 @@ export function TableGraphView({
 
             {/* A focused Entity Type: its Property → Column mappings, between it and the table. */}
             {focused && (
-              <Node x={TG_ENTITY_X} y={CENTER_H / 2 + 6}>
+              <Node x={TG_ENTITY_X} y={CENTER_H / 2}>
                 <MappingPanels
                   key={focused.entity.id}
                   app={app}
                   entity={focused.entity}
+                  frames={{
+                    left: frameOf(isSelected({ kind: "entity", id: focused.entity.id })),
+                    right: frameOf(tableSelected, true),
+                  }}
                   properties={focused.mapped}
                   table={table}
                   width={TG_TABLE_X + NODE_W - TG_ENTITY_X}
-                  onCreate={
-                    onCreateProperty ? () => onCreateProperty(focused.entity.id) : undefined
-                  }
                   isSelected={(p) =>
                     isSelected({ kind: "property", entityId: focused.entity.id, propertyId: p.id })
                   }
@@ -3823,7 +5319,16 @@ export function TableGraphView({
  * Type's property panel): Filter (mapped by any Entity Type or not) / Sort / Search, a type icon
  * each; the dot says whether a column is mapped (teal), only suggested (purple), or not (grey).
  */
-function TableColumnsPanel({ app, table }: { app: OntologyApp; table: TableSchema }) {
+function TableColumnsPanel({
+  app,
+  table,
+  frame,
+}: {
+  app: OntologyApp;
+  table: TableSchema;
+  // Its node's frame: the panel is that node card's body, with an ID foot (see `frameOf`).
+  frame?: string | undefined;
+}) {
   const reviewScope = useContext(ReviewScopeContext);
   const [filter, setFilter] = useState<ListFilter>("all");
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
@@ -3858,7 +5363,12 @@ function TableColumnsPanel({ app, table }: { app: OntologyApp; table: TableSchem
   return (
     <div
       data-canvas-card
-      className="overflow-hidden rounded-[6px] bg-white shadow-[0_1px_2px_0_rgba(0,0,0,0.05)]"
+      className={cn(
+        "overflow-hidden",
+        frame
+          ? attachedBody(frame)
+          : "rounded-[6px] bg-white shadow-[0_1px_2px_0_rgba(0,0,0,0.05)]",
+      )}
     >
       <ListControls
         className="bg-transparent px-2"
@@ -3873,7 +5383,7 @@ function TableColumnsPanel({ app, table }: { app: OntologyApp; table: TableSchem
       <div className="relative">
         <div
           data-canvas-scroll
-          className="flex flex-col gap-1.5 overflow-y-auto overscroll-contain px-2 pb-2"
+          className="flex flex-col gap-2 overflow-y-auto overscroll-contain px-2.5 pb-2.5"
           style={{ maxHeight: PANEL_LIST_MAX }}
         >
           {columns.length === 0 && (
@@ -3886,8 +5396,7 @@ function TableColumnsPanel({ app, table }: { app: OntologyApp; table: TableSchem
             ] as const
           ).map(([label, group]) =>
             group.length > 0 ? (
-              <Fragment key={label}>
-                <ListGroupHeading label={label} count={group.length} />
+              <ListGroup key={label} label={label} count={group.length}>
                 {group.map((column) => {
                   const state = stateOf.get(column.name);
                   return (
@@ -3909,7 +5418,7 @@ function TableColumnsPanel({ app, table }: { app: OntologyApp; table: TableSchem
                     />
                   );
                 })}
-              </Fragment>
+              </ListGroup>
             ) : null,
           )}
         </div>

@@ -5,10 +5,13 @@ import chevronDownSmallIcon from "@/assets/icons/chevron-down-small-16.svg";
 import { cn } from "@/lib/utils";
 import {
   buildConfirmPlan,
-  entityMappingCompleteness,
+  entityReview,
+  propertyReview,
+  relationReview,
   tableMappingCompleteness,
   tableColumnUsage,
   mappingStatus,
+  RELATION_NOT_MAPPED_REASON,
   IDENTIFIER_UNMAPPED_ERROR_REASON,
   MISSING_IDENTIFIER_ERROR_REASON,
   ENTITY_UNMAPPED_IDENTIFIER_REASON,
@@ -31,6 +34,10 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { GlobalSearchPalette } from "./GlobalSearchPalette";
 import { HistoryPanel } from "./HistoryPanel";
+import { PublishReview } from "./PublishReview";
+import type { SaveStatus } from "@/lib/app-state";
+import type { DatasetReview, PublishJob } from "@/lib/publish";
+import { Loader2 } from "lucide-react";
 
 /** One "X/Y" MAPPING STATUS pill — "how mapped is my ontology?", a persistent, ontology-wide
  * completeness fact. `mapped` = how many of this category are wired to a source column (directly,
@@ -59,7 +66,6 @@ function CountPill({
           tabIndex={0}
           className="flex shrink-0 items-center gap-1.5 rounded-[10px] border border-transparent outline-none focus-visible:ring-2 focus-visible:ring-[#00DED8]"
         >
-          <span className="size-4 shrink-0 text-muted-foreground">{icon}</span>
           <span className="whitespace-nowrap text-sm text-muted-foreground">{label}</span>
           <span className="whitespace-nowrap text-sm text-[#161919]">
             {mapped}/{total}
@@ -79,7 +85,7 @@ type CountKey = "entities" | "properties" | "relations" | "tables" | "columns";
 type Counts = Record<CountKey, { mapped: number; total: number }>;
 
 const COUNT_PILL_META: Record<CountKey, { icon: React.ReactNode; label: string }> = {
-  entities: { icon: <EntitiesIcon />, label: "Entities" },
+  entities: { icon: <EntitiesIcon />, label: "Entity types" },
   properties: { icon: <PropertiesIcon />, label: "Properties" },
   relations: { icon: <RelationsIcon />, label: "Relations" },
   tables: { icon: <TablesIcon />, label: "Tables" },
@@ -182,6 +188,7 @@ function issueTypeLabel(reason: string): string {
     return "Unmapped Identifier";
   }
   if (reason === MISSING_IDENTIFIER_ERROR_REASON) return "Missing Identifier";
+  if (reason === RELATION_NOT_MAPPED_REASON) return "Not mapped yet";
   if (reason.startsWith(CASCADE_RELATION_PREFIX)) return "Blocked by Error";
   if (/rename it to something like|doesn't say what this represents/i.test(reason)) {
     return "Naming Issue";
@@ -206,7 +213,9 @@ function IssuesControl({
   entities,
   relations,
   onSelectIssue,
+  openSignal = 0,
 }: {
+  openSignal?: number;
   errors: ConfirmIssue[];
   warnings: ConfirmIssue[];
   entities: Entity[];
@@ -220,6 +229,13 @@ function IssuesControl({
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<IssueSeverity>("warning");
   const containerRef = useRef<HTMLDivElement>(null);
+  // Opened from elsewhere (the Publish confirmation): on the Errors tab when there are any.
+  useEffect(() => {
+    if (openSignal === 0) return;
+    setTab(errors.length > 0 ? "error" : "warning");
+    setOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only on a new request
+  }, [openSignal]);
 
   useEffect(() => {
     if (!open) return;
@@ -388,8 +404,18 @@ export function Header({
   onToggleHistoryChangeSelected,
   onHistoryHoverChange,
   onRestoreSelectedHistoryChanges,
+  onToggleHistoryGroupSelected,
   editing = false,
   onExitEditing,
+  saveStatus,
+  onSave,
+  canOpenPublish,
+  publishReviewOpen,
+  onPublishReviewOpenChange,
+  datasetReviews,
+  publishJobs,
+  onPublishDatasets,
+  publishQueue,
 }: {
   entities: Entity[];
   relations: Relation[];
@@ -423,16 +449,28 @@ export function Header({
   onToggleHistoryChangeSelected: (number: number) => void;
   onHistoryHoverChange: (number: number | null) => void;
   onRestoreSelectedHistoryChanges: () => RestoreOutcome;
+  onToggleHistoryGroupSelected: (group: number) => void;
   /** In the Editing workspace the breadcrumb reads "Ontology › Edit ontology", and "Ontology"
    * goes back to the Overview (Figma 347:71909). */
   editing?: boolean;
   onExitEditing?: (() => void) | undefined;
+  saveStatus: SaveStatus;
+  onSave: () => void;
+  canOpenPublish: boolean;
+  publishReviewOpen: boolean;
+  onPublishReviewOpenChange: (open: boolean) => void;
+  datasetReviews: DatasetReview[];
+  publishJobs: Record<string, PublishJob>;
+  onPublishDatasets: (tables: string[]) => void;
+  publishQueue: string[];
 }) {
   // Still needed for the Issues popover below (Warning/Error attention states) — the old global
   // Confirm dialog this used to also gate is gone; AI Suggestions are now Accepted/Declined
   // individually via the selection bar, and their own eligibility/in-range math now lives in
   // `AiReviewBar`, not here.
   const confirmPlan = useMemo(() => buildConfirmPlan(entities, relations), [entities, relations]);
+  // Bumped by the Publish confirmation's "View warnings and errors" to open the issues list.
+  const [issuesOpenSignal, setIssuesOpenSignal] = useState(0);
 
   // MAPPING STATUS — "how mapped is my ontology?" a persistent, ontology-wide completeness fact,
   // 100% independent of review status/Confidence (see this file's own `CountPill` doc comment).
@@ -446,30 +484,26 @@ export function Header({
   //     property→column pointer) — mapping-completeness for a Relation can only be a transitive
   //     fact about the two Entities it connects.
   const counts = useMemo(() => {
-    const entityFullyMapped = (e: Entity) => {
-      const { mapped, total } = entityMappingCompleteness(e);
-      return total > 0 && mapped === total;
-    };
-
-    const entitiesTotal = entities.length;
-    const entitiesMapped = entities.filter(entityFullyMapped).length;
-
-    let propertiesTotal = 0;
-    let propertiesMapped = 0;
-    entities.forEach((e) => {
-      propertiesTotal += e.properties.length;
-      propertiesMapped += e.properties.filter((p) =>
-        p.mappings.some((m) => mappingStatus(m) === "mapped"),
-      ).length;
-    });
-
-    const entityById = new Map(entities.map((e) => [e.id, e]));
-    const relationsTotal = relations.length;
-    const relationsMapped = relations.filter((r) => {
-      const from = entityById.get(r.from);
-      const to = entityById.get(r.to);
-      return !!from && !!to && entityFullyMapped(from) && entityFullyMapped(to);
-    }).length;
+    // Totals count what exists in the ontology — accepted items, not suggestions: accepting a
+    // suggestion adds to the total, mapping it adds to the mapped count.
+    const isMapped = (p: Entity["properties"][number]) =>
+      p.mappings.some((m) => mappingStatus(m) === "mapped");
+    const acceptedEntities = entities.filter((e) => entityReview(e) === "confirmed");
+    const acceptedProperties = entities.flatMap((e) =>
+      e.properties.filter((p) => propertyReview(p) === "confirmed"),
+    );
+    // An Entity Type is mapped once every one of its Properties has a mapping.
+    const entitiesMapped = acceptedEntities.filter(
+      (e) => e.properties.length > 0 && e.properties.every(isMapped),
+    ).length;
+    const entitiesTotal = acceptedEntities.length;
+    const propertiesTotal = acceptedProperties.length;
+    const propertiesMapped = acceptedProperties.filter(isMapped).length;
+    const acceptedRelations = relations.filter((r) => relationReview(r) === "confirmed");
+    const relationsTotal = acceptedRelations.length;
+    const relationsMapped = acceptedRelations.filter((r) =>
+      (r.mappings ?? []).some((m) => m.status === "mapped"),
+    ).length;
 
     // Tables n/m counts ANY table with at least one confirmed mapping — unlike Entities above,
     // which requires ALL of its own properties mapped. A Table is a source object with no
@@ -562,19 +596,17 @@ export function Header({
               </span>
             )}
           </nav>
+          <div className="mx-0.5 h-4 w-px shrink-0 bg-border" />
+          <CountPills counts={counts} keys={ALL_COUNT_KEYS} />
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <CountPills counts={counts} keys={ALL_COUNT_KEYS} />
-          <div className="mx-0.5 h-4 w-px shrink-0 bg-border" />
-          <IssuesControl
-            errors={confirmPlan.errors}
-            warnings={confirmPlan.warnings}
-            entities={entities}
-            relations={relations}
-            onSelectIssue={onSelectIssue}
-          />
-          <div className="mx-0.5 h-4 w-px shrink-0 bg-border" />
           <div className="flex shrink-0 items-center gap-1">
+            <GlobalSearchPalette
+              entities={entities}
+              relations={relations}
+              tables={tables}
+              onSelectResult={onSelectSearchResult}
+            />
             <HistoryPanel
               entries={historyLog}
               panelOpen={historyPanelOpen}
@@ -584,19 +616,114 @@ export function Header({
               onInspectEvent={onEnterHistoryInspection}
               onExitInspection={onExitHistoryInspection}
               onToggleChange={onToggleHistoryChangeSelected}
+              onToggleGroup={onToggleHistoryGroupSelected}
+              entities={entities}
+              relations={relations}
               onHoverChange={onHistoryHoverChange}
               onLocate={onSelectSearchResult}
               onRestore={onRestoreSelectedHistoryChanges}
             />
-            <GlobalSearchPalette
-              entities={entities}
-              relations={relations}
-              tables={tables}
-              onSelectResult={onSelectSearchResult}
-            />
           </div>
+          <div className="mx-0.5 h-4 w-px shrink-0 bg-border" />
+          <IssuesControl
+            errors={confirmPlan.errors}
+            warnings={confirmPlan.warnings}
+            entities={entities}
+            relations={relations}
+            onSelectIssue={onSelectIssue}
+            openSignal={issuesOpenSignal}
+          />
+          <div className="mx-1 h-4 w-px shrink-0 bg-border" />
+          <SaveButton status={saveStatus} onSave={onSave} />
+          <PublishButton
+            enabled={canOpenPublish}
+            jobs={publishJobs}
+            onOpen={() => onPublishReviewOpenChange(true)}
+          />
+          <PublishReview
+            open={publishReviewOpen}
+            onOpenChange={onPublishReviewOpenChange}
+            reviews={datasetReviews}
+            jobs={publishJobs}
+            queue={publishQueue}
+            onPublish={onPublishDatasets}
+            onViewIssues={() => {
+              onPublishReviewOpenChange(false);
+              setIssuesOpenSignal((n) => n + 1);
+            }}
+          />
         </div>
       </div>
     </div>
+  );
+}
+
+const SAVE_LABEL: Record<SaveStatus, string> = {
+  idle: "Save",
+  saving: "Saving…",
+  autosaved: "Autosaved!",
+  saved: "Saved!",
+  failed: "Save failed · Retry",
+};
+/** Saves pending Draft changes now; between saves, it shows how the last one went. Changes are
+ * also saved automatically — both save the same Draft, neither publishes. */
+function SaveButton({ status, onSave }: { status: SaveStatus; onSave: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onSave}
+      disabled={status === "saving"}
+      aria-live="polite"
+      className={cn(
+        "flex h-8 min-w-[64px] shrink-0 items-center justify-center gap-1 rounded-[6px] border px-3 text-[13px] font-medium transition-colors",
+        status === "failed"
+          ? "border-[#f15b15] bg-[#ffe6db] text-[#9c461e] hover:bg-[#ffd9c8]"
+          : "border-[#e3e5e4] bg-white text-[#1c1c18] hover:bg-[#f4f4f4]",
+        (status === "saved" || status === "autosaved") && "text-[#318F5A]",
+        status === "saving" && "cursor-default text-[#707070]",
+      )}
+    >
+      {status === "saving" && <Loader2 className="size-3.5 animate-spin" />}
+      {SAVE_LABEL[status]}
+    </button>
+  );
+}
+
+/** Opens the Publish review; it doesn't publish by itself. Shows a dataset being published. */
+function PublishButton({
+  enabled,
+  jobs,
+  onOpen,
+}: {
+  enabled: boolean;
+  jobs: Record<string, PublishJob>;
+  onOpen: () => void;
+}) {
+  const active = Object.values(jobs).find(
+    (job) => job.phase === "publishing" || job.phase === "ingesting",
+  );
+  const button = (
+    <button
+      type="button"
+      onClick={onOpen}
+      disabled={!enabled}
+      className="flex h-8 shrink-0 items-center gap-1.5 rounded-[6px] bg-[#1c1c18] px-3 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
+    >
+      {active && <Loader2 className="size-3.5 animate-spin" />}
+      {active
+        ? `${active.table} · ${active.phase === "publishing" ? "Publishing…" : "Ingestion in progress…"}`
+        : "Publish"}
+    </button>
+  );
+  if (enabled) return button;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span tabIndex={0}>{button}</span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">
+        <p>Nothing ready to publish — fix the errors first.</p>
+      </TooltipContent>
+    </Tooltip>
   );
 }

@@ -3,32 +3,20 @@ import { ArrowLeftRight, ArrowRight, Check } from "lucide-react";
 import type { OntologyApp, SuggestionRef } from "@/lib/app-state";
 import { isIdentifierProperty, type ColumnRef, type Entity } from "@/lib/mock-data";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import {
-  CreateEntityDialog,
-  CreatePropertiesDialog,
-  CreateRelationDialog,
-  PROPERTY_TYPES,
-} from "@/components/detail/CreateDialogs";
+import { PROPERTY_TYPES } from "@/components/detail/PropertyDraftRow";
 import { cn } from "@/lib/utils";
 import chevronDownIcon from "@/assets/icons/chevron-down-16.svg";
 import searchIcon from "@/assets/icons/magnifying-glass-2-16.svg";
 
 /**
- * Creating and editing an Entity Type, Property, or Relation always goes through this one modal:
- * the Entity types panel's + (new Entity Type), a Property list's + (new Properties), a Relation
- * drawn on the canvas, and every item's Edit. Creating uses the Figma create dialogs
- * (`CreateDialogs.tsx`); editing uses the form below. Changes are drafted and applied together on
- * Create / Save, so closing it always leaves the ontology untouched.
+ * Editing an Entity Type, Property, or Relation (every item's Edit). Creating happens in place
+ * instead (a list's blank row, a Relation opened in the detail panel, a new Entity Type's focused
+ * view). Changes are drafted and applied together on Save, so closing it always leaves the
+ * ontology untouched.
  */
 
-export type EditorRequest =
-  | { mode: "create"; kind: "entity" }
-  | { mode: "create"; kind: "property"; entityId: string }
-  // A Relation between two Entity Types (e.g. drawn on the canvas), named here before it exists.
-  | { mode: "create"; kind: "relation"; from: string; to: string }
-  | { mode: "edit"; ref: SuggestionRef };
+export type EditorRequest = { mode: "edit"; ref: SuggestionRef };
 
 const INPUT =
   "w-full rounded-[6px] border border-[#e3e5e4] bg-white px-2.5 text-[14px] leading-5 text-[#161919] outline-none transition-colors placeholder:text-[#9ea3a2] hover:border-[#c9cccb] focus:border-[#00ded8] focus:ring-2 focus:ring-[#00ded8]/25";
@@ -41,61 +29,11 @@ export function ItemEditorModal({
   app,
   request,
   onClose,
-  onCreated,
 }: {
   app: OntologyApp;
   request: EditorRequest | null;
   onClose: () => void;
-  /** Called with what was just created (e.g. to select it). */
-  onCreated?: (refs: SuggestionRef[]) => void;
 }) {
-  if (request?.mode === "create") {
-    const key = JSON.stringify(request);
-    if (request.kind === "entity") {
-      return (
-        <CreateEntityDialog
-          key={key}
-          app={app}
-          onClose={onClose}
-          onCreated={(id) => {
-            onCreated?.([{ kind: "entity", id }]);
-            onClose();
-          }}
-        />
-      );
-    }
-    if (request.kind === "property") {
-      const entity = app.entities.find((e) => e.id === request.entityId);
-      if (!entity) return null;
-      return (
-        <CreatePropertiesDialog
-          key={key}
-          app={app}
-          entity={entity}
-          onClose={onClose}
-          onCreated={(ids) => {
-            onCreated?.(
-              ids.map((propertyId) => ({ kind: "property", entityId: entity.id, propertyId })),
-            );
-            onClose();
-          }}
-        />
-      );
-    }
-    return (
-      <CreateRelationDialog
-        key={key}
-        app={app}
-        from={request.from}
-        to={request.to}
-        onClose={onClose}
-        onCreated={(id) => {
-          onCreated?.([{ kind: "relation", id }]);
-          onClose();
-        }}
-      />
-    );
-  }
   return (
     <Dialog open={!!request} onOpenChange={(open) => !open && onClose()}>
       <DialogContent
@@ -110,7 +48,7 @@ export function ItemEditorModal({
   );
 }
 
-type EditRequest = Extract<EditorRequest, { mode: "edit" }>;
+type EditRequest = EditorRequest;
 
 function resolveTarget(app: OntologyApp, request: EditRequest) {
   const ref = request.ref;
@@ -455,18 +393,23 @@ export function ColumnSearchList({
   value = "",
   onPick,
   preferTable,
+  onlyTable,
 }: {
   app: OntologyApp;
   value?: string;
   onPick: (value: string) => void;
   preferTable?: string | undefined;
+  // Only this table's columns.
+  onlyTable?: string | undefined;
 }) {
   const options = useMemo<ColumnOption[]>(() => {
-    const tables = preferTable
-      ? [...app.tables].sort(
-          (a, b) => Number(b.name === preferTable) - Number(a.name === preferTable),
-        )
-      : app.tables;
+    const tables = onlyTable
+      ? app.tables.filter((table) => table.name === onlyTable)
+      : preferTable
+        ? [...app.tables].sort(
+            (a, b) => Number(b.name === preferTable) - Number(a.name === preferTable),
+          )
+        : app.tables;
     return tables.flatMap((table) =>
       table.columns.map((column) => ({
         value: mappingValue({ table: table.name, column: column.name }),
@@ -475,7 +418,7 @@ export function ColumnSearchList({
         type: column.type,
       })),
     );
-  }, [app.tables, preferTable]);
+  }, [app.tables, preferTable, onlyTable]);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(() =>
     Math.max(

@@ -1,8 +1,8 @@
+import sortLinesIcon from "@/assets/icons/sort-lines-16.svg";
 import { useState } from "react";
 import { ArrowUpDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import arrowBottomTopIcon from "@/assets/icons/arrow-bottom-top-16.svg";
 
 // --- Sorting, shared by every list this feature touches (Entity types / Data Tables toolboxes,
 // a card's own Properties, a table's own Columns). Purely a display-order concern — it reorders
@@ -69,11 +69,17 @@ export function SortDropdown({
           aria-expanded={open}
           className={cn(
             variant === "figma"
-              ? "flex h-6 items-center gap-2 rounded-[6px] px-1.5 text-[14px] font-medium leading-6 text-[#6d7472] transition-colors hover:bg-black/[0.08]"
+              ? "flex h-6 items-center gap-1.5 rounded-[4px] px-1 text-[14px] leading-none text-[#6d7472] transition-colors hover:bg-black/[0.08]"
               : "flex items-center rounded-[4px] px-1.5 py-0.5 text-xs font-normal text-muted-foreground transition-colors hover:bg-accent",
             className,
           )}
         >
+          {variant === "figma" && (
+            // Figma 466:86067: the sort lines lead the label; flipped for descending.
+            <span className={cn("relative size-4 shrink-0", sort.dir === "desc" && "-scale-y-100")}>
+              <img alt="" src={sortLinesIcon} className="absolute inset-0 block size-full" />
+            </span>
+          )}
           {showPrefix && "Sort: "}
           {sort.key === "relevance"
             ? options.includes("relevance")
@@ -82,11 +88,7 @@ export function SortDropdown({
             : sort.key === "name"
               ? "Name"
               : "Confidence"}
-          {variant === "figma" ? (
-            <span className={cn("relative size-4 shrink-0", sort.dir === "desc" && "-scale-y-100")}>
-              <img alt="" src={arrowBottomTopIcon} className="absolute inset-0 block size-full" />
-            </span>
-          ) : (
+          {variant !== "figma" && (
             <ArrowUpDown className={cn("size-3", sort.dir === "desc" && "-scale-y-100")} />
           )}
         </button>

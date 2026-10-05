@@ -6,12 +6,14 @@ import {
   propertyReview,
   relationReview,
 } from "@/lib/mock-data";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createDemoFixture,
   isIdentifierProperty,
   mappingStatus,
   relationLabel,
+  relationMappingKey,
+  sameAlias,
   tableByName,
   tables,
   type ColumnRef,
@@ -19,10 +21,20 @@ import {
   type Entity,
   type Property,
   type Relation,
+  type RelationMapping,
   type ReviewStatus,
   type SearchResultRef,
 } from "./mock-data";
 import { NODE_W } from "./geometry";
+import {
+  datasetPublishable,
+  isPublishedMapping,
+  publishedLocks,
+  reviewDatasets,
+  type PublishJob,
+  type PublishedLocks,
+  type PublishedState,
+} from "./publish";
 
 let entityUidCounter = 0;
 const entityUid = () => `entity_${Date.now().toString(36)}${(entityUidCounter++).toString(36)}`;
@@ -53,6 +65,11 @@ function newPropertyFromDraft(draft: NewPropertyDraft): Property {
   };
 }
 
+/** One mapping's alias (`undefined` clears it) — see `applyAliases`. */
+export type AliasAssignment = { propertyId: string; column: string; alias: string | undefined };
+export type AppNotice = { id: number; tone: "blocked" | "info"; text: string };
+export type SaveStatus = "idle" | "saving" | "autosaved" | "saved" | "failed";
+
 let historyLogUidCounter = 0;
 const historyLogUid = () =>
   `hist_${Date.now().toString(36)}${(historyLogUidCounter++).toString(36)}`;
@@ -81,6 +98,30 @@ export type DetailAnchor =
   | { kind: "entity"; id: string; focusPropertyId?: string | undefined }
   | { kind: "table"; id: string; focusColumnName?: string | undefined }
   | null;
+
+/** Something being created in place instead of in a dialog (see `startRelationDraft` /
+ * `startEntityDraft`): it already exists while the user fills it in, but the session is a draft —
+ * Done folds it into one undo step, Cancel leaves no trace. An Entity Type remembers where the
+ * user came from, to go back there. */
+export type Creation =
+  { kind: "relation"; id: string } | { kind: "entity"; id: string; returnTo: DetailAnchor };
+
+/** What still stops a new Entity Type from being created: a name (not one already taken), then
+ * an Identifier. */
+export function entityDraftBlocker(
+  entity: Entity | undefined,
+  entities: Entity[] = [],
+): string | undefined {
+  if (!entity) return undefined;
+  const name = entity.name.trim();
+  if (!name) return "Name the entity type first.";
+  if (
+    entities.some((e) => e.id !== entity.id && e.name.trim().toLowerCase() === name.toLowerCase())
+  )
+    return `An entity type named ${name} already exists.`;
+  if (!entity.properties.some(isIdentifierProperty)) return "Add an identifier property first.";
+  return undefined;
+}
 
 /** A plain, serializable stand-in for `DOMRect` (screen px, from `getBoundingClientRect()`) — just
  * the 4 numbers the morph overlay actually needs, not the live, mutable browser object. */
@@ -273,7 +314,7 @@ export type RestoreOp =
       before: Partial<
         Pick<
           Relation,
-          "name" | "description" | "status" | "from" | "to" | "errorReason" | "datasets"
+          "name" | "description" | "status" | "from" | "to" | "errorReason" | "mappings"
         >
       >;
     }
@@ -328,6 +369,9 @@ export type HistoryLogChild = {
 };
 export type HistoryLogEntry = HistoryLogChild & {
   id: string;
+  /** A Publish: a milestone in the timeline. Everything before the latest one is read-only — it
+   * can't be restored, and undo/redo can't cross it. */
+  milestone?: { kind: "publish"; table: string; version: number; reingest: boolean } | undefined;
   /** `Date.now()` at the moment the change happened — grouped into Today/Yesterday/older date
    * headers and shown as relative time ("2 min ago") by the panel that renders these. */
   at: number;
@@ -350,6 +394,11 @@ export type HistoryLogEntry = HistoryLogChild & {
 export type HistoryChange = {
   key: string;
   number: number;
+  /** The number shown in the list AND on the graph: one per Entity Type (its Properties fold
+   * under it) or per Relation, so a bulk action of hundreds of changes reads as a few targets. */
+  group: number;
+  groupLabel: string;
+  groupRef?: SearchResultRef | undefined;
   childIndex: number | null;
   title: string;
   detail?: string | undefined;
@@ -358,31 +407,52 @@ export type HistoryChange = {
   restorable: boolean;
 };
 
-export function historyChangesFor(entry: HistoryLogEntry): HistoryChange[] {
-  if (entry.children && entry.children.length > 0) {
-    return entry.children.map((c, i) => ({
-      key: `${entry.id}:${i}`,
+export function historyChangesFor(
+  entry: HistoryLogEntry,
+  entities: Entity[] = [],
+  locked = false,
+): HistoryChange[] {
+  const raw: (HistoryLogChild & { childIndex: number | null })[] =
+    entry.children && entry.children.length > 0
+      ? entry.children.map((c, i) => ({ ...c, childIndex: i }))
+      : [{ ...entry, childIndex: null }];
+  const groups = new Map<string, { number: number; label: string; ref?: SearchResultRef }>();
+  const entityLabel = (id: string, fallback: string) =>
+    entities.find((e) => e.id === id)?.name || fallback;
+  return raw.map((c, i) => {
+    const ref = c.ref;
+    const fallback = (c.detail ?? c.title).split(/[.→]/)[0]!.trim();
+    const [groupKey, label, groupRef]: [string, string, SearchResultRef | undefined] =
+      ref?.kind === "entity"
+        ? [`e:${ref.id}`, entityLabel(ref.id, fallback), ref]
+        : ref?.kind === "property"
+          ? [
+              `e:${ref.entityId}`,
+              entityLabel(ref.entityId, fallback),
+              { kind: "entity", id: ref.entityId },
+            ]
+          : ref?.kind === "relation"
+            ? [`r:${ref.id}`, c.detail ?? c.title, ref]
+            : [`c:${i}`, c.detail ?? c.title, ref];
+    let group = groups.get(groupKey);
+    if (!group) {
+      group = { number: groups.size + 1, label, ...(groupRef ? { ref: groupRef } : {}) };
+      groups.set(groupKey, group);
+    }
+    return {
+      key: `${entry.id}:${c.childIndex ?? "self"}`,
       number: i + 1,
-      childIndex: i,
+      group: group.number,
+      groupLabel: group.label,
+      groupRef: group.ref,
+      childIndex: c.childIndex,
       title: c.title,
       detail: c.detail,
       ref: c.ref,
       restore: c.restore,
-      restorable: !!c.restore,
-    }));
-  }
-  return [
-    {
-      key: `${entry.id}:self`,
-      number: 1,
-      childIndex: null,
-      title: entry.title,
-      detail: entry.detail,
-      ref: entry.ref,
-      restore: entry.restore,
-      restorable: !!entry.restore,
-    },
-  ];
+      restorable: !locked && !entry.milestone && !!c.restore,
+    };
+  });
 }
 
 /** History Inspection Mode — entered by clicking a History event (`enterHistoryInspection`). This
@@ -396,6 +466,8 @@ export function historyChangesFor(entry: HistoryLogEntry): HistoryChange[] {
  * cleared again on the next selection change. */
 export type HistoryInspection = {
   entryId: string;
+  /** Before the latest Publish: shown read-only. */
+  locked: boolean;
   title: string;
   detail?: string | undefined;
   at: number;
@@ -502,6 +574,23 @@ export function useOntologyApp() {
   const [trashedEntities, setTrashedEntities] = useState<TrashedEntity[]>([]);
   const [trashedProperties, setTrashedProperties] = useState<TrashedProperty[]>([]);
   const [trashedRelations, setTrashedRelations] = useState<TrashedRelation[]>([]);
+
+  // --- Published datasets (see publish.ts) ---------------------------------------------------
+  const [published, setPublished] = useState<PublishedState>({});
+  const publishedRef = useRef(published);
+  publishedRef.current = published;
+  const locks = useMemo(() => publishedLocks(published), [published]);
+  const locksRef = useRef<PublishedLocks>(locks);
+  locksRef.current = locks;
+  // A short message for an edit that was blocked, or that has a consequence worth knowing.
+  const [notice, setNotice] = useState<AppNotice | null>(null);
+  const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const notify = useCallback((tone: AppNotice["tone"], text: string) => {
+    if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+    setNotice({ id: Date.now(), tone, text });
+    noticeTimerRef.current = setTimeout(() => setNotice(null), 5000);
+  }, []);
+  const dismissNotice = useCallback(() => setNotice(null), []);
 
   // Undo/redo history — see `HistorySnapshot` above. `past`'s last entry is always "the state
   // right before whatever the user just did"; `future` only ever holds anything right after an
@@ -619,9 +708,13 @@ export function useOntologyApp() {
     });
   }, []);
   const clearSuggestionSelection = useCallback(() => setSuggestionSelection(new Set()), []);
-  const selectSuggestionKeys = useCallback((keys: string[]) => {
-    setSuggestionSelection(new Set(keys));
-  }, []);
+  const selectSuggestionKeys = useCallback(
+    (keys: string[], note?: string) => {
+      setSuggestionSelection(new Set(keys));
+      if (note) notify("info", note);
+    },
+    [notify],
+  );
 
   // Opening Detail always keeps `selection` pointed at the same item, whichever of the many
   // paths into Detail triggered it (an Overview click, a toolbox click, or a related-entity
@@ -760,15 +853,20 @@ export function useOntologyApp() {
    * Global Search results already behave. */
   const enterHistoryInspection = useCallback(
     (entryId: string) => {
-      const entry = historyLog.find((h) => h.id === entryId);
+      const index = historyLog.findIndex((h) => h.id === entryId);
+      const entry = historyLog[index];
       if (!entry) return;
+      // Newest first: anything after the latest Publish in the list happened before it.
+      const lastPublish = historyLog.findIndex((h) => h.milestone);
+      const locked = lastPublish !== -1 && index >= lastPublish;
       setDetail(null);
       setHistoryInspection({
         entryId,
+        locked,
         title: entry.title,
         detail: entry.detail,
         at: entry.at,
-        changes: historyChangesFor(entry),
+        changes: historyChangesFor(entry, entitiesRef.current, locked),
         selected: new Set(),
         conflicts: [],
       });
@@ -799,6 +897,21 @@ export function useOntologyApp() {
       const next = new Set(prev.selected);
       if (next.has(number)) next.delete(number);
       else next.add(number);
+      return { ...prev, selected: next, conflicts: [] };
+    });
+  }, []);
+  /** Selects (or clears) every restorable change of one numbered group — an Entity Type with its
+   * Properties, or a Relation — from its row or its marker on the graph. */
+  const toggleHistoryGroupSelected = useCallback((group: number) => {
+    setHistoryInspection((prev) => {
+      if (!prev) return prev;
+      const numbers = prev.changes
+        .filter((c) => c.group === group && c.restorable)
+        .map((c) => c.number);
+      if (numbers.length === 0) return prev;
+      const next = new Set(prev.selected);
+      const all = numbers.every((n) => next.has(n));
+      numbers.forEach((n) => (all ? next.delete(n) : next.add(n)));
       return { ...prev, selected: next, conflicts: [] };
     });
   }, []);
@@ -925,22 +1038,57 @@ export function useOntologyApp() {
   // needing any logging of its own, since every one of its calls already funnels through here.
   const updateProperty = useCallback(
     (entityId: string, propertyId: string, patch: Partial<Omit<Property, "id">>) => {
-      pushHistory();
       const owner = entitiesRef.current.find((e) => e.id === entityId);
       const before = owner?.properties.find((p) => p.id === propertyId);
+      // Published: Name and Description stay editable; its type, identifier role and published
+      // columns don't change (they'd change data already ingested).
+      const locks = locksRef.current;
+      if (before && locks.propertyIds.has(propertyId)) {
+        if (patch.type !== undefined && patch.type !== before.type) {
+          notify("blocked", `${before.name} is published — its type can't be changed.`);
+          return;
+        }
+        if (
+          patch.isIdentifier !== undefined &&
+          patch.isIdentifier !== isIdentifierProperty(before)
+        ) {
+          notify("blocked", `${before.name} is published — its identifier role can't be changed.`);
+          return;
+        }
+      }
+      if (before && patch.mappings) {
+        const after = patch.mappings;
+        const lost = before.mappings.find(
+          (m) =>
+            isPublishedMapping(locks, entityId, propertyId, m) &&
+            !after.some((a) => sameColumn(a, m) && sameAlias(a.alias, m.alias)),
+        );
+        if (lost) {
+          notify(
+            "blocked",
+            `${before.name} ← ${lost.table}.${lost.column} is published — published mapping columns can't be changed.`,
+          );
+          return;
+        }
+        const newInPublished = after.find(
+          (m) =>
+            locks.tables.has(m.table) &&
+            !before.mappings.some((b) => sameColumn(b, m) && sameAlias(b.alias, m.alias)),
+        );
+        if (newInPublished) {
+          notify(
+            "info",
+            `${newInPublished.table} is published — publishing this new column will ingest the whole dataset again.`,
+          );
+        }
+      }
+      pushHistory();
       setEntities((es) =>
         es.map((e) =>
           e.id === entityId
             ? {
                 ...e,
-                properties: e.properties.map((p) =>
-                  p.id === propertyId
-                    ? { ...p, ...patch }
-                    : // One Identifier per Entity Type: making this one it unmarks the rest.
-                      patch.isIdentifier && p.isIdentifier
-                      ? { ...p, isIdentifier: false }
-                      : p,
-                ),
+                properties: e.properties.map((p) => (p.id === propertyId ? { ...p, ...patch } : p)),
               }
             : e,
         ),
@@ -1006,22 +1154,23 @@ export function useOntologyApp() {
         }
       }
     },
-    [pushHistory, logHistoryEvent],
+    [pushHistory, logHistoryEvent, notify],
   );
 
-  // Connecting a Property to a column. An Identifier gains the column (several in one dataset form
-  // its composite identifier there); any other Property has one column per dataset, so the new one
-  // replaces whatever it had in that dataset. Its mappings in other datasets stay. History logging
-  // lives in `updateProperty`.
+  // Connecting a Property to a column. A Property — an Identifier (key part) included — has one
+  // column per occurrence (a dataset, or one of its aliases), so the new one replaces whatever it
+  // had for that occurrence; its other mappings stay. (A composite identifier is several Identifier
+  // properties, each with its own column — see `addIdentifierPart`.) History logging lives in
+  // `updateProperty`.
   const connectMapping = useCallback(
     (entityId: string, propertyId: string, mapping: ColumnRef) => {
       const property = entitiesRef.current
         .find((e) => e.id === entityId)
         ?.properties.find((p) => p.id === propertyId);
       if (!property || property.mappings.some((m) => sameColumn(m, mapping))) return;
-      const kept = isIdentifierProperty(property)
-        ? property.mappings
-        : property.mappings.filter((m) => m.table !== mapping.table);
+      const kept = property.mappings.filter(
+        (m) => !(m.table === mapping.table && sameAlias(m.alias, mapping.alias)),
+      );
       updateProperty(entityId, propertyId, { mappings: [...kept, mapping] });
     },
     [updateProperty],
@@ -1039,6 +1188,78 @@ export function useOntologyApp() {
       });
     },
     [updateProperty],
+  );
+
+  // --- Aliases: several occurrences of one Entity Type in a dataset (see `ColumnRef.alias`) -----
+  // Sets the alias of some of an Entity Type's mappings in `table` — and, with `add`, makes a new
+  // mapping too — as one step (one undo, one History entry).
+  const applyAliases = useCallback(
+    (
+      entityId: string,
+      table: string,
+      assign: AliasAssignment[],
+      add?: { propertyId: string; mapping: ColumnRef },
+      title = "Set alias",
+    ) => {
+      const entity = entitiesRef.current.find((e) => e.id === entityId);
+      if (!entity) return;
+      const target = (propertyId: string, m: ColumnRef) =>
+        m.table === table
+          ? assign.find((a) => a.propertyId === propertyId && a.column === m.column)
+          : undefined;
+      const locked = entity.properties.some((p) =>
+        p.mappings.some((m) => {
+          const a = target(p.id, m);
+          return (
+            !!a &&
+            !sameAlias(a.alias, m.alias) &&
+            isPublishedMapping(locksRef.current, entityId, p.id, m)
+          );
+        }),
+      );
+      if (locked) {
+        notify("blocked", `${table} is published — its published mappings' aliases can't change.`);
+        return;
+      }
+      pushHistory();
+      setEntities((es) =>
+        es.map((e) => {
+          if (e.id !== entityId) return e;
+          return {
+            ...e,
+            properties: e.properties.map((p) => {
+              let mappings: ColumnRef[] = p.mappings.map((m): ColumnRef => {
+                const a = target(p.id, m);
+                if (!a) return m;
+                const { alias: _old, ...rest } = m;
+                return a.alias ? { ...rest, alias: a.alias } : rest;
+              });
+              if (add && add.propertyId === p.id) {
+                const next = add.mapping;
+                mappings = [
+                  ...mappings.filter(
+                    (m) =>
+                      !sameColumn(m, next) &&
+                      !(m.table === next.table && sameAlias(m.alias, next.alias)),
+                  ),
+                  next,
+                ];
+              }
+              return { ...p, mappings };
+            }),
+          };
+        }),
+      );
+      const named = [...new Set(assign.map((a) => a.alias).filter(Boolean))];
+      logHistoryEvent({
+        title,
+        detail: `${entity.name || "Untitled entity"} in ${table}${
+          named.length > 0 ? ` → ${named.map((a) => `@${a}`).join(", ")}` : ""
+        }`,
+        ref: { kind: "entity", id: entityId },
+      });
+    },
+    [pushHistory, logHistoryEvent, notify],
   );
 
   const updateRelation = useCallback(
@@ -1146,19 +1367,13 @@ export function useOntologyApp() {
       pushHistory();
       const created = drafts.map(newPropertyFromDraft);
       const entityName = entitiesRef.current.find((e) => e.id === entityId)?.name;
-      // One Identifier per Entity Type: a new one replaces the old.
-      const newIdentifier = created.some((p) => p.isIdentifier);
       setEntities((es) =>
         es.map((e) =>
           e.id === entityId
             ? {
                 ...e,
-                properties: [
-                  ...e.properties.map((p) =>
-                    newIdentifier && p.isIdentifier ? { ...p, isIdentifier: false } : p,
-                  ),
-                  ...created,
-                ],
+                // Another Identifier makes the identifier composite (a key part each).
+                properties: [...e.properties, ...created],
               }
             : e,
         ),
@@ -1174,6 +1389,28 @@ export function useOntologyApp() {
       return created.map((property) => property.id);
     },
     [pushHistory, logHistoryEvent],
+  );
+
+  // A column added to an Entity Type's identifier as another key part (making it composite): a new
+  // Identifier property, named after the column, mapped to it.
+  const addIdentifierPart = useCallback(
+    (entityId: string, mapping: ColumnRef) => {
+      const column = tableByName(mapping.table)?.columns.find((c) => c.name === mapping.column);
+      const name = mapping.column
+        .toLowerCase()
+        .replace(/[^a-z0-9]+([a-z0-9])/g, (_, c: string) => c.toUpperCase())
+        .replace(/[^a-zA-Z0-9]/g, "");
+      return createProperties(entityId, [
+        {
+          name: name || mapping.column,
+          type: column?.type ?? "string",
+          ...(column?.description ? { description: column.description } : {}),
+          isIdentifier: true,
+          mappings: [mapping],
+        },
+      ])[0];
+    },
+    [createProperties],
   );
 
   // --- Canvas-first Entity creation (see the creation wizard's own doc comment) ---------------
@@ -1575,7 +1812,7 @@ export function useOntologyApp() {
       fromId: string,
       toId: string,
       name: string,
-      extra?: { description?: string; datasets?: string[] },
+      extra?: { description?: string; mappings?: RelationMapping[] },
     ) => {
       pushHistory();
       const id = relationUid();
@@ -1586,8 +1823,14 @@ export function useOntologyApp() {
         from: fromId,
         to: toId,
         confidence: 1,
-        status: "confirmed",
-        ...(extra?.datasets?.length ? { datasets: extra.datasets } : {}),
+        // A Relation is only confirmed once both its Entity Types are (with no Error).
+        status: [fromId, toId].every((entityId) => {
+          const e = entitiesRef.current.find((x) => x.id === entityId);
+          return !!e && entityReview(e) === "confirmed" && entityIssue(e) !== "error";
+        })
+          ? "confirmed"
+          : "suggested",
+        ...(extra?.mappings?.length ? { mappings: extra.mappings } : {}),
       };
       setRelations((rs) => [...rs, newRelation]);
       logHistoryEvent({
@@ -1634,44 +1877,70 @@ export function useOntologyApp() {
     [entities, pushHistory, logHistoryEvent],
   );
 
-  // A Relation's mappings are datasets (its key columns follow both Identifiers' mappings there —
-  // see mock-data's `relationJoins`). Connecting adds one; disconnecting removes it. One History
-  // step each.
-  const setRelationDatasets = useCallback(
-    (id: string, datasets: string[], title: string, table: string) => {
+  // A Relation's mappings: datasets it links records through, each with the exact identifier
+  // columns chosen on both sides (see mock-data's `RelationMapping`). One History step each.
+  const setRelationMappings = useCallback(
+    (id: string, mappings: RelationMapping[], title: string, table: string) => {
       const relation = relationsRef.current.find((r) => r.id === id);
       if (!relation) return;
       pushHistory();
-      setRelations((rs) => rs.map((r) => (r.id === id ? { ...r, datasets } : r)));
+      setRelations((rs) => rs.map((r) => (r.id === id ? { ...r, mappings } : r)));
       logHistoryEvent({
         title,
         detail: `${relationLabel(relation)} ↔ ${table}`,
         ref: { kind: "relation", id },
-        restore: { kind: "relationPatch", id, before: { datasets: relation.datasets ?? [] } },
+        restore: { kind: "relationPatch", id, before: { mappings: relation.mappings ?? [] } },
       });
     },
     [pushHistory, logHistoryEvent],
   );
-  const connectRelationDataset = useCallback(
-    (id: string, table: string) => {
-      const current = relationsRef.current.find((r) => r.id === id)?.datasets ?? [];
-      if (current.includes(table)) return;
-      setRelationDatasets(id, [...current, table], "Mapped Relation", table);
+  const connectRelationMapping = useCallback(
+    (id: string, mapping: RelationMapping) => {
+      const current = relationsRef.current.find((r) => r.id === id)?.mappings ?? [];
+      const key = relationMappingKey(mapping);
+      if (current.some((m) => relationMappingKey(m) === key)) return;
+      setRelationMappings(id, [...current, mapping], "Mapped Relation", mapping.table);
     },
-    [setRelationDatasets],
+    [setRelationMappings],
   );
-  const disconnectRelationDataset = useCallback(
-    (id: string, table: string) => {
-      const current = relationsRef.current.find((r) => r.id === id)?.datasets ?? [];
-      if (!current.includes(table)) return;
-      setRelationDatasets(
+  const disconnectRelationMapping = useCallback(
+    (
+      id: string,
+      mapping: { table: string; fromAlias?: string | undefined; toAlias?: string | undefined },
+    ) => {
+      const current = relationsRef.current.find((r) => r.id === id)?.mappings ?? [];
+      const key = relationMappingKey(mapping);
+      if (!current.some((m) => relationMappingKey(m) === key)) return;
+      setRelationMappings(
         id,
-        current.filter((t) => t !== table),
+        current.filter((m) => relationMappingKey(m) !== key),
         "Disconnected Relation mapping",
-        table,
+        mapping.table,
       );
     },
-    [setRelationDatasets],
+    [setRelationMappings],
+  );
+
+  // A suggested Relation mapping becomes mapped — only that one; whatever it depends on (its
+  // Entity Types, their Identifier mappings) is accepted on its own.
+  const acceptRelationMapping = useCallback(
+    (
+      id: string,
+      mapping: { table: string; fromAlias?: string | undefined; toAlias?: string | undefined },
+    ) => {
+      const current = relationsRef.current.find((r) => r.id === id)?.mappings ?? [];
+      const key = relationMappingKey(mapping);
+      if (!current.some((m) => relationMappingKey(m) === key && m.status !== "mapped")) return;
+      setRelationMappings(
+        id,
+        current.map((m) =>
+          relationMappingKey(m) === key ? { ...m, status: "mapped" as const } : m,
+        ),
+        "Accepted Relation mapping",
+        mapping.table,
+      );
+    },
+    [setRelationMappings],
   );
 
   // Renaming a Relation is a plain field update for any other Relation, but one that's still
@@ -1747,6 +2016,13 @@ export function useOntologyApp() {
     (entityId: string) => {
       const target = entities.find((e) => e.id === entityId);
       if (!target) return;
+      if (locksRef.current.entityIds.has(entityId)) {
+        notify(
+          "blocked",
+          `${target.name || "This Entity Type"} is published — it can't be deleted.`,
+        );
+        return;
+      }
       pushHistory();
       const cascaded = relations.filter((r) => r.from === entityId || r.to === entityId);
       setEntities((es) => es.filter((e) => e.id !== entityId));
@@ -1773,7 +2049,7 @@ export function useOntologyApp() {
         restore: { kind: "undoEntityDelete", id: entityId },
       });
     },
-    [entities, relations, pushHistory, logHistoryEvent],
+    [entities, relations, pushHistory, logHistoryEvent, notify],
   );
 
   // Deleting a Property only ever removes it from its one parent Entity Type — the mapping (if
@@ -1784,6 +2060,10 @@ export function useOntologyApp() {
       const owner = entities.find((e) => e.id === entityId);
       const property = owner?.properties.find((p) => p.id === propertyId);
       if (!property) return;
+      if (locksRef.current.propertyIds.has(propertyId)) {
+        notify("blocked", `${property.name} is published — it can't be deleted.`);
+        return;
+      }
       pushHistory();
       setEntities((es) =>
         es.map((e) =>
@@ -1799,7 +2079,7 @@ export function useOntologyApp() {
         restore: { kind: "undoPropertyDelete", propertyId },
       });
     },
-    [entities, pushHistory, logHistoryEvent],
+    [entities, pushHistory, logHistoryEvent, notify],
   );
 
   // Batch counterpart to deleteEntity — for the multi-select contextual "Delete" action (2+
@@ -1809,7 +2089,14 @@ export function useOntologyApp() {
   // behavior as the single-item version otherwise: every deleted entity's own Properties go with
   // it, and every Relation touching any deleted entity cascades into Trash alongside it.
   const deleteEntities = useCallback(
-    (entityIds: string[]) => {
+    (requestedIds: string[]) => {
+      const entityIds = requestedIds.filter((id) => !locksRef.current.entityIds.has(id));
+      if (entityIds.length < requestedIds.length) {
+        notify(
+          "blocked",
+          `${requestedIds.length - entityIds.length} published Entity Type(s) can't be deleted and were skipped.`,
+        );
+      }
       const idSet = new Set(entityIds);
       const targets = entities.filter((e) => idSet.has(e.id));
       if (targets.length === 0) return;
@@ -1853,14 +2140,21 @@ export function useOntologyApp() {
             },
       );
     },
-    [entities, relations, pushHistory, logHistoryEvent],
+    [entities, relations, pushHistory, logHistoryEvent, notify],
   );
 
   // Batch counterpart to deleteProperty — for the multi-select contextual "Delete" action (2+
   // Properties selected, the same selection Split already uses). Each property is only ever
   // removed from its own parent Entity Type, exactly like the single-item version.
   const deleteProperties = useCallback(
-    (items: { entityId: string; propertyId: string }[]) => {
+    (requested: { entityId: string; propertyId: string }[]) => {
+      const items = requested.filter((i) => !locksRef.current.propertyIds.has(i.propertyId));
+      if (items.length < requested.length) {
+        notify(
+          "blocked",
+          `${requested.length - items.length} published Propert${requested.length - items.length === 1 ? "y" : "ies"} can't be deleted and were skipped.`,
+        );
+      }
       if (items.length === 0) return;
       const idsByEntity = new Map<string, Set<string>>();
       items.forEach(({ entityId, propertyId }) => {
@@ -1904,7 +2198,7 @@ export function useOntologyApp() {
             },
       );
     },
-    [entities, pushHistory, logHistoryEvent],
+    [entities, pushHistory, logHistoryEvent, notify],
   );
 
   // Batch counterpart to deleteRelation — for the multi-select contextual "Delete" action (1+
@@ -2616,6 +2910,282 @@ export function useOntologyApp() {
     return outcome;
   }, [historyInspection, restoreHistoryChanges, flashRestoreHighlight, exitHistoryInspection]);
 
+  // --- In-place creation (see `Creation`) -----------------------------------------------------
+  // The draft remembers the state, undo depth and newest History entry from just before it began.
+  const [creation, setCreation] = useState<Creation | null>(null);
+  const draftRef = useRef<{
+    snapshot: HistorySnapshot;
+    pastLength: number;
+    logTopId: string | undefined;
+  } | null>(null);
+  const beginDraft = () => {
+    draftRef.current = {
+      snapshot: { entities, relations, trashedEntities, trashedProperties, trashedRelations },
+      pastLength: past.length,
+      logTopId: historyLog[0]?.id,
+    };
+  };
+  // A new Relation, unnamed, opened in the detail panel to be named and mapped there.
+  const startRelationDraft = useCallback(
+    (fromId: string, toId: string) => {
+      if (creation) return null;
+      beginDraft();
+      const id = createRelation(fromId, toId, "");
+      setCreation({ kind: "relation", id });
+      setSuggestionSelection(new Set([suggestionKey({ kind: "relation", id })]));
+      return id;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `beginDraft` reads this render's state
+    [creation, createRelation, entities, relations, past, historyLog],
+  );
+  // A new, empty Entity Type, opened as the workspace's focus to be named (on its own node) and
+  // given Properties (in the panel under it).
+  const startEntityDraft = useCallback(
+    () => {
+      if (creation) return null;
+      beginDraft();
+      const id = createEntity("");
+      setCreation({ kind: "entity", id, returnTo: detail });
+      setDetail({ kind: "entity", id });
+      setSelection({ kind: "entity", id });
+      setSuggestionSelection(new Set());
+      return id;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `beginDraft` reads this render's state
+    [creation, createEntity, detail, entities, relations, past, historyLog],
+  );
+  // An Entity Type just created this way — for the workspace to point out once it's back.
+  const [createdEntityId, setCreatedEntityId] = useState<string | null>(null);
+  const clearCreatedEntity = useCallback(() => setCreatedEntityId(null), []);
+  const returnFrom = (current: Creation) => {
+    if (current.kind !== "entity") return;
+    setDetail(current.returnTo);
+    setSelection(
+      current.returnTo ? { kind: current.returnTo.kind, id: current.returnTo.id } : null,
+    );
+    setSuggestionSelection(new Set());
+  };
+  /** Done: everything the draft did becomes one undo step. `stay` keeps the current view (the
+   * user already went somewhere else). */
+  const finishCreation = useCallback(
+    (options?: { stay?: boolean }) => {
+      const draft = draftRef.current;
+      const current = creation;
+      draftRef.current = null;
+      setCreation(null);
+      if (draft) {
+        setPast((p) =>
+          p.length > draft.pastLength ? [...p.slice(0, draft.pastLength), draft.snapshot] : p,
+        );
+      }
+      if (current?.kind === "entity") {
+        setCreatedEntityId(current.id);
+        // Its name was typed (and its Properties added) step by step; the History log gets the
+        // one change the user made: this Entity Type.
+        const entity = entitiesRef.current.find((e) => e.id === current.id);
+        if (draft && entity) {
+          setHistoryLog((log) => {
+            const at = draft.logTopId
+              ? log.findIndex((entry) => entry.id === draft.logTopId)
+              : log.length;
+            const before = at === -1 ? log : log.slice(at);
+            const count = entity.properties.length;
+            return [
+              {
+                id: historyLogUid(),
+                at: Date.now(),
+                title: "Created Entity",
+                detail: `${entity.name.trim() || "Untitled entity"} — ${count} ${count === 1 ? "property" : "properties"}`,
+                ref: { kind: "entity", id: entity.id },
+                restore: { kind: "undoEntityCreate", id: entity.id },
+              },
+              ...before,
+            ];
+          });
+        }
+      }
+      if (current && !options?.stay) returnFrom(current);
+    },
+    [creation],
+  );
+  /** Cancel: back to exactly how things were — nothing left in undo or the History log. */
+  const cancelCreation = useCallback(
+    (options?: { stay?: boolean }) => {
+      const draft = draftRef.current;
+      const current = creation;
+      draftRef.current = null;
+      setCreation(null);
+      if (draft) {
+        restoreSnapshot(draft.snapshot);
+        setPast((p) => p.slice(0, draft.pastLength));
+        setFuture([]);
+        setHistoryLog((log) => {
+          if (!draft.logTopId) return [];
+          const at = log.findIndex((entry) => entry.id === draft.logTopId);
+          return at === -1 ? log : log.slice(at);
+        });
+      }
+      if (!current || options?.stay) return;
+      if (current.kind === "entity") returnFrom(current);
+      else setSuggestionSelection(new Set());
+    },
+    [creation, restoreSnapshot],
+  );
+  // Leaving a draft some other way settles it: a new Relation the user moved away from is kept
+  // once it has a name (dropped otherwise); a new Entity Type the user navigated away from is
+  // kept once it can be (dropped otherwise).
+  useEffect(() => {
+    if (!creation) return;
+    if (creation.kind === "relation") {
+      const relation = relations.find((r) => r.id === creation.id);
+      if (!relation) cancelCreation({ stay: true });
+      else if (!suggestionSelection.has(suggestionKey({ kind: "relation", id: creation.id }))) {
+        if (relation.name.trim()) finishCreation({ stay: true });
+        else cancelCreation({ stay: true });
+      }
+      return;
+    }
+    const entity = entities.find((e) => e.id === creation.id);
+    if (!entity) cancelCreation({ stay: true });
+    else if (detail?.kind !== "entity" || detail.id !== creation.id) {
+      if (entityDraftBlocker(entity, entities)) cancelCreation({ stay: true });
+      else finishCreation({ stay: true });
+    }
+  }, [creation, relations, entities, suggestionSelection, detail, finishCreation, cancelCreation]);
+
+  // --- Draft saving ----------------------------------------------------------------------------
+  // Every committed change (ontology, mapping, Accept/Decline, restore) is saved to the one Draft:
+  // automatically, a moment after the last change, or right away with Save. Neither publishes.
+  // A creation still in progress isn't a change yet — it's saved once it's created. Simulated:
+  // `window.__failNextSave = true` makes the next save fail.
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+  const dirtyRef = useRef(false);
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const firstStateRef = useRef(true);
+  const runSave = useCallback((trigger: "auto" | "manual") => {
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = null;
+    saveTimersRef.current.forEach(clearTimeout);
+    setSaveStatus("saving");
+    const done = setTimeout(() => {
+      const w = window as unknown as { __failNextSave?: boolean };
+      if (w.__failNextSave) {
+        w.__failNextSave = false;
+        setSaveStatus("failed");
+        return;
+      }
+      dirtyRef.current = false;
+      setSavedAt(Date.now());
+      setSaveStatus(trigger === "auto" ? "autosaved" : "saved");
+      saveTimersRef.current.push(
+        setTimeout(() => setSaveStatus((st) => (st === "failed" ? st : "idle")), 1800),
+      );
+    }, 700);
+    saveTimersRef.current = [done];
+  }, []);
+  useEffect(() => {
+    if (firstStateRef.current) {
+      firstStateRef.current = false;
+      return;
+    }
+    if (creation) return;
+    dirtyRef.current = true;
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = setTimeout(() => runSave("auto"), 1200);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- a change to any of these is a change
+  }, [entities, relations, trashedEntities, trashedProperties, trashedRelations, creation]);
+  useEffect(
+    () => () => {
+      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+      saveTimersRef.current.forEach(clearTimeout);
+    },
+    [],
+  );
+  /** Save (and Retry): saves pending Draft changes now. */
+  const saveDraft = useCallback(() => runSave("manual"), [runSave]);
+
+  // --- Publishing a dataset --------------------------------------------------------------------
+  // Publishing → Ingestion in progress → Published / Failed, per dataset. Simulated:
+  // `window.__failNextPublish = true` makes the next ingestion fail.
+  const [publishReviewOpen, setPublishReviewOpen] = useState(false);
+  const publishQueueRef = useRef<string[]>([]);
+  const [publishJobs, setPublishJobs] = useState<Record<string, PublishJob>>({});
+  const datasetReviews = useMemo(
+    () => reviewDatasets(entities, relations, published),
+    [entities, relations, published],
+  );
+  // Publish opens only when at least one dataset is ready (no Errors, something new to publish).
+  const canOpenPublish = datasetReviews.some(
+    (review) => datasetPublishable(review) && !publishQueueRef.current.includes(review.table),
+  );
+  const publishDataset = useCallback(
+    (table: string) => {
+      const review = datasetReviews.find((r) => r.table === table);
+      if (!review || !datasetPublishable(review) || creation) return;
+      const job = publishJobs[table];
+      if (job && (job.phase === "publishing" || job.phase === "ingesting")) return;
+      if (dirtyRef.current) runSave("auto");
+      const reingest = review.reingest;
+      const mappings = review.accepted.map(({ label: _label, ...m }) => m);
+      setPublishJobs((jobs) => ({ ...jobs, [table]: { table, phase: "publishing", reingest } }));
+      setTimeout(() => {
+        setPublishJobs((jobs) => ({ ...jobs, [table]: { table, phase: "ingesting", reingest } }));
+        setTimeout(() => {
+          const w = window as unknown as { __failNextPublish?: boolean };
+          if (w.__failNextPublish) {
+            w.__failNextPublish = false;
+            setPublishJobs((jobs) => ({
+              ...jobs,
+              [table]: {
+                table,
+                phase: "failed",
+                reingest,
+                reason:
+                  "Ingestion stopped: 12 rows in the dataset had no value for the identifier column.",
+              },
+            }));
+            return;
+          }
+          const version = (publishedRef.current[table]?.version ?? 0) + 1;
+          setPublished((prev) => ({
+            ...prev,
+            [table]: { table, version, at: Date.now(), mappings },
+          }));
+          setPublishJobs((jobs) => ({ ...jobs, [table]: { table, phase: "published", reingest } }));
+          // A milestone: undo/redo and restore don't reach back past it.
+          setPast([]);
+          setFuture([]);
+          logHistoryEvent({
+            title: `Published ${table}`,
+            detail: `${mappings.length} mapping${mappings.length === 1 ? "" : "s"}${reingest ? " · full re-ingestion" : ""}`,
+            milestone: { kind: "publish", table, version, reingest },
+          });
+        }, 2600);
+      }, 1000);
+    },
+    [datasetReviews, publishJobs, creation, runSave, logHistoryEvent],
+  );
+
+  // "Publish N datasets": still one dataset at a time — each is its own publish (version, job,
+  // History milestone) — started one after another, so one can fail while the rest succeed.
+  const [publishQueue, setPublishQueue] = useState<string[]>([]);
+  publishQueueRef.current = publishQueue;
+  const publishDatasets = useCallback((tables: string[]) => {
+    setPublishQueue((queue) => [...queue, ...tables.filter((t) => !queue.includes(t))]);
+  }, []);
+  useEffect(() => {
+    if (publishQueue.length === 0) return;
+    const busy = Object.values(publishJobs).some(
+      (job) => job.phase === "publishing" || job.phase === "ingesting",
+    );
+    if (busy) return;
+    const [next, ...rest] = publishQueue;
+    setPublishQueue(rest);
+    publishDataset(next!);
+  }, [publishQueue, publishJobs, publishDataset]);
+
   const resetDemoScenario = useCallback((scenario: DemoScenario) => {
     const fixture = createDemoFixture(scenario);
     setDemoScenario(scenario);
@@ -2626,9 +3196,14 @@ export function useOntologyApp() {
     setTrashedRelations([]);
     setPast([]);
     setFuture([]);
+    setPublished({});
+    setPublishJobs({});
+    setPublishQueue([]);
     setHistoryLog(scenario === "fresh" ? [] : IN_PROGRESS_HISTORY_LOG);
     setSelection(null);
     setDetail(null);
+    setCreation(null);
+    draftRef.current = null;
     setEntityMorphOrigin(null);
     setView({ x: 60, y: 40, z: 0.55 });
     setConfidenceRange({ min: 0, max: 100 });
@@ -2658,9 +3233,12 @@ export function useOntologyApp() {
     updateEntity,
     updateProperty,
     connectMapping,
+    addIdentifierPart,
     disconnectMapping,
-    connectRelationDataset,
-    disconnectRelationDataset,
+    applyAliases,
+    connectRelationMapping,
+    disconnectRelationMapping,
+    acceptRelationMapping,
     updateRelation,
     createEntity,
     createProperty,
@@ -2670,6 +3248,13 @@ export function useOntologyApp() {
     moveProperties,
     createRelation,
     createPlaceholderRelation,
+    creation,
+    startRelationDraft,
+    startEntityDraft,
+    finishCreation,
+    cancelCreation,
+    createdEntityId,
+    clearCreatedEntity,
     renameRelation,
     deleteEntity,
     deleteProperty,
@@ -2715,6 +3300,7 @@ export function useOntologyApp() {
     enterHistoryInspection,
     exitHistoryInspection,
     toggleHistoryChangeSelected,
+    toggleHistoryGroupSelected,
     historyInspectionHoveredNumber,
     setHistoryInspectionHoveredNumber,
     restoreSelectedHistoryChanges,
@@ -2725,6 +3311,21 @@ export function useOntologyApp() {
     selectSuggestionKeys,
     acceptSuggestions,
     declineSuggestions,
+    notice,
+    dismissNotice,
+    saveStatus,
+    savedAt,
+    saveDraft,
+    published,
+    publishedLocks: locks,
+    datasetReviews,
+    canOpenPublish,
+    publishReviewOpen,
+    setPublishReviewOpen,
+    publishJobs,
+    publishDataset,
+    publishDatasets,
+    publishQueue,
   };
 }
 

@@ -1,3 +1,5 @@
+import { canvasLod } from "@/lib/zoom-lod";
+export type { CanvasLod } from "@/lib/zoom-lod";
 import {
   createContext,
   useCallback,
@@ -24,18 +26,9 @@ type CanvasView = { x: number; y: number; z: number };
 const CANVAS_MIN_ZOOM = 0.25;
 
 /**
- * Level of detail by zoom (see the `[data-canvas-lod]` rules in styles.css). Zooming out sheds
- * detail in reverse order of importance — first everything but the essentials (the "N props ·
- * M tables" line, → buttons, drag handles, list controls), then the confidence score, then the
- * type/status icons — until only each item's name is left, drawn larger so it stays readable.
+ * Level of detail by zoom: the shared scale in `zoom-lod.ts`, applied through the
+ * `[data-canvas-lod]` rules in styles.css.
  */
-export type CanvasLod = "full" | "compact" | "minimal" | "name";
-function canvasLod(zoom: number): CanvasLod {
-  if (zoom >= 0.85) return "full";
-  if (zoom >= 0.6) return "compact";
-  if (zoom >= 0.4) return "minimal";
-  return "name";
-}
 const CANVAS_MAX_ZOOM = 2;
 
 /**
@@ -157,6 +150,22 @@ export function useEditingCanvas(
         x: -z * ((bounds.left + bounds.right) / 2),
         y: -z * ((bounds.top + bounds.bottom) / 2),
       });
+    },
+    /** Pans up (never down) until the world's anchor point (y 0) is `fromTop` (0–1) of the way
+     * down the viewport — room underneath for what hangs below it (an open Relation's ladder)
+     * above the bottom detail panel. */
+    liftAnchorTo: (fromTop: number) => {
+      const viewport = viewportRef.current;
+      const world = worldRef.current;
+      if (!viewport || !world) return;
+      const target = fromTop * viewport.clientHeight - world.offsetTop;
+      setView((v) => (v.y > target ? { ...v, y: target } : v));
+    },
+    /** Pans (either way) so the world's anchor point (y 0) sits `px` below the viewport's top. */
+    placeAnchorAt: (px: number) => {
+      const world = worldRef.current;
+      if (!world) return;
+      setView((v) => ({ ...v, y: px - world.offsetTop }));
     },
     /** True (once) when the click being handled ended a pan rather than being a plain click. */
     consumePanClick: () => {

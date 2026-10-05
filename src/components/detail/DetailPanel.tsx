@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Trash2 } from "lucide-react";
+import { Lock, Trash2 } from "lucide-react";
 import type { OntologyApp } from "@/lib/app-state";
 import { parseSuggestionKey, suggestionKey } from "@/lib/app-state";
 import {
@@ -11,23 +11,29 @@ import {
   entityErrorReason,
   entityReview,
   entityWarningReason,
-  identifierOf,
+  identifierColumnsIn,
+  identifiersOf,
   isIdentifierProperty,
   mappingStatus,
   propertyErrorReason,
   propertyReview,
   propertyStatus,
-  relationDatasetOptions,
   relationErrorReason,
+  relationAcceptBlockers,
   relationJoins,
+  relationMappingAcceptBlockers,
   relationLabel,
+  relationMappingCandidates,
+  relationMappingKey,
   relationReview,
   relationStatus,
+  relationWarningReason,
   tableMappingCompleteness,
   tableMappingStatus,
   type Entity,
   type Property,
   type Relation,
+  type RelationJoin,
   type ReviewStatus,
   type TableSchema,
 } from "@/lib/mock-data";
@@ -388,19 +394,21 @@ function ReviewDetailPanel({
       : item.kind === "property"
         ? propertyReview(item.property)
         : relationReview(item.relation)) === "suggested";
-  // An Error is never acceptable; a Relation also waits for its Entity Types to be confirmed.
+  // An Error is never acceptable; a Relation also waits for its Entity Types to be accepted.
+  // Shown above the footer, not just on the disabled button's hover.
   const blockedReason =
     item.kind === "entity"
       ? canConfirmEntity(item.entity)
         ? undefined
-        : "Fix the errors before confirming."
+        : "Fix the errors above to accept it."
       : item.kind === "property"
         ? canConfirmProperty(item.property)
           ? undefined
-          : "Fix the error before confirming."
+          : "Fix the error above to accept it."
         : canConfirmRelation(item.relation, app.entities)
           ? undefined
-          : "Confirm both Entity Types (with no errors) before confirming this Relation.";
+          : relationAcceptBlockers(item.relation, app.entities).join(" ") ||
+            "Fix the error above to accept it.";
   const index = queue.indexOf(item.key);
 
   const step = (direction: 1 | -1) => {
@@ -471,7 +479,7 @@ function ReviewDetailPanel({
           ? entityWarningReason(item.entity)
           : item.kind === "property"
             ? item.property.warningReason
-            : item.relation.warningReason
+            : relationWarningReason(item.relation)
         : undefined;
 
   return (
@@ -517,6 +525,7 @@ function ReviewDetailPanel({
       {item.kind === "relation" && <RelationFields app={app} item={item} />}
       {/* A suggestion is decided here (Reject removes it); anything else can be deleted in the
           same spot. */}
+      {suggested && blockedReason && <BlockedNote>{blockedReason}</BlockedNote>}
       <footer className="flex h-12 shrink-0 items-center gap-2 border-t border-[#e3e5e4] px-4">
         {suggested ? (
           <>
@@ -561,6 +570,21 @@ function ReviewDetailPanel({
   );
 }
 
+/** Why Accept is off, in words — on the panel itself rather than only in a hover title. */
+function BlockedNote({ children, inset = false }: { children: ReactNode; inset?: boolean }) {
+  return (
+    <p
+      className={cn(
+        "flex shrink-0 items-start gap-1.5 text-[12px] leading-4 text-[#6d7472]",
+        inset ? "pt-1" : "border-t border-[#e3e5e4] bg-[#fafafa] px-4 py-2",
+      )}
+    >
+      <Lock className="mt-px size-3 shrink-0" strokeWidth={2} aria-hidden />
+      <span>{children}</span>
+    </p>
+  );
+}
+
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex min-w-0 flex-col gap-1">
@@ -592,7 +616,8 @@ function primaryPropertyOf(entity: Entity): Property | undefined {
 function EntityFields({ app, entity }: { app: OntologyApp; entity: Entity }) {
   const primary = primaryPropertyOf(entity);
   const template = entity.displayNameTemplate ?? (primary ? `{${primary.name}}` : "");
-  const identifier = identifierOf(entity);
+  const identifiers = identifiersOf(entity);
+  const composite = identifiers.length > 1;
   const datasets = entityDatasets(entity);
   return (
     <div className={cn(BODY_CLASS, "grid grid-cols-3 gap-4")}>
@@ -601,28 +626,43 @@ function EntityFields({ app, entity }: { app: OntologyApp; entity: Entity }) {
           <Value value={entity.description} placeholder="No description" />
         </Field>
       </div>
-      <Field label="Identifier">
-        {identifier ? (
-          <div className="flex min-w-0 items-center gap-2">
-            <span
-              className="size-1.5 shrink-0 rounded-full"
-              style={{ background: statusDotColor(propertyStatus(identifier)) }}
-            />
-            <span className="flex min-w-0 flex-1 items-center gap-1">
-              <span className="min-w-0 flex-1 truncate text-[14px] leading-6 text-[#080a09]">
-                {identifier.name}
-              </span>
-              <span role="img" aria-label="Identifier" className="shrink-0">
-                <FigmaIcon src={keyIcon} />
-              </span>
-              <PropertyTypeGlyph type={identifier.type} color="#6d7472" />
-            </span>
-            {propertyReview(identifier) === "suggested" && (
-              <PropertyConfidenceChip property={identifier} tone="muted" />
-            )}
-          </div>
-        ) : (
+      {/* One Identifier, or — two or more — a composite identifier: records are told apart by
+          the combination, each Identifier a numbered key part. */}
+      <Field label={composite ? `Identifier · composite of ${identifiers.length}` : "Identifier"}>
+        {identifiers.length === 0 ? (
           <p className="text-[14px] leading-6 text-[#9c461e]">No identifier yet</p>
+        ) : (
+          <div className="flex min-w-0 flex-col">
+            {identifiers.map((identifier, index) => (
+              <div key={identifier.id} className="flex min-w-0 items-center gap-2">
+                <span
+                  className="size-1.5 shrink-0 rounded-full"
+                  style={{ background: statusDotColor(propertyStatus(identifier)) }}
+                />
+                <span className="flex min-w-0 flex-1 items-center gap-1">
+                  <span className="min-w-0 flex-1 truncate text-[14px] leading-6 text-[#080a09]">
+                    {identifier.name}
+                  </span>
+                  <span
+                    role="img"
+                    aria-label={composite ? `Identifier part ${index + 1}` : "Identifier"}
+                    className="flex shrink-0 items-center"
+                  >
+                    <FigmaIcon src={keyIcon} />
+                    {composite && (
+                      <span className="text-[10px] font-medium leading-3 text-[#967700]">
+                        {index + 1}
+                      </span>
+                    )}
+                  </span>
+                  <PropertyTypeGlyph type={identifier.type} color="#6d7472" />
+                </span>
+                {propertyReview(identifier) === "suggested" && (
+                  <PropertyConfidenceChip property={identifier} tone="muted" />
+                )}
+              </div>
+            ))}
+          </div>
         )}
       </Field>
       <Field label="Display name template">
@@ -632,7 +672,7 @@ function EntityFields({ app, entity }: { app: OntologyApp; entity: Entity }) {
         <Value value={primary?.name} />
       </Field>
       {/* The Entity Type's own mapping: the datasets its instances come from — wherever its
-          Identifier is mapped. Several columns in one dataset are a composite identifier. */}
+          Identifier is mapped (a composite one: each key part's column, all needed). */}
       <div className="col-span-3">
         <Field label={`Datasets · ${datasets.length}`}>
           {datasets.length === 0 ? (
@@ -647,7 +687,8 @@ function EntityFields({ app, entity }: { app: OntologyApp; entity: Entity }) {
                   app={app}
                   table={dataset.table}
                   columns={dataset.columns.map((m) => m.column)}
-                  composite={dataset.columns.length > 1}
+                  composite={composite}
+                  missing={dataset.missing.map((p) => p.name)}
                   status={
                     dataset.columns.every((m) => mappingStatus(m) === "mapped")
                       ? "mapped"
@@ -680,6 +721,7 @@ function MappingRow({
   columns,
   status,
   composite = false,
+  missing = [],
   onAccept,
   onReject,
   onDisconnect,
@@ -689,6 +731,8 @@ function MappingRow({
   columns: string[];
   status: "suggested" | "mapped";
   composite?: boolean;
+  // Key parts with no column in this dataset (a composite identifier that's incomplete here).
+  missing?: string[];
   onAccept?: () => void;
   onReject?: () => void;
   onDisconnect?: () => void;
@@ -698,10 +742,19 @@ function MappingRow({
       <div className="min-w-0 flex-1">
         <MappingValue app={app} table={table} column={columns.join(", ")} />
       </div>
-      {composite && (
-        <span className="shrink-0 rounded-full bg-[#f4f4f4] px-1.5 py-px text-[12px] leading-4 text-[#6d7472]">
-          Composite
+      {missing.length > 0 ? (
+        <span
+          title={`${missing.join(", ")} ${missing.length === 1 ? "isn't" : "aren't"} mapped in ${table}, so its records can't be identified here.`}
+          className="shrink-0 rounded-full bg-[#faebb0] px-1.5 py-px text-[12px] leading-4 text-[#967700]"
+        >
+          Missing {missing.join(", ")}
         </span>
+      ) : (
+        composite && (
+          <span className="shrink-0 rounded-full bg-[#f4f4f4] px-1.5 py-px text-[12px] leading-4 text-[#6d7472]">
+            Composite
+          </span>
+        )
       )}
       <span className="flex shrink-0 items-center gap-1.5 text-[12px] leading-4 text-[#6d7472]">
         <span
@@ -760,6 +813,7 @@ function MappingValue({
 }: {
   app: OntologyApp;
   table: string;
+  // The instance, where the dataset holds several of the Entity Type.
   column?: string;
 }) {
   return (
@@ -859,8 +913,10 @@ function RelationFields({
   const fromName = from?.name ?? relation.from;
   const toName = to?.name ?? relation.to;
   const joins = relationJoins(relation, app.entities);
-  // More datasets it could be mapped through: where both Identifiers are mapped.
-  const more = relationDatasetOptions(from, to).filter((t) => !relation.datasets?.includes(t));
+  // More mappings it could use: datasets where both Identifiers are mapped, not yet saved.
+  const more = relationMappingCandidates(from, to).filter(
+    (c) => !joins.some((j) => j.table === c.table),
+  );
   return (
     // Figma 356:198234: the mapping list isn't clipped — the panel grows with it, up to the dock's
     // max height.
@@ -883,59 +939,41 @@ function RelationFields({
           </Field>
         </div>
       </div>
-      <Field label="Mapping">
+      <Field label={`Mapping · ${joins.length}`}>
         {joins.length === 0 ? (
           <p className="text-[14px] leading-6 text-[#9ea3a2]">No mapping yet</p>
         ) : (
-          <div className="flex flex-col pt-1">
-            {joins.map((join, i) => (
-              <div
-                key={`${join.table}-${i}`}
-                className={cn(
-                  "group/relmap relative grid grid-cols-3 items-center gap-x-4 border-[#e3e5e4] bg-[#fafafa] px-3 py-2 pr-9",
-                  i === 0 ? "border" : "border-x border-b",
-                  i === 0 && "rounded-t-[6px]",
-                  i === joins.length - 1 && "rounded-b-[6px]",
-                )}
-              >
-                {/* One table per mapping: both sides' columns come from it. */}
-                <MappingValue app={app} table={join.table} />
-                <div className="col-span-2 flex min-w-0 items-center justify-end gap-2 overflow-hidden text-[14px] leading-6 text-[#080a09]">
-                  <JoinEnd entity={fromName} columns={join.fromColumns} />
-                  <FigmaIcon src={arrowRightIcon} size={12} />
-                  <span className="shrink-0 font-medium">
-                    {relation.name || "Unnamed relation"}
-                  </span>
-                  <FigmaIcon src={arrowRightIcon} size={12} />
-                  <JoinEnd entity={toName} columns={join.toColumns} />
-                </div>
-                <button
-                  type="button"
-                  aria-label={`Disconnect the ${join.table} mapping`}
-                  title="Disconnect"
-                  onClick={() => app.disconnectRelationDataset(relation.id, join.table)}
-                  className={cn(
-                    ICON_BUTTON,
-                    "absolute right-2 top-1/2 -translate-y-1/2 opacity-0 transition-opacity focus-visible:opacity-100 group-hover/relmap:opacity-100",
-                  )}
-                >
-                  <FigmaIcon src={crossIcon} size={20} />
-                </button>
-              </div>
+          <MappingRows>
+            {joins.map((join) => (
+              <RelationMappingRow
+                key={relationMappingKey(join)}
+                app={app}
+                join={join}
+                subject={fromName}
+                object={toName}
+                blockers={relationMappingAcceptBlockers(relation, join, app.entities)}
+                onAccept={() => app.acceptRelationMapping(relation.id, join)}
+                onDisconnect={() => app.disconnectRelationMapping(relation.id, join)}
+              />
             ))}
-          </div>
+          </MappingRows>
         )}
         {more.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5 pt-2">
             <span className="text-[12px] leading-4 text-[#6d7472]">Also mappable through</span>
-            {more.map((t) => (
+            {more.map((candidate) => (
               <button
-                key={t}
+                key={relationMappingKey(candidate)}
                 type="button"
-                onClick={() => app.connectRelationDataset(relation.id, t)}
+                title={`${fromName}[${candidate.fromColumns.join(", ")}] → ${toName}[${candidate.toColumns.join(", ")}]`}
+                onClick={() =>
+                  app.connectRelationMapping(relation.id, { ...candidate, status: "mapped" })
+                }
                 className="rounded-full border border-[#e3e5e4] bg-white px-2 py-0.5 text-[12px] leading-4 text-[#161919] hover:bg-[#f4f4f4]"
               >
-                + {t}
+                + {candidate.table}
+                {(candidate.fromAlias || candidate.toAlias) &&
+                  ` @${candidate.fromAlias ?? candidate.toAlias}`}
               </button>
             ))}
           </div>
@@ -945,11 +983,153 @@ function RelationFields({
   );
 }
 
-function JoinEnd({ entity, columns }: { entity: string; columns: string[] }) {
-  // No columns: that side's Identifier isn't mapped in this dataset (the Relation's Error).
+/**
+ * One saved Relation mapping, read the same way the Create a relation picker shows it:
+ * dataset · Subject[identifier column(s)] → Object[identifier column(s)], then the mapping's own
+ * review state (separate from the Relation's) — or why it's broken.
+ */
+function RelationMappingRow({
+  app,
+  join,
+  subject,
+  object,
+  relationName,
+  showDataset = true,
+  blockers = [],
+  onAccept,
+  onDisconnect,
+}: {
+  app: OntologyApp;
+  join: RelationJoin;
+  subject: string;
+  object: string;
+  // Shown between the two ends (where the row isn't already about one Relation).
+  relationName?: string | undefined;
+  // Off where the list is already about one dataset.
+  showDataset?: boolean;
+  // Why a suggested one can't be accepted yet (shown under it); empty when it can.
+  blockers?: string[];
+  // Accept / Reject while suggested — Reject disconnects it.
+  onAccept?: (() => void) | undefined;
+  onDisconnect?: (() => void) | undefined;
+}) {
+  const status = join.status ?? "suggested";
+  const decidable = status === "suggested" && !join.broken && !!onAccept;
   return (
-    <span className={cn("min-w-0 truncate", columns.length === 0 && "text-[#dc2626]")}>
-      <span className="font-medium">{entity}</span>[{columns.join(", ") || "—"}]
+    <div className="flex min-w-0 flex-col px-3 py-1.5">
+      <div className="group/relmap flex min-h-9 min-w-0 items-center gap-3">
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          {showDataset && <MappingValue app={app} table={join.table} />}
+          {/* Wraps rather than truncates, so a composite key's columns all stay readable. */}
+          <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[12px] leading-4 text-[#080a09]">
+            <JoinEnd
+              entity={subject}
+              alias={join.fromAlias}
+              columns={join.fromColumns}
+              broken={join.broken}
+            />
+            <FigmaIcon src={arrowRightIcon} size={12} />
+            {relationName && (
+              <>
+                <span className="font-medium">{relationName}</span>
+                <FigmaIcon src={arrowRightIcon} size={12} />
+              </>
+            )}
+            <JoinEnd
+              entity={object}
+              alias={join.toAlias}
+              columns={join.toColumns}
+              broken={join.broken}
+            />
+          </span>
+        </div>
+        {join.broken ? (
+          <span
+            className="shrink-0 text-[12px] leading-4 text-[#dc2626]"
+            title="The identifier columns mapped in this dataset have changed since this mapping was saved."
+          >
+            No longer matches
+          </span>
+        ) : (
+          <span className="flex shrink-0 items-center gap-1.5 text-[12px] leading-4 text-[#6d7472]">
+            <span
+              className="size-1.5 rounded-full"
+              style={{
+                background: statusDotColor(status === "mapped" ? "confirmed" : "suggested"),
+              }}
+            />
+            {status === "mapped" ? "Mapped" : "Suggested"}
+          </span>
+        )}
+        {decidable ? (
+          <span className="flex shrink-0 items-center gap-0.5">
+            {onDisconnect && (
+              <button
+                type="button"
+                aria-label={`Reject the ${join.table} mapping`}
+                title="Reject"
+                onClick={onDisconnect}
+                className={ICON_BUTTON}
+              >
+                <FigmaIcon src={rejectIcon} />
+              </button>
+            )}
+            <button
+              type="button"
+              aria-label={`Accept the ${join.table} mapping`}
+              title={blockers.length > 0 ? blockers.join(" ") : "Accept"}
+              disabled={blockers.length > 0}
+              onClick={onAccept}
+              className={cn(ICON_BUTTON, "disabled:cursor-not-allowed disabled:opacity-40")}
+            >
+              <FigmaIcon src={acceptIcon} />
+            </button>
+          </span>
+        ) : (
+          onDisconnect && (
+            <button
+              type="button"
+              aria-label={`Disconnect the ${join.table} mapping`}
+              title="Disconnect"
+              onClick={onDisconnect}
+              className={cn(
+                ICON_BUTTON,
+                "opacity-0 transition-opacity focus-visible:opacity-100 group-hover/relmap:opacity-100",
+              )}
+            >
+              <FigmaIcon src={crossIcon} size={20} />
+            </button>
+          )
+        )}
+      </div>
+      {decidable &&
+        blockers.map((blocker) => (
+          <BlockedNote key={blocker} inset>
+            {blocker}
+          </BlockedNote>
+        ))}
+    </div>
+  );
+}
+
+function JoinEnd({
+  entity,
+  alias,
+  columns,
+  broken = false,
+}: {
+  entity: string;
+  // The occurrence, where the dataset holds several of that Entity Type.
+  alias?: string | undefined;
+  columns: string[];
+  broken?: boolean;
+}) {
+  return (
+    <span
+      className={cn("min-w-0 break-words", (broken || columns.length === 0) && "text-[#dc2626]")}
+    >
+      <span className="font-medium">{entity}</span>
+      {alias && <span className="text-[#6d7472]">@{alias}</span>}[{columns.join(", ") || "—"}]
     </span>
   );
 }
@@ -960,15 +1140,27 @@ function JoinEnd({ entity, columns }: { entity: string; columns: string[] }) {
  * through it, keyed by those Identifier columns. Mapped ones can be disconnected; the rest mapped.
  */
 function TableRelations({ app, table }: { app: OntologyApp; table: string }) {
-  const relations = app.relations.filter((r) => {
-    const from = app.entities.find((e) => e.id === r.from);
-    const to = app.entities.find((e) => e.id === r.to);
-    return r.datasets?.includes(table) || relationDatasetOptions(from, to).includes(table);
+  const name = (id: string) => app.entities.find((e) => e.id === id)?.name || "Untitled entity";
+  // A Relation's mappings through this dataset (one per pair of instances where it holds several
+  // of an Entity Type), else the ones it could have here.
+  const rows = app.relations.flatMap((r) => {
+    const saved = relationJoins(r, app.entities).filter((j) => j.table === table);
+    if (saved.length) return saved.map((join) => ({ relation: r, join, mapped: true }));
+    return relationMappingCandidates(
+      app.entities.find((e) => e.id === r.from),
+      app.entities.find((e) => e.id === r.to),
+    )
+      .filter((c) => c.table === table)
+      .map((candidate) => ({
+        relation: r,
+        join: { ...candidate, broken: false } as RelationJoin,
+        mapped: false,
+      }));
   });
-  const here = app.entities.filter((e) => identifierOf(e)?.mappings.some((m) => m.table === table));
+  const here = app.entities.filter((e) => identifierColumnsIn(e, table).length > 0);
   return (
-    <Field label={`Relations in this dataset · ${relations.length}`}>
-      {relations.length === 0 ? (
+    <Field label={`Relations in this dataset · ${rows.length}`}>
+      {rows.length === 0 ? (
         <p className="text-[12px] leading-5 text-[#6d7472]">
           {here.length < 2
             ? "Map the identifiers of two entity types here to relate their records through it."
@@ -976,51 +1168,47 @@ function TableRelations({ app, table }: { app: OntologyApp; table: string }) {
         </p>
       ) : (
         <MappingRows>
-          {relations.map((r) => {
-            const join = relationJoins({ ...r, datasets: [table] }, app.entities)[0]!;
-            const mapped = !!r.datasets?.includes(table);
-            const name = (id: string) =>
-              app.entities.find((e) => e.id === id)?.name || "Untitled entity";
-            return (
-              <div key={r.id} className="flex h-10 min-w-0 items-center gap-3 px-3">
+          {rows.map(({ relation: r, join, mapped }) =>
+            mapped ? (
+              <RelationMappingRow
+                key={`${r.id}|${relationMappingKey(join)}`}
+                app={app}
+                join={join}
+                subject={name(r.from)}
+                object={name(r.to)}
+                relationName={relationLabel(r)}
+                showDataset={false}
+                onDisconnect={() => app.disconnectRelationMapping(r.id, join)}
+              />
+            ) : (
+              <div
+                key={`${r.id}|${relationMappingKey(join)}`}
+                className="flex h-12 min-w-0 items-center gap-3 px-3"
+              >
                 <div className="flex min-w-0 flex-1 items-center gap-2 text-[12px] leading-4 text-[#080a09]">
-                  <JoinEnd entity={name(r.from)} columns={join.fromColumns} />
+                  <JoinEnd
+                    entity={name(r.from)}
+                    alias={join.fromAlias}
+                    columns={join.fromColumns}
+                  />
                   <FigmaIcon src={arrowRightIcon} size={12} />
                   <span className="shrink-0 font-medium">{relationLabel(r)}</span>
                   <FigmaIcon src={arrowRightIcon} size={12} />
-                  <JoinEnd entity={name(r.to)} columns={join.toColumns} />
+                  <JoinEnd entity={name(r.to)} alias={join.toAlias} columns={join.toColumns} />
                 </div>
-                {mapped ? (
-                  <>
-                    <span className="flex shrink-0 items-center gap-1.5 text-[12px] leading-4 text-[#6d7472]">
-                      <span
-                        className="size-1.5 rounded-full"
-                        style={{ background: statusDotColor("confirmed") }}
-                      />
-                      Mapped
-                    </span>
-                    <button
-                      type="button"
-                      aria-label={`Disconnect ${relationLabel(r)} from ${table}`}
-                      title="Disconnect"
-                      onClick={() => app.disconnectRelationDataset(r.id, table)}
-                      className={ICON_BUTTON}
-                    >
-                      <FigmaIcon src={crossIcon} size={20} />
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => app.connectRelationDataset(r.id, table)}
-                    className="flex h-7 shrink-0 items-center rounded-[4px] border border-[#e3e5e4] bg-white px-2.5 text-[12px] font-medium leading-4 text-[#161919] hover:bg-[#f4f4f4]"
-                  >
-                    Map
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const { broken: _broken, ...mapping } = join;
+                    app.connectRelationMapping(r.id, { ...mapping, status: "mapped" });
+                  }}
+                  className="flex h-7 shrink-0 items-center rounded-[4px] border border-[#e3e5e4] bg-white px-2.5 text-[12px] font-medium leading-4 text-[#161919] hover:bg-[#f4f4f4]"
+                >
+                  Map
+                </button>
               </div>
-            );
-          })}
+            ),
+          )}
         </MappingRows>
       )}
     </Field>

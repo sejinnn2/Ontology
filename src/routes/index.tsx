@@ -82,8 +82,18 @@ function Index() {
           onToggleHistoryChangeSelected={app.toggleHistoryChangeSelected}
           onHistoryHoverChange={app.setHistoryInspectionHoveredNumber}
           onRestoreSelectedHistoryChanges={app.restoreSelectedHistoryChanges}
+          onToggleHistoryGroupSelected={app.toggleHistoryGroupSelected}
           editing={!!app.detail}
           onExitEditing={app.closeDetail}
+          saveStatus={app.saveStatus}
+          onSave={app.saveDraft}
+          canOpenPublish={app.canOpenPublish}
+          publishReviewOpen={app.publishReviewOpen}
+          onPublishReviewOpenChange={app.setPublishReviewOpen}
+          datasetReviews={app.datasetReviews}
+          publishJobs={app.publishJobs}
+          onPublishDatasets={app.publishDatasets}
+          publishQueue={app.publishQueue}
         />
         <div className="relative min-h-0 flex-1">
           {app.detail ? (
@@ -102,6 +112,26 @@ function Index() {
           )}
         </div>
       </div>
+      {app.notice && (
+        <div
+          role="status"
+          className={cn(
+            "fixed left-1/2 top-[68px] z-50 flex max-w-[560px] -translate-x-1/2 items-start gap-2 rounded-[10px] border px-3.5 py-2.5 text-[13px] shadow-[var(--shadow-node-lift)]",
+            app.notice.tone === "blocked"
+              ? "border-[#f15b15]/40 bg-[#fff7f3] text-[#9c461e]"
+              : "border-[rgba(28,28,24,0.08)] bg-white text-[#1c1c18]",
+          )}
+        >
+          <span className="min-w-0 flex-1">{app.notice.text}</span>
+          <button
+            type="button"
+            onClick={app.dismissNotice}
+            className="shrink-0 text-[12px] text-[#707070] hover:text-[#1c1c18]"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       {app.entityMorphOrigin && morphEntity && (
         <EntityMorphOverlay
           circleOrigin={app.entityMorphOrigin.circleRect}

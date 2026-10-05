@@ -1,10 +1,10 @@
+import filterFunnelIcon from "@/assets/icons/filter-funnel-16.svg";
 import { useState } from "react";
 import { Calendar, Fingerprint, Hash, List, ToggleLeft, Type as TypeIcon, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { SortDropdown, type SortKey, type SortState } from "@/components/ontology/SortDropdown";
 import { cn } from "@/lib/utils";
-import filterIcon from "@/assets/icons/filter-1-16.svg";
 import hashtagIcon from "@/assets/icons/hashtag-16.svg";
 import searchIcon from "@/assets/icons/magnifying-glass-2-16.svg";
 import plusLargeIcon from "@/assets/icons/plus-large-16.svg";
@@ -85,12 +85,13 @@ export function FilterDropdown({
           aria-haspopup="menu"
           aria-expanded={open}
           className={cn(
-            "flex h-6 shrink-0 items-center gap-1 rounded-[6px] px-1.5 text-[14px] font-medium leading-6 text-[#6d7472] transition-colors hover:bg-black/[0.08]",
+            // Figma 466:86067: icon first, then the label (regular weight).
+            "flex h-6 shrink-0 items-center gap-1.5 rounded-[4px] px-1 text-[14px] leading-none text-[#6d7472] transition-colors hover:bg-black/[0.08]",
             value !== "all" && "bg-black/[0.08] text-[#161919]",
           )}
         >
+          <FigmaIcon src={filterFunnelIcon} />
           {LIST_FILTER_LABEL[value]}
-          <FigmaIcon src={filterIcon} />
         </button>
       </PopoverTrigger>
       <PopoverContent
