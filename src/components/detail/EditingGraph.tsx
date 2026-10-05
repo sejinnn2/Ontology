@@ -4012,7 +4012,7 @@ function MappingPanels({
           const lineColor = inFocus ? tone : needsAlias ? "#f15b15" : SETTLED;
           return (
             <div key={`${property.id}:${mapping.column}`} className="flex shrink-0 items-stretch">
-              <GroupCell tone="Mapped" last={lastPair} width={NODE_W}>
+              <GroupCell tone="Mapped" last={index === pairs.length - 1} width={NODE_W}>
                 {repeatedIdentifier ? (
                   <div className="h-8" />
                 ) : (
@@ -4218,9 +4218,8 @@ function MappingPanels({
           const last = i === elsewhereColumns.length - 1;
           return (
             <div key={`elsewhere-${column.name}`} className="flex shrink-0 items-stretch">
-              <GroupCell tone="Mapped" last={last} width={NODE_W}>
-                <div className="h-8" />
-              </GroupCell>
+              {/* No property here: the left group has already ended, so this is just a spacer. */}
+              <div style={{ width: NODE_W }} />
               <div className="flex-1" />
               <div
                 data-map-column={column.name}
