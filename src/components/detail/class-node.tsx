@@ -43,7 +43,7 @@ export function classNodeClass({
   attached?: boolean | undefined;
 }) {
   return cn(
-    "relative flex items-center gap-1 rounded-[6px] border bg-white px-3 text-left transition-[box-shadow,opacity,border-color]",
+    "relative flex items-center gap-1 rounded-[4px] border bg-white px-3 text-left transition-[box-shadow,opacity,border-color]",
     CARD_SHADOW,
     selected
       ? "border-[#080a09]"
@@ -56,7 +56,7 @@ export function classNodeClass({
 }
 
 /** The open node's list, as the rest of its card: the head's border continues down both sides and
- * the bottom, with a hairline between head and list. */
+ * the bottom. */
 export function classNodeBodyClass({
   selected = false,
   focus = false,
@@ -65,7 +65,7 @@ export function classNodeBodyClass({
   focus?: boolean;
 }) {
   return cn(
-    "rounded-b-[6px] rounded-t-none border border-t-0 bg-white shadow-[inset_0_1px_0_#e3e5e4]",
+    "rounded-b-[4px] rounded-t-none border border-t-0 bg-white",
     CARD_SHADOW,
     selected
       ? "border-[#080a09]"
@@ -124,4 +124,9 @@ export function ClassNodeBody({
       </span>
     </span>
   );
+}
+
+/** The line between an open node's head and its list: 1px, #d9d9d9, inset 10px each side. */
+export function ClassNodeDivider() {
+  return <span aria-hidden className="absolute inset-x-2.5 bottom-0 h-px bg-[#d9d9d9]" />;
 }

@@ -103,6 +103,7 @@ import { ItemStatusIcon, itemStatusDotColor } from "@/components/ontology/ItemSt
 import { EDGE_STROKE, EDGE_STYLE, type EdgeLayer } from "@/lib/edge-style";
 import {
   ClassNodeBody,
+  ClassNodeDivider,
   classNodeClass,
   classNodeBodyClass,
   classNodeCounts,
@@ -1269,6 +1270,7 @@ export function EditingGraphView({
                     mapping={classNodeMapping(focusEntity)}
                     active
                   />
+                  {centerAttached && <ClassNodeDivider />}
                   {entityReview(focusEntity) === "suggested" && (
                     <span className="lod-confidence contents">
                       <EntityConfidenceChip entity={focusEntity} tone="muted" />
@@ -2275,13 +2277,16 @@ function GraphNode({
       style={{ width: NODE_W, height: NODE_H }}
     >
       {classNode ? (
-        <ClassNodeBody
-          icon={classNode.sparkle ? undefined : (attachedStatus ?? status)}
-          name={name}
-          counts={classNode.counts}
-          mapping={classNode.mapping}
-          active={!!selected || !!highlighted}
-        />
+        <>
+          <ClassNodeBody
+            icon={classNode.sparkle ? undefined : (attachedStatus ?? status)}
+            name={name}
+            counts={classNode.counts}
+            mapping={classNode.mapping}
+            active={!!selected || !!highlighted}
+          />
+          {attached && <ClassNodeDivider />}
+        </>
       ) : (
         <>
           <span className="lod-type flex shrink-0">{attachedStatus ?? status}</span>
@@ -2878,7 +2883,7 @@ function ExpandChevron({
       onDoubleClick={(event) => event.stopPropagation()}
       aria-expanded={open}
       aria-label={label}
-      className="flex size-6 shrink-0 items-center justify-center rounded-[6px] hover:bg-black/[0.06]"
+      className="flex size-5 shrink-0 items-center justify-center rounded-[6px] hover:bg-black/[0.06]"
     >
       <span className={cn("size-4 transition-transform", open && "rotate-180")}>
         <img src={chevronDownIcon} alt="" className="block size-full" />
@@ -2949,17 +2954,20 @@ function RelationPill({
         height: open ? OPEN_PILL_H : PILL_H,
       }}
       className={cn(
-        "flex items-center gap-2 rounded-full border bg-white py-1 pl-3 pr-1.5 text-[12px] leading-4 text-[#161919] transition-[width,height,opacity]",
+        // Figma Edge/Explorer label (536:347610): 4px corners, 4/9 padding, 4px gap.
+        "flex items-center gap-1 rounded-[4px] border bg-white px-[9px] py-1 text-[12px] leading-4 text-[#080a09] transition-[width,height,opacity]",
         CARD_SHADOW,
         dimmed && DIMMED,
         selected ? SELECTED_NODE : "border-[#e3e5e4] hover:border-[#161919]",
       )}
     >
-      <span
-        className="lod-type size-1.5 shrink-0 rounded-full"
-        style={{ background: statusDotColor(status) }}
-      />
-      <span className="lod-name min-w-0 flex-1 truncate">{relationLabel(relation)}</span>
+      <span className="flex min-w-0 flex-1 items-center gap-1.5">
+        <span
+          className="lod-type size-1.5 shrink-0 rounded-full"
+          style={{ background: statusDotColor(status) }}
+        />
+        <span className="lod-name min-w-0 flex-1 truncate">{relationLabel(relation)}</span>
+      </span>
       {relationReview(relation) === "suggested" && (
         <span className="lod-confidence contents">
           <RelationConfidenceChip relation={relation} tone="muted" />
@@ -2971,8 +2979,7 @@ function RelationPill({
 
 const PANEL_LIST_MAX = 350;
 
-/** A Mapped / Unmapped group in a property or column panel (Figma 466:88737): a tinted box with its
- * label and count on top. */
+/** A Mapped / Unmapped group in a property or column panel (Figma 328:36487). */
 function ListGroup({
   label,
   count,
@@ -2982,14 +2989,10 @@ function ListGroup({
   count: number;
   children: ReactNode;
 }) {
+  // Figma 328:36487: no tint — a 12px mono heading (name, count) over the rows, 4px apart.
   return (
-    <div
-      className={cn(
-        "flex shrink-0 flex-col gap-1.5 rounded-[8px] p-2.5",
-        label === "Mapped" ? "bg-[#edf3f2]" : "bg-[#fafafa]",
-      )}
-    >
-      <div className="flex items-center justify-between pb-1.5 text-[14px] leading-none">
+    <div className="flex shrink-0 flex-col gap-1 rounded-[4px]">
+      <div className="flex items-center justify-between gap-2.5 pb-0.5 font-mono text-[12px] leading-4">
         <span className="text-[#080a09]">{label}</span>
         <span className="tabular-nums text-[#6d7472]">{count}</span>
       </div>
@@ -3143,6 +3146,7 @@ function PropertyPanel({
       )}
     >
       <ListControls
+        compact
         className="bg-white px-2"
         filter={filter}
         onFilterChange={onFilterChange}
@@ -3167,7 +3171,7 @@ function PropertyPanel({
         <div
           ref={scrollRef}
           data-canvas-scroll
-          className="flex flex-col gap-2 overflow-y-auto overscroll-contain px-2.5 pb-2.5"
+          className="flex flex-col gap-3 overflow-y-auto overscroll-contain px-2.5 pb-2 [scrollbar-width:thin]"
           style={{ maxHeight: PANEL_LIST_MAX }}
         >
           {properties.length === 0 && (
@@ -3450,7 +3454,7 @@ function PanelRow({
       style={movable ? ({ WebkitUserDrag: "element" } as React.CSSProperties) : undefined}
       className={cn(
         // Figma 466:86067: 32px, 6px corners; hover fills it gray (and shows the pencil).
-        "group/panelrow relative flex h-8 shrink-0 items-center gap-1 rounded-[6px] border py-1.5 pl-1.5 pr-2 transition-[opacity,background-color]",
+        "group/panelrow relative flex h-8 shrink-0 items-center gap-1 rounded-[4px] border py-1.5 pl-1.5 pr-2 transition-[opacity,background-color]",
         dimmed && DIMMED,
         selected ? SELECTED_NODE : "border-[#e3e5e4] bg-white",
         onClick && !selected && "hover:bg-[#e3e5e4]",
@@ -3968,6 +3972,7 @@ function MappingPanels({
       <div className="relative flex">
         <div style={{ width: NODE_W }}>
           <ListControls
+            compact
             className="bg-transparent px-2"
             filter={propFilter}
             onFilterChange={setPropFilter}
@@ -3986,6 +3991,7 @@ function MappingPanels({
         <div className="flex-1" />
         <div style={{ width: NODE_W }}>
           <ListControls
+            compact
             className="bg-transparent px-2"
             filter={columnFilter}
             onFilterChange={setColumnFilter}
@@ -5527,6 +5533,7 @@ function TableColumnsPanel({
       )}
     >
       <ListControls
+        compact
         className="bg-transparent px-2"
         filter={filter}
         onFilterChange={setFilter}

@@ -70,9 +70,12 @@ export const LIST_FILTER_LABEL: Record<ListFilter, string> = {
 export function FilterDropdown({
   value,
   onChange,
+  compact = false,
 }: {
   value: ListFilter;
   onChange: (next: ListFilter) => void;
+  /** The card's 12px control (Figma 328:36487) instead of the side panels' 14px one. */
+  compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -87,6 +90,7 @@ export function FilterDropdown({
           className={cn(
             // Figma 466:86067: icon first, then the label (regular weight).
             "flex h-6 shrink-0 items-center gap-1.5 rounded-[4px] px-1 text-[14px] leading-none text-[#6d7472] transition-colors hover:bg-black/[0.08]",
+            compact && "text-[12px] leading-4",
             value !== "all" && "bg-black/[0.08] text-[#161919]",
           )}
         >
@@ -160,7 +164,10 @@ export function ListControls({
   onCreate,
   createLabel,
   className,
+  compact = false,
 }: {
+  // The card's control bar (Figma 328:36487): 36px high, 12px labels.
+  compact?: boolean;
   // Both omitted entirely hides the Filter control — Mapped/Unmapped/Only Identifier are all
   // facts about a Property's own mapping, which not every list this appears above has enough
   // context for (e.g. a Data Table's Column list, shared across however many Entities map into
@@ -184,6 +191,7 @@ export function ListControls({
     <div
       className={cn(
         "lod-detail relative z-50 flex h-10 shrink-0 items-center gap-2 bg-inherit pl-2.5 pr-3",
+        compact && "h-9",
         className,
       )}
     >
@@ -203,12 +211,15 @@ export function ListControls({
         />
       ) : (
         <div className="flex items-center gap-1">
-          {onFilterChange && <FilterDropdown value={filter ?? "all"} onChange={onFilterChange} />}
+          {onFilterChange && (
+            <FilterDropdown value={filter ?? "all"} onChange={onFilterChange} compact={compact} />
+          )}
           <SortDropdown
             sort={sort}
             onChange={onSortChange}
             showPrefix={false}
             variant="figma"
+            compact={compact}
             options={sortOptions}
           />
         </div>

@@ -48,6 +48,7 @@ export function SortDropdown({
   className,
   showPrefix = true,
   variant = "default",
+  compact = false,
   options = ["name", "confidence"],
 }: {
   sort: SortState;
@@ -55,6 +56,8 @@ export function SortDropdown({
   className?: string;
   showPrefix?: boolean;
   variant?: "default" | "figma";
+  /** 12px label (the editing graph's cards) instead of 14px. */
+  compact?: boolean;
   options?: readonly SortKey[] | undefined;
 }) {
   const [open, setOpen] = useState(false);
@@ -69,7 +72,10 @@ export function SortDropdown({
           aria-expanded={open}
           className={cn(
             variant === "figma"
-              ? "flex h-6 items-center gap-1.5 rounded-[4px] px-1 text-[14px] leading-none text-[#6d7472] transition-colors hover:bg-black/[0.08]"
+              ? cn(
+                  "flex h-6 items-center gap-1.5 rounded-[4px] px-1 text-[14px] leading-none text-[#6d7472] transition-colors hover:bg-black/[0.08]",
+                  compact && "text-[12px] leading-4",
+                )
               : "flex items-center rounded-[4px] px-1.5 py-0.5 text-xs font-normal text-muted-foreground transition-colors hover:bg-accent",
             className,
           )}
