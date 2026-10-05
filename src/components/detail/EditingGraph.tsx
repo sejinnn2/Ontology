@@ -3322,6 +3322,20 @@ function createPropertyIn(app: OntologyApp, entityId: string, draft: NewProperty
 }
 
 /** One white row in a property / column panel: grip, status dot, name, key, type, confidence. */
+/** "Contact +2": the other Entity Types a column is mapped to (all of them on hover). */
+function OtherEntitiesChip({ entities }: { entities: string[] }) {
+  const [first, ...rest] = entities;
+  return (
+    <span
+      title={`Mapped to ${entities.join(", ")}`}
+      className="max-w-[88px] shrink truncate rounded-full bg-[#f4f4f4] px-1.5 text-[11px] leading-4 text-[#6d7472]"
+    >
+      {first}
+      {rest.length > 0 && ` +${rest.length}`}
+    </span>
+  );
+}
+
 function PanelRow({
   name,
   dotColor,
@@ -3835,6 +3849,21 @@ function MappingPanels({
     propSort,
   );
   const mappedColumns = new Set(tablePairs.map(columnOf));
+  // Columns this Entity Type doesn't map still show — with the other Entity Types that do map
+  // them (and whether that mapping is confirmed or only suggested), so they're not mistaken for
+  // unclaimed columns.
+  const mappedElsewhere = new Map<string, { entities: string[]; status: "mapped" | "suggested" }>();
+  app.entities.forEach((other) => {
+    if (other.id === entity.id) return;
+    other.properties.forEach((p) =>
+      mappingsIn(p, table.name).forEach((m) => {
+        const found = mappedElsewhere.get(m.column) ?? { entities: [], status: "suggested" };
+        if (!found.entities.includes(other.name)) found.entities.push(other.name);
+        if (mappingStatus(m) === "mapped") found.status = "mapped";
+        mappedElsewhere.set(m.column, found);
+      }),
+    );
+  });
   const columnQuery = columnSearch.trim().toLowerCase();
   const restColumns = sortByState(
     table.columns.filter(
@@ -4174,7 +4203,7 @@ function MappingPanels({
             </GroupCell>
             <div className="flex-1" />
             <GroupCell tone="Unmapped" first width={columnCellWidth} pad={columnCellPad}>
-              <GroupCellHead label="Unmapped" count={restColumns.length} />
+              <GroupCellHead label="Other columns" count={restColumns.length} />
             </GroupCell>
           </div>
         )}
@@ -4239,9 +4268,24 @@ function MappingPanels({
                         sampleValues={columnSamples(table, column.name)}
                         highlight={columnQueryText}
                         dimmed={!reviewScope.column(table.name, column.name)}
-                        dotColor="#c9cccb"
+                        dotColor={
+                          mappedElsewhere.has(column.name)
+                            ? itemStatusDotColor(
+                                mappedElsewhere.get(column.name)!.status === "mapped"
+                                  ? "confirmed"
+                                  : "suggested",
+                              )
+                            : "#c9cccb"
+                        }
                         identifier={false}
                         type={column.type}
+                        chip={
+                          mappedElsewhere.has(column.name) ? (
+                            <OtherEntitiesChip
+                              entities={mappedElsewhere.get(column.name)!.entities}
+                            />
+                          ) : null
+                        }
                         selected={overColumn === column.name}
                       />
                       {!connecting &&
