@@ -1168,6 +1168,7 @@ export function EditingGraphView({
                               bold={hovered === item.key || isOpen}
                               dimmed={!reviewScope.relation(relation)}
                               handles="start"
+                              arrow={relation.from === focusEntity.id ? "start" : undefined}
                             />
                             <Curve
                               d={curve(
@@ -1178,6 +1179,7 @@ export function EditingGraphView({
                               bold={hovered === item.key || isOpen}
                               dimmed={!reviewScope.relation(relation)}
                               handles="end"
+                              arrow={relation.from === focusEntity.id ? undefined : "end"}
                             />
                           </g>
                         );
@@ -2227,6 +2229,7 @@ function Curve({
   branch = false,
   delay = 0,
   handles = "both",
+  arrow,
   dimmed = false,
   potential = false,
 }: {
@@ -2245,6 +2248,8 @@ function Curve({
   // Figma "Edge/Explorer": a 6px handle dot on a node end. A curve that runs into its label
   // (rather than a node) leaves that end bare.
   handles?: "both" | "start" | "end" | "none";
+  // The end whose handle is an arrowhead instead of a dot: where a Relation points (its `to`).
+  arrow?: "start" | "end" | undefined;
 }) {
   // Suggested and settled links share the solid gray line (the status dot tells them apart).
   // Figma "Edge/Explorer" layers: a candidate link is "further" (dotted), a secondary table link
@@ -2266,6 +2271,26 @@ function Curve({
     if (handles !== "both" && handles !== at) return null;
     const to = ends[at];
     const origin = fromEnds?.[at];
+    if (arrow === at) {
+      // A 7.5×8.7 triangle whose tip sits on the node's edge, pointing into the node.
+      const rightward = ends.end.x >= ends.start.x;
+      const pointsRight = at === "end" ? rightward : !rightward;
+      return (
+        <motion.g
+          key={at}
+          initial={origin ? { x: origin.x, y: origin.y } : false}
+          animate={{ x: to.x, y: to.y }}
+          exit={origin ? { x: origin.x, y: origin.y, transition: SPRING } : {}}
+          transition={{ ...SPRING, delay }}
+        >
+          <path
+            d="M 0 0 L -7.5 -4.33 L -7.5 4.33 Z"
+            fill={EDGE_STROKE}
+            transform={pointsRight ? undefined : "scale(-1 1)"}
+          />
+        </motion.g>
+      );
+    }
     return (
       <motion.circle
         key={at}
@@ -5346,6 +5371,7 @@ export function TableGraphView({
                                   suggested={relSuggested}
                                   dimmed={!reviewScope.relation(relation)}
                                   handles="start"
+                                  arrow={towardActive ? undefined : "start"}
                                 />
                                 <Curve
                                   d={curve(
@@ -5356,6 +5382,7 @@ export function TableGraphView({
                                   suggested={relSuggested}
                                   dimmed={!reviewScope.relation(relation)}
                                   handles="end"
+                                  arrow={towardActive ? "end" : undefined}
                                 />
                               </motion.g>
                             );
