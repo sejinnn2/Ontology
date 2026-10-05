@@ -492,7 +492,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
   // The Data Tables panel's own collapse toggle — independent of the Ontology canvas, which is
   // always shown at full width alongside it. Collapsing only hides this panel's own content; it
   // never touches canvas content, selection, or the ontology itself.
-  const TABLE_PANEL_OPEN_W = 280;
+  const TABLE_PANEL_OPEN_W = 240;
   const [tablePanelOpen, setTablePanelOpen] = useState(true);
 
   const onPointerDown = (e: React.PointerEvent) => {
@@ -2506,7 +2506,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
             </span>
           </div>
           <>
-            <div className="flex h-8 shrink-0 items-center justify-between border-b border-[#e3e5e4] pl-2.5 pr-3">
+            <div className="flex h-10 shrink-0 items-center justify-between border-b border-[#e3e5e4] pl-2.5 pr-3">
               <SortDropdown
                 sort={tableSort}
                 onChange={(k) => setTableSort((s) => nextSortState(s, k))}
@@ -2541,7 +2541,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                         setHoveredTableName((cur) => (cur === t.name ? null : cur))
                       }
                       className={cn(
-                        "flex w-full shrink-0 items-center gap-2 py-2 pl-4 pr-3 font-normal text-left transition-colors",
+                        "flex w-full shrink-0 items-center gap-2 py-1.5 pl-4 pr-2.5 font-normal text-left transition-colors",
                         historyPanelOpen && "cursor-default",
                         // `bg-primary/10` (the app's teal "selected" token) replaces this row's
                         // original `#eff6ff` — a leftover prototype blue from before the Zaimler
@@ -2553,18 +2553,15 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                       <MappingStatusBadge
                         status={tableMappingStatus(t.name, entities)}
                         {...tableMappingCompleteness(t.name, entities)}
-                        size={20}
+                        size={16}
                       />
-                      {/* Re-checked against Figma node 427:5824 — this row's own type scale sits a
-                          step below the right "Data tables" toolbox panel's (12px/10px, not
-                          14px/12px), and the secondary line is a flat `#909090` regardless of
-                          related state (that panel's own two-tone `isRelated` color didn't survive
-                          this re-check, so it's dropped here rather than kept as a stale variant). */}
-                      <span className="flex min-w-0 flex-1 flex-col items-start justify-center gap-1">
-                        <span className="block w-full truncate text-[12px] font-medium leading-[16.5px] text-[#171b22]">
+                      {/* Figma 492:57788 (Panel_Expanded): 14px/20px name over a 12px/16px
+                          secondary line in muted-foreground. */}
+                      <span className="flex min-w-0 flex-1 flex-col items-start justify-center">
+                        <span className="block w-full truncate text-[14px] font-medium leading-5 text-[#161919]">
                           {t.name}
                         </span>
-                        <span className="block w-full truncate text-[10px] font-normal leading-[10px] text-[#909090]">
+                        <span className="block w-full truncate text-[12px] font-normal leading-4 text-[#6d7472]">
                           {t.columns.length} columns · {entityCount} entit
                           {entityCount === 1 ? "y" : "ies"}
                         </span>

@@ -12,6 +12,10 @@ import {
 import { ConnectionHandle } from "@/components/ontology/ConnectionHandle";
 import { StatusBadge, statusDotColor } from "@/components/ontology/StatusBadge";
 import { EntityConfidenceChip } from "@/components/ontology/ConfidenceChip";
+import sparkleIcon from "@/assets/icons/sparkle-2-18.svg";
+
+// Figma "Node(Temporal)" Suggested (frame 492:57788): ICE fill, brand-cyan 1px ring, 18px sparkle.
+const SUGGESTED_NODE_RING = "#0891b2";
 
 /** Overview's own fixed canvas-node footprint (Figma: node 246:63476 / 246:63464) — the circle
  * connectors and hit-testing anchor to, regardless of the `detailed` text below it. */
@@ -111,6 +115,7 @@ export function OntologyNode({
   const dragging = connectSourceSide !== null;
   const isTarget = connectTargetSide !== null;
   const status = entityStatus(entity);
+  const suggestedLook = status === "suggested";
   const propertySummary = propertyStatusCounts(entity.properties);
   // Which of the 4 handles the pointer is directly over right now (Figma "Dot Hover": filled blue).
   const [hoveredSide, setHoveredSide] = useState<Side | null>(null);
@@ -142,7 +147,7 @@ export function OntologyNode({
           style={
             {
               transform: `scale(${nodeScale})`,
-              "--node-ring": statusDotColor(status),
+              "--node-ring": suggestedLook ? SUGGESTED_NODE_RING : statusDotColor(status),
             } as React.CSSProperties
           }
           className={cn(
@@ -157,14 +162,25 @@ export function OntologyNode({
                   : "shadow-[0_0_0_1px_var(--node-ring)] group-hover:shadow-[0_0_0_3px_#3b82f6]",
           )}
         >
-          <StatusBadge
-            status={status}
-            size={36}
-            confidence={entity.confidence}
-            warningReason={entityWarningReason(entity)}
-            errorReason={entityErrorReason(entity)}
-            noTooltip
-          />
+          {suggestedLook ? (
+            <span
+              aria-label="Suggested"
+              className="flex size-9 shrink-0 items-center justify-center rounded-full bg-[#d2fffa]"
+            >
+              <span aria-hidden className="relative block size-[18px] shrink-0">
+                <img alt="" src={sparkleIcon} className="absolute inset-0 block size-full" />
+              </span>
+            </span>
+          ) : (
+            <StatusBadge
+              status={status}
+              size={36}
+              confidence={entity.confidence}
+              warningReason={entityWarningReason(entity)}
+              errorReason={entityErrorReason(entity)}
+              noTooltip
+            />
+          )}
           {onStartConnect &&
             SIDES.map((side) => {
               // Figma "Dot Drag": every dot hides while a connection is being drawn.

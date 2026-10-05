@@ -56,6 +56,12 @@ treat as fixed — reuse the existing value rather than eyeballing a new one:
 | `#318F5A` / `#EAF7ED` | Mapped Column — text / soft green background |
 | `#553EB7` / `#F5F3FF` | Mapped Property — text / soft purple background (same purple family as Suggested, different role) |
 
+**Suggested graph nodes (Overview canvas) are the exception** — per Figma frame "Below 60%"
+(`492:57788`) they render as an ICE `#d2fffa` disc with a `#0891b2` 1px ring and an 18px sparkle
+(`OntologyNode.tsx`) instead of the purple badge. The purple Suggested trio above still applies to
+`StatusBadge` everywhere else (toolbox rows, cards, chips). Overview's Data tables panel is 240px
+wide with 14px/12px rows and 16px `MappingStatusBadge`s, from the same frame.
+
 These review-status and mapping colors (Suggested/Confirmed/Warning/Error, Mapped Column/Property)
 are ontology-domain semantics that `design.md` doesn't define — they're intentionally untouched by
 the Zaimler re-theme and aren't expected to move to teal/zinc.

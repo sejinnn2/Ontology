@@ -22,10 +22,20 @@
         "dev",
         "--",
         "--port",
-        "8090",
+        "8080",
         "--strictPort"
       ],
-      "port": 8090
+      "port": 8080
+    },
+    {
+      "name": "prototype-auto",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "npm run dev -- --port ${PORT:-8091} --strictPort"
+      ],
+      "port": 8091,
+      "autoPort": true
     }
   ]
 }
