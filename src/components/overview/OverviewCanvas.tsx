@@ -29,7 +29,14 @@ import { motion } from "motion/react";
 import { EDGE_STYLE } from "@/lib/edge-style";
 import { canvasLod, LOD_LABEL_TOP_N, LOD_NAME_PX, LOD_SPARSE_LABELS } from "@/lib/zoom-lod";
 import { ItemStatusIcon } from "@/components/ontology/ItemStatusIcon";
-import { OntologyNode, ONTOLOGY_NODE_SIZE, ONTOLOGY_NODE_WRAPPER_W } from "./OntologyNode";
+import {
+  OntologyNode,
+  ONTOLOGY_NODE_SIZE,
+  OVERVIEW_CARD,
+  OVERVIEW_NODE_BOX_H,
+  OVERVIEW_NODE_BOX_W,
+  overviewCardSizeFor,
+} from "./OntologyNode";
 import { useCanvasToolShortcuts, type CanvasTool } from "@/components/ontology/CanvasControls";
 import {
   SortDropdown,
@@ -55,24 +62,31 @@ const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
 // this file's own `lastEntityClickRef`.
 const DOUBLE_CLICK_MS = 400;
 
-// Overview's canvas nodes are a fixed 40x40 circle (see OntologyNode) — connectors and hit-
-// testing always anchor to that footprint, regardless of whether the node is currently showing
-// its `detailed` (zoomed past 100%) text underneath. `entity.x`/`entity.y` position that OUTER
-// wrapper, not the circle — the circle sits 28px in from the wrapper's left edge (horizontally
-// centered in a wider wrapper that also fits the name label below it), flush with its top (no
-// vertical offset). See `ONTOLOGY_NODE_WRAPPER_W`'s own comment for why this asymmetry exists.
-const NODE_CIRCLE_X_OFFSET = (ONTOLOGY_NODE_WRAPPER_W - ONTOLOGY_NODE_SIZE) / 2;
+// Overview's canvas nodes are drawn in a fixed box (see OntologyNode) that always holds the node
+// centered: a Figma card when zoomed in, the 40px circle when zoomed out. `entity.x` / `entity.y`
+// are the box's top-left, so a node's center is the same in both forms. Connectors and hit-testing
+// anchor to the node's visible footprint (`Footprint`), which depends on the zoom level.
 const overviewNodeScaleForRelationCount = (count: number) =>
   count >= 20 ? 1.38 : count >= 10 ? 1.18 : count >= 5 ? 1 : 0.86;
-const nodeRect = (n: { x: number; y: number }, scale = 1): Rect => {
-  const size = ONTOLOGY_NODE_SIZE * scale;
+/** A node's visible shape: a `w` × `h` card, or — `round` — a circle of diameter `w`. */
+type Footprint = { w: number; h: number; round: boolean };
+const FALLBACK_FOOTPRINT: Footprint = { w: ONTOLOGY_NODE_SIZE, h: ONTOLOGY_NODE_SIZE, round: true };
+const nodeRect = (n: { x: number; y: number }, fp: Footprint): Rect => {
   const center = ontologyNodeCenter(n);
-  return { x: center.x - size / 2, y: center.y - size / 2, width: size, height: size };
+  return { x: center.x - fp.w / 2, y: center.y - fp.h / 2, width: fp.w, height: fp.h };
 };
 const ontologyNodeCenter = (n: { x: number; y: number }) => ({
-  x: n.x + NODE_CIRCLE_X_OFFSET + ONTOLOGY_NODE_SIZE / 2,
-  y: n.y + ONTOLOGY_NODE_SIZE / 2,
+  x: n.x + OVERVIEW_NODE_BOX_W / 2,
+  y: n.y + OVERVIEW_NODE_BOX_H / 2,
 });
+/** How far from a node's center its outline is, heading in direction `dir` (a unit vector). */
+const footprintReach = (fp: Footprint, dir: Pt) =>
+  fp.round
+    ? fp.w / 2
+    : Math.min(
+        fp.w / 2 / Math.max(Math.abs(dir.x), 1e-6),
+        fp.h / 2 / Math.max(Math.abs(dir.y), 1e-6),
+      );
 
 // Where a click on a node's connection dot places the new node: straight out from that side.
 const GHOST_DISTANCE = 150;
@@ -85,17 +99,21 @@ const SIDE_DIR: Record<Side, Pt> = {
   left: { x: -1, y: 0 },
 };
 // Nearby nodes move aside for it (see `makeWay`), so the spot itself is fixed.
-const ghostCenter = (n: { x: number; y: number }, side: Side): Pt => {
+const ghostCenter = (n: { x: number; y: number }, side: Side, fp?: Footprint): Pt => {
   const c = ontologyNodeCenter(n);
-  return { x: c.x + SIDE_DIR[side].x * GHOST_DISTANCE, y: c.y + SIDE_DIR[side].y * GHOST_DISTANCE };
+  // Far enough to clear the node's own outline, wherever that is (a card is much wider).
+  const dist = fp
+    ? Math.max(GHOST_DISTANCE, footprintReach(fp, SIDE_DIR[side]) + 90)
+    : GHOST_DISTANCE;
+  return { x: c.x + SIDE_DIR[side].x * dist, y: c.y + SIDE_DIR[side].y * dist };
 };
 
 // The inverse of `ontologyNodeCenter` above — given the world point a new node's CENTER should
 // land on, returns the `x`/`y` to actually store on the Entity (its wrapper's own top-left,
 // which is what `x`/`y` mean everywhere else on this canvas).
 const wrapperOriginForCenter = (center: Pt) => ({
-  x: center.x - NODE_CIRCLE_X_OFFSET - ONTOLOGY_NODE_SIZE / 2,
-  y: center.y - ONTOLOGY_NODE_SIZE / 2,
+  x: center.x - OVERVIEW_NODE_BOX_W / 2,
+  y: center.y - OVERVIEW_NODE_BOX_H / 2,
 });
 
 /** Idea 3: a small hand-rolled force-directed simulation — mutual repulsion between every pair of
@@ -130,7 +148,7 @@ function buildForceDirectedLayout<T extends { id: string; x: number; y: number }
     y: originalCenters.reduce((sum, p) => sum + p.y, 0) / originalCenters.length,
   };
 
-  const SCATTER_RADIUS = 900;
+  const SCATTER_RADIUS = 2200;
   const positions = new Map<string, Pt>();
   const velocities = new Map<string, Pt>();
   entities.forEach((entity) => {
@@ -148,8 +166,9 @@ function buildForceDirectedLayout<T extends { id: string; x: number; y: number }
   );
   const ids = entities.map((entity) => entity.id);
 
-  const REPULSION = 45000;
-  const SPRING_LENGTH = 100;
+  // Spaced for the 168-256px cards (the layout is one fixed world, whatever the zoom).
+  const REPULSION = 450000;
+  const SPRING_LENGTH = 300;
   const SPRING_STRENGTH = 0.03;
   const CENTER_PULL = 0.0015;
   const DAMPING = 0.85;
@@ -272,7 +291,7 @@ type EdgeEnd = {
   angle: number;
   fanIndex: number;
   fanCount: number;
-  radius: number;
+  footprint: Footprint;
 };
 
 /** The anchor point ALWAYS sits exactly on the node's own circle (never slid off to one side) —
@@ -288,10 +307,10 @@ const edgeEndAnchor = (end: EdgeEnd): { point: Pt; dir: Pt } => {
       : 0;
   const angle = end.angle + spread;
   const dir: Pt = { x: Math.cos(angle), y: Math.sin(angle) };
-  const radius = end.radius;
+  const reach = footprintReach(end.footprint, dir);
   const point: Pt = {
-    x: end.center.x + dir.x * (radius + RELATION_GAP),
-    y: end.center.y + dir.y * (radius + RELATION_GAP),
+    x: end.center.x + dir.x * (reach + RELATION_GAP),
+    y: end.center.y + dir.y * (reach + RELATION_GAP),
   };
   return { point, dir };
 };
@@ -306,7 +325,7 @@ function graphEdgePath(
   toEnd: EdgeEnd,
   others: { id: string; x: number; y: number }[],
   excludeIds: readonly [string, string],
-  nodeScaleById: ReadonlyMap<string, number>,
+  footprintById: ReadonlyMap<string, Footprint>,
   /** Several relations between the same two nodes: this one's sideways offset (px), measured in
    * the pair's own fixed direction so opposite-direction relations spread apart too. */
   pairOffset = 0,
@@ -352,8 +371,13 @@ function graphEdgePath(
   for (const o of others) {
     if (o.id === excludeIds[0] || o.id === excludeIds[1]) continue;
     const oc = ontologyNodeCenter(o);
-    // The circle plus room for its name below it.
-    const clearance = (ONTOLOGY_NODE_SIZE * (nodeScaleById.get(o.id) ?? 1)) / 2 + 30;
+    // The node's outline plus room around it (a circle also leaves room for its name below).
+    const ofp = footprintById.get(o.id);
+    const clearance = ofp
+      ? ofp.round
+        ? ofp.w / 2 + 30
+        : Math.max(ofp.w, ofp.h) / 2 + 14
+      : ONTOLOGY_NODE_SIZE / 2 + 30;
     for (let i = 0; i < samples.length - 1; i++) {
       const dist2 = distanceToSegment(oc, samples[i]!, samples[i + 1]!);
       if (dist2 - clearance < minDist - minClearance) {
@@ -485,6 +509,34 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       ),
     [entities, relationCountByEntity],
   );
+  // The shared semantic-zoom scale (zoom-lod.ts). Zoomed in (full / compact) a node is a Figma card
+  // sized by how connected it is; zoomed out (minimal / name) it is the 40px circle.
+  const lod = canvasLod(view.z);
+  const cardMode = lod === "full" || lod === "compact";
+  const cardSizeById = useMemo(
+    () =>
+      new Map(
+        entities.map((entity) => [
+          entity.id,
+          overviewCardSizeFor(relationCountByEntity.get(entity.id) ?? 0),
+        ]),
+      ),
+    [entities, relationCountByEntity],
+  );
+  const footprintById = useMemo(
+    () =>
+      new Map<string, Footprint>(
+        entities.map((entity) => {
+          if (cardMode) {
+            const card = OVERVIEW_CARD[cardSizeById.get(entity.id) ?? "small"];
+            return [entity.id, { w: card.w, h: card.h, round: false }];
+          }
+          const size = ONTOLOGY_NODE_SIZE * (nodeScaleById.get(entity.id) ?? 1);
+          return [entity.id, { w: size, h: size, round: true }];
+        }),
+      ),
+    [entities, cardMode, cardSizeById, nodeScaleById],
+  );
   const layoutEntities = useMemo(
     () => buildForceDirectedLayout(entities, relations),
     [entities, relations],
@@ -529,8 +581,8 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     const minY = Math.min(...layoutEntities.map((e) => e.y));
     // +40 below the node's own footprint gives the name/subtitle label room in the fit, so it
     // never clips at the bottom edge of the canvas.
-    const maxX = Math.max(...layoutEntities.map((e) => e.x + ONTOLOGY_NODE_SIZE));
-    const maxY = Math.max(...layoutEntities.map((e) => e.y + ONTOLOGY_NODE_SIZE + 40));
+    const maxX = Math.max(...layoutEntities.map((e) => e.x + OVERVIEW_NODE_BOX_W));
+    const maxY = Math.max(...layoutEntities.map((e) => e.y + OVERVIEW_NODE_BOX_H + 40));
     const contentW = maxX - minX;
     const contentH = maxY - minY;
     const pad = 72;
@@ -621,7 +673,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       let bestDist = Infinity;
       for (const en of entities) {
         if (en.id === excludeId) continue;
-        if (!pointInRect(p, nodeRect(en, nodeScaleById.get(en.id) ?? 1))) continue;
+        if (!pointInRect(p, nodeRect(en, footprintById.get(en.id) ?? FALLBACK_FOOTPRINT))) continue;
         const c = ontologyNodeCenter(en);
         const dist = Math.hypot(p.x - c.x, p.y - c.y);
         if (dist < bestDist) {
@@ -631,7 +683,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       }
       return best;
     },
-    [entities, nodeScaleById, toWorld],
+    [entities, footprintById, toWorld],
   );
 
   const startConnectFromEntity = useCallback(
@@ -659,7 +711,10 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       const sourceEntity = entities.find((en) => en.id === connectDrag.sourceId);
       const droppedOnSource =
         sourceEntity &&
-        pointInRect(dropPoint, nodeRect(sourceEntity, nodeScaleById.get(sourceEntity.id) ?? 1));
+        pointInRect(
+          dropPoint,
+          nodeRect(sourceEntity, footprintById.get(sourceEntity.id) ?? FALLBACK_FOOTPRINT),
+        );
       if (hit) {
         setRelationDialogRequest({ sourceId: connectDrag.sourceId, targetId: hit.id });
       } else if (droppedOnSource) {
@@ -683,6 +738,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
           const center = ghostCenter(
             drawnPositionsRef.current.get(sourceEntity.id) ?? sourceEntity,
             connectDrag.side,
+            footprintById.get(sourceEntity.id),
           );
           const taken = new Set(entities.map((e) => e.name));
           let name = "New entity type";
@@ -717,7 +773,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     findEntityAt,
     startCreateConnectedEntity,
     entities,
-    nodeScaleById,
+    footprintById,
     createEntityWithProperties,
     select,
   ]);
@@ -955,7 +1011,6 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
   // detailed Entity summary above 110%; below 70%, connectors retain the graph's topology while
   // receding behind the nodes. Hover/selection always wins over either zoom treatment.
   // The shared semantic-zoom scale (zoom-lod.ts): farther out, crowded lines bundle.
-  const lod = canvasLod(view.z);
   const farRelationZoom = LOD_SPARSE_LABELS.has(lod);
   const selectRelationOnClick = useCallback(
     (relationId: string, shiftKey: boolean) => {
@@ -1286,8 +1341,8 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
     if (!handleHover || connectDrag) return offsets;
     const source = layoutEntities.find((e) => e.id === handleHover.entityId);
     if (!source) return offsets;
-    const spot = ghostCenter(source, handleHover.side);
-    const ROOM = 130;
+    const spot = ghostCenter(source, handleHover.side, footprintById.get(source.id));
+    const ROOM = cardMode ? 190 : 130;
     layoutEntities.forEach((e) => {
       if (e.id === source.id) return;
       const c = ontologyNodeCenter(e);
@@ -1300,7 +1355,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       offsets.set(e.id, { x: ux * (ROOM - d), y: uy * (ROOM - d) });
     });
     return offsets;
-  }, [handleHover, connectDrag, layoutEntities]);
+  }, [handleHover, connectDrag, layoutEntities, footprintById, cardMode]);
   // Positions as drawn: the layout, with any nodes moved aside. Lines are routed from these, so
   // they move together with their nodes.
   const routedEntities = useMemo(
@@ -1363,7 +1418,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
         angle: pending.angle,
         fanIndex: group.indexOf(pending.key),
         fanCount: group.length,
-        radius: (ONTOLOGY_NODE_SIZE * (nodeScaleById.get(pending.nodeId) ?? 1)) / 2,
+        footprint: footprintById.get(pending.nodeId) ?? FALLBACK_FOOTPRINT,
       };
     };
 
@@ -1393,14 +1448,14 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
           toEnd,
           routedEntities,
           [r.from, r.to],
-          nodeScaleById,
+          footprintById,
           pairOffsetOf.get(r.id) ?? 0,
           r.from > r.to,
         ),
       );
     });
     return map;
-  }, [relations, routedEntities, nodeScaleById]);
+  }, [relations, routedEntities, footprintById]);
 
   // Zoomed-out edge bundling: instead of drawing every Relation as its own thin connector (which,
   // zoomed out, just reads as visual clutter — or worse, several stacked lines that LOOK like one),
@@ -1651,11 +1706,13 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       // Offset to the node's own top-right corner rather than dead center — a marker sitting
       // exactly on top of the node would be camouflaged against it; a Relation marker (already
       // its own free-floating midpoint on the edge) needs no such offset.
-      const badgeOffset = ref.kind === "relation" ? 0 : ONTOLOGY_NODE_SIZE / 2;
+      const markerFp = ref.kind === "entity" ? footprintById.get(ref.id) : undefined;
+      const badgeX = ref.kind === "relation" ? 0 : (markerFp?.w ?? ONTOLOGY_NODE_SIZE) / 2;
+      const badgeY = ref.kind === "relation" ? 0 : (markerFp?.h ?? ONTOLOGY_NODE_SIZE) / 2;
       markers.push({
         number: c.group,
-        x: pt.x + badgeOffset,
-        y: pt.y - badgeOffset,
+        x: pt.x + badgeX,
+        y: pt.y - badgeY,
         restorable: restorable.length > 0,
         selected:
           restorable.length > 0 &&
@@ -1663,7 +1720,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
       });
     });
     return markers;
-  }, [historyInspection, pointForRef]);
+  }, [historyInspection, pointForRef, footprintById]);
 
   // Every Entity Type touched by the event currently being inspected — used only to give those
   // nodes a brief "active" emphasis (see `emphasisFor` below) so they stand out from the rest of
@@ -2097,8 +2154,8 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                     cx={connectPos.x}
                     cy={connectPos.y}
                     r={3.5}
-                    fill="#3b82f6"
-                    stroke="#3b82f6"
+                    fill="#0092b8"
+                    stroke="#0092b8"
                   />
                 </>
               )}
@@ -2179,7 +2236,7 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                     className={cn(
                       "group/relpill absolute z-10 -translate-x-1/2 -translate-y-1/2 transition-opacity",
                       historyPanelOpen ? "cursor-default" : "cursor-pointer",
-                      (isSelected || isMultiSelected) && "rounded-[4px] ring-2 ring-[#3b82f6]",
+                      (isSelected || isMultiSelected) && "rounded-[4px] ring-2 ring-[#0092b8]",
                     )}
                   >
                     {/* Icon-only by default; hovering reveals the name as a labeled pill (Figma:
@@ -2220,10 +2277,13 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                 const source = displayEntities.find((e) => e.id === handleHover.entityId);
                 if (!source) return null;
                 const from = ontologyNodeCenter(source);
-                const to = ghostCenter(source, handleHover.side);
+                const sourceFp = footprintById.get(source.id);
+                const to = ghostCenter(source, handleHover.side, sourceFp);
                 const r = ONTOLOGY_NODE_SIZE / 2;
                 const len = Math.hypot(to.x - from.x, to.y - from.y) || 1;
                 const dir = { x: (to.x - from.x) / len, y: (to.y - from.y) / len };
+                // The line leaves the source's own outline (not its center + a circle's radius).
+                const fromReach = sourceFp ? footprintReach(sourceFp, dir) : r;
                 return (
                   <motion.div
                     key={`${handleHover.entityId}-${handleHover.side}`}
@@ -2234,8 +2294,8 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                   >
                     <svg className="absolute overflow-visible" width={1} height={1}>
                       <line
-                        x1={from.x + dir.x * (r + 16)}
-                        y1={from.y + dir.y * (r + 16)}
+                        x1={from.x + dir.x * (fromReach + 16)}
+                        y1={from.y + dir.y * (fromReach + 16)}
                         x2={to.x - dir.x * (r + 6)}
                         y2={to.y - dir.y * (r + 6)}
                         stroke="#c9cccb"
@@ -2274,6 +2334,8 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                   detailed={lod === "full" || lod === "compact"}
                   nameSize={LOD_NAME_PX[lod]}
                   nodeScale={nodeScaleById.get(entity.id) ?? 1}
+                  card={cardMode ? (cardSizeById.get(entity.id) ?? "small") : null}
+                  relationCount={relationCountByEntity.get(entity.id) ?? 0}
                   onHandleHover={(side) =>
                     setHandleHover(side ? { entityId: entity.id, side } : null)
                   }
@@ -2285,6 +2347,11 @@ export function OverviewCanvas({ app }: { app: OntologyApp }) {
                     (!entityNeighborhoodActive || !!activeEntityIds?.has(entity.id))
                   }
                   emphasis={emphasisFor(entity.id)}
+                  selected={
+                    (selection?.kind === "entity" && selection.id === entity.id) ||
+                    multiSelectedEntityIds.has(entity.id) ||
+                    !!historyInspectionEntityIds?.has(entity.id)
+                  }
                   // Editing the canvas while previewing a historical point would silently apply
                   // to CURRENT Ontology underneath — see this feature's own spec on why a preview
                   // must never let that happen — so normal click/drag/connect are switched off for

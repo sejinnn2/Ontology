@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
  * connector drag.
  *
  * Sizing/color/shadow match Figma "Dot" (362:222226): an 8px circle, white with a 1px #e3e5e4
- * border, filled #3b82f6 while active.
+ * border, filled #0092B8 (the accent) while active.
  */
 export function ConnectionHandle({
   active = false,
@@ -60,12 +60,12 @@ export function ConnectionHandle({
         // Figma "Dot" (362:222226): 8px, white, 1px #e3e5e4 with a 2px canvas halo; blue when active.
         "pointer-events-auto box-border flex size-2 shrink-0 cursor-pointer items-center justify-center rounded-full border shadow-[0_0_0_2px_#f9fafb] transition-[transform,background-color,border-color]",
         active
-          ? "border-[#3b82f6] bg-[#3b82f6]"
+          ? "border-[#0092b8] bg-[#0092b8]"
           : cn(
               "border-[#e3e5e4] bg-white",
-              hoverFill && "hover:border-[#3b82f6] hover:bg-[#3b82f6]",
+              hoverFill && "hover:border-[#0092b8] hover:bg-[#0092b8]",
             ),
-        plus && "size-5 border-[#3b82f6] bg-[#3b82f6] text-white",
+        plus && "size-5 border-[#0092b8] bg-[#0092b8] text-white",
         className,
       )}
     >

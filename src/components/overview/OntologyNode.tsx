@@ -12,22 +12,59 @@ import {
 import { ConnectionHandle } from "@/components/ontology/ConnectionHandle";
 import { StatusBadge, statusDotColor } from "@/components/ontology/StatusBadge";
 import { EntityConfidenceChip } from "@/components/ontology/ConfidenceChip";
+import { classNodeMapping } from "@/components/detail/class-node";
+import typeSuggestedIcon from "@/assets/icons/node-type-suggested-20.svg";
+import typeConfirmedIcon from "@/assets/icons/node-type-confirmed-20.svg";
+import typeWarningIcon from "@/assets/icons/node-type-warning-24.svg";
+import typeErrorIcon from "@/assets/icons/node-type-error-20.svg";
+import dotFull from "@/assets/icons/class-dot-full-6.svg";
+import dotPartial from "@/assets/icons/class-dot-partial-6.svg";
+import dotNone from "@/assets/icons/class-dot-none-6.svg";
 
 /** Overview's own fixed canvas-node footprint (Figma: node 246:63476 / 246:63464) — the circle
  * connectors and hit-testing anchor to, regardless of the `detailed` text below it. */
 export const ONTOLOGY_NODE_SIZE = 40;
-/** The OUTER positioned wrapper below (`w-[100px]`) is wider than the 40px circle itself and
- * horizontally centers it (`items-center`) — so the circle's own true left edge sits
- * `(ONTOLOGY_NODE_WRAPPER_W - ONTOLOGY_NODE_SIZE) / 2` = 30px in from the wrapper's own `x`
- * position, not flush with it. `OverviewCanvas`'s connector geometry anchors to the circle itself
- * (never the wrapper, its name label, or its wide invisible hover-catcher — see this component's
- * own first child), so it needs this exact offset too; keep this in sync with the `w-[100px]` below
- * if that ever changes, since nothing enforces the two staying equal automatically. Vertically
- * there is NO such offset — the circle is the wrapper's first flowed child, flush with its own
- * top. */
-export const ONTOLOGY_NODE_WRAPPER_W = 100;
+/**
+ * The OUTER positioned wrapper is a fixed box (`OVERVIEW_NODE_BOX_W` × `OVERVIEW_NODE_BOX_H`, the
+ * largest card) that always holds the node centered — a card (zoomed in) or the 40px circle (zoomed
+ * out) — so a node's center never moves when it switches between the two. `entity.x` / `entity.y`
+ * are this box's top-left; connectors and hit-testing anchor to the visible footprint.
+ */
+export const OVERVIEW_NODE_BOX_W = 256;
+export const OVERVIEW_NODE_BOX_H = 64;
+/** Kept for the circle's own footprint and the places that still reason in circle terms. */
+export const ONTOLOGY_NODE_WRAPPER_W = OVERVIEW_NODE_BOX_W;
+
+/** Figma "Node(Temporal)" card sizes (Size=Small / Medium / Large): the busier a type is, the
+ * larger its card. */
+export type OverviewCardSize = "small" | "medium" | "large";
+export const OVERVIEW_CARD: Record<OverviewCardSize, { w: number; h: number }> = {
+  small: { w: 168, h: 60 },
+  medium: { w: 208, h: 60 },
+  large: { w: 256, h: 64 },
+};
+export const overviewCardSizeFor = (relationCount: number): OverviewCardSize =>
+  relationCount >= 20 ? "large" : relationCount >= 5 ? "medium" : "small";
+
+// Overview accent (replaces the old Blue 500): focus, hover and connection UI.
+const ACCENT = "#0092b8";
+
+const TYPE_ICON = {
+  suggested: typeSuggestedIcon,
+  confirmed: typeConfirmedIcon,
+  warning: typeWarningIcon,
+  error: typeErrorIcon,
+} as const;
 
 const SIDES: Side[] = ["top", "right", "bottom", "left"];
+
+// Figma "Dot" on a card: 8px, centered 7.5px outside the card's side midpoint.
+const CARD_SIDE_POSITION: Record<Side, string> = {
+  top: "left-1/2 -top-[11.5px] -translate-x-1/2",
+  bottom: "left-1/2 -bottom-[11.5px] -translate-x-1/2",
+  left: "-left-[11.5px] top-1/2 -translate-y-1/2",
+  right: "-right-[11.5px] top-1/2 -translate-y-1/2",
+};
 
 // Figma "Dot": 8px, its near edge 3px outside the circle (just past the 3px hover ring).
 const SIDE_POSITION: Record<Side, string> = {
@@ -67,7 +104,16 @@ export function OntologyNode({
   moveTarget = false,
   onHandleHover,
   nameSize,
+  card = null,
+  relationCount = 0,
+  selected = false,
 }: {
+  /** The node itself is selected (not just hovered): the card's Selected state. */
+  selected?: boolean;
+  /** Zoomed in: draw the Figma card at this size. `null` draws the 40px circle (zoomed out). */
+  card?: OverviewCardSize | null;
+  /** Its Relations — the card's "N links". */
+  relationCount?: number;
   /** The name's size at this zoom (the shared semantic-zoom scale) — it grows as the canvas
    * shrinks, so it stays readable on screen. */
   nameSize?: { size: number; line: number } | undefined;
@@ -115,10 +161,133 @@ export function OntologyNode({
   // Which of the 4 handles the pointer is directly over right now (Figma "Dot Hover": filled blue).
   const [hoveredSide, setHoveredSide] = useState<Side | null>(null);
 
+  if (card) {
+    // Zoomed in: Figma "Node(Temporal)" card. Default / Selected (active) / Highlighted (related)
+    // / Hover / Dot Hover / Dim (muted) map onto `emphasis` and the hover + handle state below.
+    const dims = OVERVIEW_CARD[card];
+    const large = card === "large";
+    const mapping = classNodeMapping(entity);
+    const propCount = entity.properties.length;
+    const counts = `${propCount} ${propCount === 1 ? "prop" : "props"} · ${relationCount} ${relationCount === 1 ? "link" : "links"}`;
+    const showChip = card !== "small" && entityReview(entity) === "suggested";
+    return (
+      <div
+        className={cn(
+          "group relative flex shrink-0 items-center justify-center transition-opacity",
+          emphasis === "muted" && "opacity-20",
+        )}
+        style={{ width: OVERVIEW_NODE_BOX_W, height: OVERVIEW_NODE_BOX_H }}
+      >
+        <button
+          type="button"
+          onPointerDown={(e) => {
+            if (e.button !== 0) return;
+            e.stopPropagation();
+            onStartMove?.(e.clientX, e.clientY);
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (!onStartMove || e.detail === 0) onClick?.(e);
+          }}
+          className={cn(
+            "relative select-none bg-transparent text-left",
+            onStartMove && !movementLocked && "cursor-grab active:cursor-grabbing",
+          )}
+        >
+          <span
+            style={{ width: dims.w, height: dims.h }}
+            className={cn(
+              "relative flex items-center gap-1 rounded-[4px] border px-3 transition-[border-color,box-shadow,background-color]",
+              emphasis === "active" && selected
+                ? "border-[#0092b8] bg-[#f2f8fa] shadow-[inset_0_0_0_1px_#0092b8]"
+                : emphasis === "active"
+                  ? "border-[#0092b8] bg-white"
+                  : emphasis === "related"
+                    ? "border-[rgba(0,146,184,0.5)] bg-white shadow-[inset_0_0_0_1px_rgba(0,146,184,0.5)] group-hover:border-[#0092b8] group-hover:shadow-none"
+                    : "border-[rgba(98,116,142,0.4)] bg-white group-hover:border-[#0092b8]",
+              (isTarget || dragging) && "border-[#0092b8]",
+              moveTarget && "shadow-[0_0_0_4px_var(--color-primary)]",
+            )}
+          >
+            <span className="flex min-w-0 flex-1 flex-col gap-1">
+              <span className="flex items-center gap-2">
+                <span className="relative size-5 shrink-0">
+                  <img
+                    alt=""
+                    src={TYPE_ICON[status]}
+                    className={cn(
+                      "absolute left-1/2 top-1/2 block -translate-x-1/2 -translate-y-1/2",
+                      status === "warning" ? "size-6" : "size-5",
+                    )}
+                  />
+                </span>
+                <span
+                  data-morph-label
+                  className={cn(
+                    "min-w-0 flex-1 truncate font-medium text-[#020618]",
+                    large ? "text-base leading-6" : "text-sm leading-5",
+                  )}
+                >
+                  {entity.name}
+                </span>
+              </span>
+              <span className="flex items-center gap-1.5">
+                <img
+                  alt=""
+                  src={mapping === "full" ? dotFull : mapping === "partial" ? dotPartial : dotNone}
+                  className="block size-1.5 shrink-0"
+                />
+                <span className="truncate text-[12px] leading-4 text-[#62748e]">{counts}</span>
+              </span>
+            </span>
+            {showChip && <EntityConfidenceChip entity={entity} size="md" tone="muted" />}
+            {onStartConnect &&
+              SIDES.map((side) => {
+                if (dragging) return null;
+                const isSource = connectSourceSide === side;
+                const isTargetSide = connectTargetSide === side;
+                const active = isSource || isTargetSide;
+                const hovered = hoveredSide === side;
+                return (
+                  <ConnectionHandle
+                    key={side}
+                    active={active || hovered}
+                    plus={hovered && !active}
+                    hoverFill={false}
+                    onPointerEnter={() => {
+                      setHoveredSide(side);
+                      onHandleHover?.(side);
+                    }}
+                    onPointerLeave={() => {
+                      setHoveredSide((current) => (current === side ? null : current));
+                      onHandleHover?.(null);
+                    }}
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onStartConnect(side, e.clientX, e.clientY);
+                    }}
+                    aria-label={`Drag from ${entity.name || "this entity"} to connect to another entity, or drop on empty canvas to create a new connected one`}
+                    className={cn(
+                      "absolute z-10 opacity-0 transition-opacity",
+                      CARD_SIDE_POSITION[side],
+                      (dragging || isTarget || active || hovered) && "opacity-100",
+                      !dragging && !isTarget && "group-hover:opacity-100",
+                    )}
+                  />
+                );
+              })}
+          </span>
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div
       className={cn(
-        "group relative flex w-[100px] shrink-0 flex-col items-center gap-3 text-center transition-opacity",
+        // The 40px circle sits at the box's center (12px down in the 64px box), its name below.
+        "group relative flex w-[256px] shrink-0 flex-col items-center gap-3 pt-3 text-center transition-opacity",
         emphasis === "muted" && "opacity-20",
       )}
     >
@@ -151,10 +320,10 @@ export function OntologyNode({
             moveTarget
               ? "shadow-[0_0_0_4px_var(--color-primary)]"
               : emphasis === "active"
-                ? "shadow-[0_0_0_3px_#3b82f6]"
+                ? "shadow-[0_0_0_3px_#0092b8]"
                 : emphasis === "related"
-                  ? "shadow-[0_0_0_2px_rgba(59,130,246,0.5)] group-hover:shadow-[0_0_0_3px_#3b82f6]"
-                  : "shadow-[0_0_0_1px_var(--node-ring)] group-hover:shadow-[0_0_0_3px_#3b82f6]",
+                  ? "shadow-[0_0_0_2px_rgba(0,146,184,0.5)] group-hover:shadow-[0_0_0_3px_#0092b8]"
+                  : "shadow-[0_0_0_1px_var(--node-ring)] group-hover:shadow-[0_0_0_3px_#0092b8]",
           )}
         >
           <StatusBadge
